@@ -1254,6 +1254,10 @@ fn pointer_event_fanout_to_state_inner(
             // target.
             if !via_xi2 && grab_event_mask & mask_bit != 0 {
                 let focus = state.crossing_has_focus(grab_window);
+                // Xorg DeliverGrabbedEvent -> FixUpEventFromWindow: the grab
+                // window's child toward the pointer's window, which
+                // xwininfo, xprop and xkill pick a window by.
+                let grab_child = xi2_child_toward(state, grab_window, target);
                 let extras = fanout_event_to_clients(state, &[grab_client], |buf, seq, order| {
                     encode_pointer_event(
                         buf,
@@ -1263,7 +1267,7 @@ fn pointer_event_fanout_to_state_inner(
                         event.detail,
                         event.time,
                         grab_window,
-                        ResourceId(0), // active-grab redirect: no propagation child
+                        grab_child,
                         event,
                         event_x,
                         event_y,
@@ -1453,6 +1457,8 @@ fn pointer_event_fanout_to_state_inner(
             let event_x = clamp_grab_coord(event.root_x, gx);
             let event_y = clamp_grab_coord(event.root_y, gy);
             let focus = state.crossing_has_focus(grab.grab_window);
+            // As an active grab's (FixUpEventFromWindow).
+            let grab_child = xi2_child_toward(state, grab.grab_window, target);
             let extras = fanout_event_to_clients(state, &[grab_target], |buf, seq, order| {
                 encode_pointer_event(
                     buf,
@@ -1462,7 +1468,7 @@ fn pointer_event_fanout_to_state_inner(
                     event.detail,
                     event.time,
                     grab.grab_window,
-                    ResourceId(0), // passive grab activation: no propagation child
+                    grab_child,
                     event,
                     event_x,
                     event_y,
