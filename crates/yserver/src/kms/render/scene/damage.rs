@@ -1,4 +1,12 @@
-use super::*;
+use crate::kms::render::{
+    scene::{
+        CarriedDamage, SceneCompositor, SceneCompositorInner,
+        damage_audit::note_damage_audit_contributions, tick::tick_skip_log_enabled,
+    },
+    store::RegionSet,
+};
+use ash::vk;
+use std::panic::Location;
 
 impl SceneCompositor {
     pub(super) fn note_structure_change(&mut self) {

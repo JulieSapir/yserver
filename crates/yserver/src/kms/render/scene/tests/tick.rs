@@ -1,4 +1,8 @@
 use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{platform::PlatformBackend, store::DrawableStore, telemetry::Telemetry},
+};
 
 #[test]
 fn damage_audit_attribution_filters_to_episode_event_range() {

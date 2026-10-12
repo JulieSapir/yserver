@@ -1,4 +1,11 @@
-use super::*;
+use crate::kms::{
+    render::{
+        region::Region,
+        scene::{FullReason, Repaint, RepaintPlan, damage_audit::rects_intersect},
+    },
+    vk::compositor::{CompositeDraw, CompositeScene},
+};
+use ash::vk;
 
 /// Render per damage rect rather than under one bounding box once the box wastes
 /// this much.

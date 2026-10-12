@@ -1,4 +1,17 @@
-use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{
+        platform::PlatformBackend,
+        scene::{
+            DamageAuditTarget, Repaint, RootReadback, SceneCompositor, SceneError, Visibility,
+            build::build_scene, compose::record_and_submit_render,
+            damage_audit::create_audit_descriptor_pool,
+        },
+        store::DrawableStore,
+    },
+};
+use ash::vk;
+use std::sync::Arc;
 
 /// Allocate the intermediate of every transformed output that lacks one of
 /// its footprint's size (spec D4, Q5: only transformed outputs pay).

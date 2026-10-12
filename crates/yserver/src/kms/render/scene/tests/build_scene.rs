@@ -1,4 +1,8 @@
 use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{platform::PlatformBackend, store::DrawableStore},
+};
 
 /// Stage 3f.6 — `build_scene` walks top-level → mapped
 /// descendants and produces draw entries in absolute coords.

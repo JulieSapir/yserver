@@ -1,4 +1,21 @@
-use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{
+        platform::PlatformBackend,
+        scene::{
+            ComposeRenderTarget, IntermediatePrimeTarget, OutputSceneState, PostComposePreparation,
+            Repaint, ScalePass, SceneCompositor, SceneCompositorInner, SceneError, Visibility,
+            build::build_scene, compose::record_and_submit_render,
+            damage::clip_rect_to_output_extent, damage_audit::create_audit_descriptor_pool,
+            repaint::draw_dst_rect_inward,
+        },
+        store::DrawableStore,
+        transform_intermediate::TransformIntermediate,
+    },
+    vk::{compositor::PresentError, scale_pipeline::ScalePassPipeline},
+};
+use ash::vk;
+use std::sync::Arc;
 
 impl SceneCompositor {
     /// The intermediate of transformed output `output_idx`, once a compose has

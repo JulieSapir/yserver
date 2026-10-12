@@ -1,4 +1,36 @@
-use super::*;
+#[cfg(test)]
+use crate::kms::core::KmsCore;
+#[cfg(test)]
+use crate::kms::render::platform::PlatformBackend;
+#[cfg(test)]
+use crate::kms::render::scene::CursorAssignment;
+#[cfg(test)]
+use crate::kms::render::scene::DamageAuditTarget;
+#[cfg(test)]
+use crate::kms::render::scene::Repaint;
+#[cfg(test)]
+use crate::kms::render::scene::ScalePass;
+use crate::kms::render::scene::SceneCompositor;
+#[cfg(test)]
+use crate::kms::render::scene::Visibility;
+#[cfg(test)]
+use crate::kms::render::scene::build::build_scene;
+#[cfg(test)]
+use crate::kms::render::scene::compose::record_and_submit_render;
+#[cfg(test)]
+use crate::kms::render::scene::cursor::hw_cursor_allowed;
+#[cfg(test)]
+use crate::kms::render::scene::damage::clip_rect_to_output_extent;
+#[cfg(test)]
+use crate::kms::render::scene::damage_audit::create_audit_descriptor_pool;
+#[cfg(test)]
+use crate::kms::render::scene::repaint::draw_dst_rect_inward;
+#[cfg(test)]
+use crate::kms::render::store::DrawableStore;
+#[cfg(test)]
+use ash::vk;
+#[cfg(test)]
+use std::sync::Arc;
 
 impl SceneCompositor {
     /// Test-only: force [`has_pending_page_flips`](Self::has_pending_page_flips)

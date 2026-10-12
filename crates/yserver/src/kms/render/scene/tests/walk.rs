@@ -1,4 +1,12 @@
 use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{
+        scene_diff::{SceneRole, structural_damage},
+        store::DrawableStore,
+    },
+};
+use yserver_protocol::x11::xfixes;
 
 #[test]
 fn refactored_emitter_matches_the_legacy_emitter_exactly() {

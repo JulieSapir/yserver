@@ -1,4 +1,50 @@
-use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{
+        platform::PlatformBackend,
+        region::Region,
+        scene::{
+            CarriedDamage, CopiedRenderSubmitError, CursorAssignment, CursorTransition,
+            FailedSubmitBo, FullReason, InFlightStage, OutputSceneState, OutputWalkReport,
+            PendingAck, Repaint, RepaintPlan, ScalePass, SceneCompositor, SceneCompositorInner,
+            SceneError, TickOutcome, TickSkipReason, Visibility,
+            build::build_scene_with,
+            compose::{
+                compose_submit_was_complete, present_error_is_device_lost, stage_submitted_frame,
+                submit_copied_scanout_render, submit_shared_scanout_frame,
+                vk_result_is_device_lost,
+            },
+            cursor::{
+                cursor_damage_for_frame, cursorless_hide_frame_required, derive_cursor_transition,
+                effective_cursor_prev_mode, hw_cursor_allowed,
+            },
+            damage::{clip_rect_to_output_extent, fan_out_carried_damage},
+            damage_audit::{
+                audit_has_unretired_event, audit_idle_recompare_due, audit_overlay_pipeline,
+                audit_reference_scene, audit_sampled_pairs, damage_audit_enabled,
+                emit_damage_audit_heartbeat, run_damage_audit,
+            },
+            flip::{
+                drain_pending_pool_releases, handle_scanout_render_completion_inner,
+                retire_failed_submit_bos,
+            },
+            repaint::{
+                cull_scene_to_region, draw_dst_rect_inward, opaque_cover_exists, plan_repaint,
+            },
+            transform::ensure_intermediates,
+        },
+        scene_diff::structural_damage,
+        store::{DamageSnapshot, DrawableStore},
+        telemetry::Telemetry,
+    },
+    vk::{
+        compositor::{CompositeScene, PresentError},
+        pipeline::MAX_DESCRIPTOR_SETS_PER_FRAME,
+        scanout::OutputScanout,
+    },
+};
+use ash::vk;
+use std::sync::{Arc, OnceLock};
 
 impl TickOutcome {
     pub(super) fn clears_scene_structure_dirty(self) -> bool {

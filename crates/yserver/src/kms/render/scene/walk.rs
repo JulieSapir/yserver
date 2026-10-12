@@ -1,4 +1,16 @@
-use super::*;
+use crate::kms::render::{
+    region::Region,
+    scene::{
+        ChildrenIndex, Emitted, NodeDecision, NodeStoreInfo, Visibility, WalkSink, WalkStats,
+        build::{emit_node, push_presence, scene_walk_debug_enabled_for},
+        damage::clip_rect_to_output_extent,
+    },
+    scene_diff::{ParticipantId, SceneRole},
+    store::{DrawableKind, DrawableStore},
+};
+use ash::vk;
+use std::collections::HashMap;
+use yserver_protocol::x11::xfixes;
 
 impl WalkStats {
     /// True if some snapshot's captured damage projected entirely off this

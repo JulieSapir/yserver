@@ -1,4 +1,21 @@
-use super::*;
+use crate::kms::{
+    render::{
+        cursor_save::CursorSaveTarget,
+        region::Region,
+        scanout_damage::ScanoutDamage,
+        scene::{
+            ComposeRenderTarget, ComposeSubmit, CopiedRenderSubmitError, PostComposePreparation,
+            Repaint, ScalePass, cursor::record_cursor_save, damage_audit::rects_intersect,
+            repaint::draw_dst_rect_inward, transform::record_scale_pass,
+        },
+    },
+    vk::{
+        compositor::{CompositeScene, PresentError},
+        pipeline::{CompositePushConsts, CompositorPipeline},
+        scanout::{BoPhase, BoState, CopiedRenderSource, ScanoutBo},
+    },
+};
+use ash::vk;
 
 pub(super) fn present_error_is_device_lost(error: &PresentError) -> bool {
     matches!(error, PresentError::Vk(vk::Result::ERROR_DEVICE_LOST))

@@ -1,4 +1,15 @@
-use super::*;
+use crate::kms::render::{
+    cursor_save::CursorSaveTarget,
+    platform::PlatformBackend,
+    scene::{
+        CursorAssignment, CursorEntry, CursorPlaneMode, CursorRetireResolution, CursorTransition,
+        CursorTransitionResult, OutputCursorMode, OutputSceneState, SceneBuild, SceneCompositor,
+        SceneCompositorInner,
+    },
+    store::RegionSet,
+};
+use ash::vk;
+use std::io;
 
 /// Pure classifier driving the steady-state cursor-mode decision —
 /// extracted from `SceneCompositor::cursor_mode` so the dual-output

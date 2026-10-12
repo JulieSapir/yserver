@@ -6,6 +6,15 @@ mod projection;
 mod tick;
 mod walk;
 use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{
+        platform::PlatformBackend,
+        scene_diff::{ParticipantId, SceneRole},
+        store::DrawableStore,
+    },
+};
+use yserver_protocol::x11::xfixes;
 
 fn audit_rect(x: i32, y: i32, width: u32, height: u32) -> vk::Rect2D {
     vk::Rect2D {

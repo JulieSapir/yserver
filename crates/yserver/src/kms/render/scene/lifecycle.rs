@@ -1,4 +1,22 @@
-use super::*;
+use crate::kms::{
+    render::{
+        composite_pool_ring::CompositePoolRing,
+        cursor_save::CursorSaves,
+        platform::{FenceTicket, PlatformBackend},
+        scanout_damage::ScanoutDamage,
+        scene::{
+            BufferAgeRing, DeferredSceneRelease, FailedSubmitBo, OutputCursorMode,
+            OutputSceneState, SceneCompositor, SceneCompositorInner, SceneError,
+            cursor::{reset_cursor_mode_for_lifecycle, reset_cursor_retry_for_lifecycle},
+            damage_audit::build_output_damage_audit,
+            transform::{ensure_intermediates, release_intermediate},
+        },
+        store::RegionSet,
+    },
+    vk::pipeline::{CompositorPipeline, MAX_DESCRIPTOR_SETS_PER_FRAME},
+};
+use ash::vk;
+use std::{collections::VecDeque, sync::Arc};
 
 pub(super) fn drain_deferred_scene_resources<W, R>(
     pending_pool_releases: &mut VecDeque<(usize, FenceTicket)>,

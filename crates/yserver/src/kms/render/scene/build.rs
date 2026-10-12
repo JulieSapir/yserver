@@ -1,4 +1,24 @@
-use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{
+        platform::PlatformBackend,
+        region::Region,
+        scene::{
+            CarriedDamage, ContentDamage, CursorAssignment, CursorEntry, Emitted, RootNode,
+            SceneBuild, Visibility, WalkSink, WalkStats,
+            cursor::cursor_footprint_rect,
+            damage::{clip_rect_to_output_extent, project_onto_output},
+            repaint::draw_dst_rect_inward,
+            tick::tick_skip_log_enabled,
+            walk::{children_index, visit_window_subtree},
+        },
+        scene_diff::{ParticipantId, PresenceSignature, SceneRole, presence_from_place},
+        store::{DrawableKind, DrawableStore, RegionSet},
+    },
+    vk::compositor::{CompositeDraw, CompositeScene},
+};
+use ash::vk;
+use std::{collections::HashSet, sync::OnceLock};
 
 impl<'a> WalkSink<'a> {
     fn new(

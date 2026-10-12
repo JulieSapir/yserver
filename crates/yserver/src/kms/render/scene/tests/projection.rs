@@ -1,4 +1,9 @@
 use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{scene_diff::structural_damage, store::DrawableStore},
+};
+use yserver_protocol::x11::xfixes;
 
 /// `build_with` for one output of a multi-output layout: `elsewhere` is
 /// what the OTHER output(s) showed at their last walk (their `pieces_ids`).

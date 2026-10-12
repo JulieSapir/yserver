@@ -1,4 +1,29 @@
-use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{
+        platform::PlatformBackend,
+        scene::{
+            ComposeRenderTarget, CursorEntry, DamageAuditEpisodeStart, DamageAuditLedgerEntry,
+            DamageAuditTarget, OutputDamageAudit, PostComposePreparation, Repaint, SceneBuild,
+            SceneCompositor, SceneCompositorInner, SceneError, Visibility,
+            build::build_scene,
+            compose::{compose_submit_was_complete, record_and_submit_render},
+        },
+        store::{DrawableStore, RegionSet},
+    },
+    vk::{
+        compositor::{CompositeScene, PresentError},
+        damage_audit_compare::{DamageAuditComparePipeline, DamageAuditTileSummary},
+        pipeline::CompositorPipeline,
+        scanout::OutputScanout,
+    },
+};
+use ash::vk;
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    panic::Location,
+    sync::{Arc, OnceLock},
+};
 
 impl DamageAuditTarget {
     pub(super) fn new(

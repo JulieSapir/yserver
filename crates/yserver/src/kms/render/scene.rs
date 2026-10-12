@@ -42,56 +42,54 @@ mod transform;
 mod walk;
 
 pub(crate) use build::*;
+#[cfg(test)]
 use compose::*;
+#[cfg(test)]
 use cursor::*;
+#[cfg(test)]
 use damage::*;
+#[cfg(test)]
 use damage_audit::*;
+#[cfg(test)]
 use flip::*;
 #[cfg(test)]
 use lifecycle::drain_deferred_scene_resources;
+#[cfg(test)]
 use repaint::*;
+#[cfg(test)]
 use tick::*;
-use transform::*;
+#[cfg(test)]
 use walk::*;
 
 #[cfg(test)]
 mod tests;
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     io,
     panic::Location,
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 use ash::vk;
-use yserver_protocol::x11::xfixes;
 
 use super::{
-    cursor_save::{CursorSaveTarget, CursorSaves},
-    platform::{FenceTicket, PlatformBackend, ReadyScanoutRenderCompletion},
+    cursor_save::CursorSaves,
+    platform::FenceTicket,
     region::Region,
     scanout_damage::ScanoutDamage,
-    scene_diff::{
-        ParticipantId, PresenceSignature, ScenePresence, SceneRole, presence_from_place,
-        structural_damage,
-    },
-    store::{DamageSnapshot, DrawableKind, DrawableStore, RegionSet},
-    telemetry::Telemetry,
+    scene_diff::{PresenceSignature, ScenePresence},
+    store::{DamageSnapshot, DrawableKind, RegionSet},
     transform_intermediate::TransformIntermediate,
 };
 use crate::kms::{
-    core::KmsCore,
     render::composite_pool_ring::CompositePoolRing,
     vk::{
         compositor::{CompositeDraw, CompositeScene, PresentError},
-        damage_audit_compare::{DamageAuditComparePipeline, DamageAuditTileSummary},
-        pipeline::{CompositePushConsts, CompositorPipeline, MAX_DESCRIPTOR_SETS_PER_FRAME},
+        damage_audit_compare::DamageAuditComparePipeline,
+        pipeline::CompositorPipeline,
         scale_pipeline::{ScalePassPipeline, ScalePushConsts},
-        scanout::{
-            BoPhase, BoState, CopiedRenderSource, CopiedTransportPreparation, OutputScanout,
-            ScanoutBo,
-        },
+        scanout::CopiedTransportPreparation,
     },
 };
 

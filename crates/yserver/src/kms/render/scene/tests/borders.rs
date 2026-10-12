@@ -1,4 +1,9 @@
 use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{scene_diff::structural_damage, store::DrawableStore},
+};
+use yserver_protocol::x11::xfixes;
 
 // ── #133 step 5 (P6) — the scene spaces and the coordinate recurrence ──
 //
