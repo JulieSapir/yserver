@@ -1,4 +1,9 @@
-use super::*;
+use crate::resources::{
+    ROOT_WINDOW, ResourceTable,
+    types::{ExposedRect, MapState, ReparentResult, ReparentWindowError, ViewabilityDelta},
+    window::{Window, cow_aware_top_index, window_bounding_box},
+};
+use yserver_protocol::x11::{ClientId, ReparentWindowRequest, ResourceId};
 
 impl ResourceTable {
     pub fn window(&self, id: ResourceId) -> Option<&Window> {

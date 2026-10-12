@@ -1,4 +1,20 @@
-use super::*;
+use crate::{
+    properties::PropertyValue,
+    resources::{
+        COMPOSITE_OVERLAY_WINDOW, ROOT_COLORMAP, ROOT_VISUAL, ROOT_WINDOW, ResourceTable,
+        SERVER_OWNER,
+        pixmap_props::NamedCompositePixmap,
+        types::{
+            BorderSource, MapState, MapTransition, RedirectedBacking, ReleasedAttrPixmaps,
+            ViewabilityDelta, WindowClass,
+        },
+    },
+};
+use std::collections::HashMap;
+use yserver_protocol::x11::{
+    AtomId, ChangeWindowAttributesRequest, ClientId, ConfigureWindowRequest, CreateWindowRequest,
+    ResourceId,
+};
 
 /// Index where a new "top" child should be inserted under `parent`. If
 /// the COW is currently the topmost child (last in the `children` vec

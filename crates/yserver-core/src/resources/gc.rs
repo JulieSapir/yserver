@@ -1,4 +1,13 @@
-use super::*;
+use crate::{
+    backend::{
+        ArcMode, CapStyle, ClipState, DrawState, FillRule, FillState, FillStyle, FontHandle,
+        GcFunction, JoinStyle, LineStyle, SubwindowMode,
+    },
+    resources::ResourceTable,
+};
+use yserver_protocol::x11::{
+    ClientId, ClipRectangles, CreateGcRequest, GcChange, ResourceId, SetClipRectanglesRequest,
+};
 
 impl ResourceTable {
     pub fn create_gc(&mut self, owner: ClientId, request: CreateGcRequest) {

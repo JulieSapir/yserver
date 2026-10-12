@@ -3,7 +3,9 @@ mod tree;
 mod window;
 use super::*;
 use proptest::prelude::*;
-use yserver_protocol::x11::{ChangeWindowAttributesRequest, ClientId, CreateWindowRequest};
+use yserver_protocol::x11::{
+    ChangeWindowAttributesRequest, ClientId, CreatePixmapRequest, CreateWindowRequest, FontMetrics,
+};
 
 fn make_window(table: &mut ResourceTable, id: u32) {
     table.create_window(

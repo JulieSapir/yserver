@@ -1,4 +1,11 @@
-use super::*;
+use crate::{
+    properties::PropertyValue,
+    resources::{
+        ResourceTable,
+        types::{BorderSource, HostDrawableTarget, ResolvedWindowBackground},
+    },
+};
+use yserver_protocol::x11::{AtomId, ClientId, CreatePixmapRequest, ResourceId};
 
 impl ResourceTable {
     pub fn pixmaps_iter(&self) -> impl Iterator<Item = &Pixmap> {

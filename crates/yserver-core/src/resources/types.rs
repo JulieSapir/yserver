@@ -1,4 +1,4 @@
-use super::*;
+use yserver_protocol::x11::ResourceId;
 
 #[derive(Debug, Default)]
 pub struct ClientRemovedResources {

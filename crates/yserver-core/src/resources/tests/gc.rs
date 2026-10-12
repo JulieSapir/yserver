@@ -1,4 +1,12 @@
 use super::*;
+use crate::backend::{
+    ArcMode, CapStyle, ClipState, DrawState, FillRule, FillState, FillStyle, GcFunction, JoinStyle,
+    LineStyle, SubwindowMode,
+};
+use yserver_protocol::x11::{
+    ClipRectangles, CreateGcRequest, CreatePixmapRequest, FontMetrics, GcChange,
+    SetClipRectanglesRequest,
+};
 
 fn empty_create_gc_request(gc: ResourceId, drawable: ResourceId) -> CreateGcRequest {
     CreateGcRequest {

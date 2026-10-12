@@ -1,4 +1,6 @@
-use super::*;
+use crate::resources::{ResourceTable, types::ClientRemovedResources};
+use std::collections::HashMap;
+use yserver_protocol::x11::{ClientId, ResourceId};
 
 impl ResourceTable {
     /// Per-type resource counts owned by `owner`, for X-Resource

@@ -1,4 +1,5 @@
-use super::*;
+use crate::resources::ResourceTable;
+use yserver_protocol::x11::{ClientId, FontMetrics, ResourceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PictureKind {

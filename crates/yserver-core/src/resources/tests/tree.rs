@@ -1,4 +1,5 @@
 use super::*;
+use yserver_protocol::x11::{ConfigureWindowRequest, ReparentWindowRequest};
 
 #[test]
 fn is_descendant_of_handles_child_grandchild_and_unrelated() {

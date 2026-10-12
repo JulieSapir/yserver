@@ -18,19 +18,9 @@ pub use window::*;
 
 use std::collections::{HashMap, HashSet};
 
-use yserver_protocol::x11::{
-    AtomId, ChangeWindowAttributesRequest, ClientId, ClipRectangles, ConfigureWindowRequest,
-    CreateGcRequest, CreatePixmapRequest, CreateWindowRequest, FontMetrics, GcChange,
-    ReparentWindowRequest, ResourceId, SetClipRectanglesRequest,
-};
-
-use crate::{
-    backend::{
-        ArcMode, CapStyle, ClipState, DrawState, FillRule, FillState, FillStyle, FontHandle,
-        GcFunction, JoinStyle, LineStyle, SubwindowMode,
-    },
-    properties::PropertyValue,
-};
+#[cfg(test)]
+use yserver_protocol::x11::FontMetrics;
+use yserver_protocol::x11::{ClientId, ResourceId};
 
 pub const SERVER_OWNER: ClientId = ClientId(0);
 

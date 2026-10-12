@@ -1,4 +1,5 @@
 use super::*;
+use yserver_protocol::x11::{ConfigureWindowRequest, CreatePixmapRequest, ReparentWindowRequest};
 
 #[test]
 fn win_gravity_delta_matches_x11_table() {
