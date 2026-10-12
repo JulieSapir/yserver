@@ -1,4 +1,21 @@
-use super::*;
+use crate::kms::vk::{
+    device::VkContext,
+    probe_pattern::CopiedProbePatternPipeline,
+    scanout::{
+        CopiedDisposableProbeAttempt, CopiedProbeFenceWaitDurations, CopiedProbeReadback,
+        CopiedRenderSource, CopiedScanoutPool, DisposableProbeAttempt, DisposableProbeError,
+        DisposableProbeFence, PendingProbeSubmissions, ProbeFence, ScanoutBoPool,
+        TransferResources,
+        copied::{color_subresource_layers, color_subresource_range},
+        errors::{scanout_io_context, scanout_vk_error},
+    },
+};
+use ash::vk;
+use std::{
+    io,
+    os::fd::OwnedFd,
+    time::{Duration, Instant},
+};
 
 impl DisposableProbeError {
     pub(super) fn quarantined(source: io::Error) -> Self {

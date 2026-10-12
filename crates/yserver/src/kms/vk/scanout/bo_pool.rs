@@ -1,4 +1,27 @@
-use super::*;
+use crate::kms::{
+    scanout_route::ScanoutRoute,
+    vk::{
+        device::VkContext,
+        scanout::{
+            AlienBoHandle, AllocationCleanupPolicy, BoPhase, CopiedScanoutPool,
+            DisposableProbeError, DmabufScanoutMetadata, DmabufScanoutVerdict, GbmDevice,
+            OutputScanout, ScanoutAllocationPlan, ScanoutBo, ScanoutBoPool, ScanoutMetadataSupport,
+            ScanoutOwnership,
+            alloc_plan::scanout_allocation_plans,
+            dmabuf_metadata::{classify_dmabuf_scanout_route, probe_dmabuf_scanout_metadata},
+            errors::{scanout_error_is_device_lost, scanout_io_context},
+            modifiers::scanout_modifier_candidates,
+            probe::finish_disposable_probe_attempt,
+        },
+    },
+};
+use std::{
+    io,
+    os::fd::{FromRawFd as _, OwnedFd},
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 impl OutputScanout {
     /// Semantic renderer-to-KMS route presented by this output.

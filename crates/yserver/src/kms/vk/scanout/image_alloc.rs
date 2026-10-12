@@ -1,4 +1,16 @@
-use super::*;
+use crate::kms::vk::{
+    device::VkContext,
+    scanout::{
+        GbmDevice, GbmScanoutError, ScanoutAllocationPlan, TransferResources, VkScanoutFb,
+        VkScanoutImage, modifiers::scanout_modifier_is_single_plane_importable,
+    },
+};
+use ash::vk;
+use drm::{
+    buffer::{DrmFourcc, DrmModifier, Handle as DrmBufferHandle, PlanarBuffer as DrmPlanarBuffer},
+    control::FbCmd2Flags,
+};
+use std::{os::fd::IntoRawFd as _, rc::Rc};
 
 pub(super) fn scanout_image_usage() -> vk::ImageUsageFlags {
     // The scanout image is only ever a compose render target (color

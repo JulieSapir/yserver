@@ -1,4 +1,9 @@
-use super::*;
+use crate::kms::vk::{
+    scanout::{ScanoutIoContext, ScanoutVkOperationError},
+    target::DrawableImageError,
+};
+use ash::vk;
+use std::io;
 
 pub(super) fn scanout_vk_error(operation: &'static str, result: vk::Result) -> io::Error {
     io::Error::other(ScanoutVkOperationError { operation, result })

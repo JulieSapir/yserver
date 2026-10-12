@@ -82,32 +82,29 @@ mod image_alloc;
 mod modifiers;
 mod probe;
 
+#[cfg(test)]
 use alloc_plan::*;
+#[cfg(test)]
 use bo::*;
+#[cfg(test)]
 use copied::*;
+#[cfg(test)]
 use dmabuf_metadata::*;
 pub(crate) use errors::*;
+#[cfg(test)]
 use image_alloc::*;
+#[cfg(test)]
 use modifiers::*;
+#[cfg(test)]
 use probe::*;
 
 #[cfg(test)]
 mod tests;
 
-use std::{
-    io,
-    os::fd::{AsFd, FromRawFd, IntoRawFd, OwnedFd},
-    rc::Rc,
-    sync::{Arc, OnceLock},
-    time::{Duration, Instant},
-};
+use std::{io, os::fd::OwnedFd, rc::Rc, sync::Arc, time::Duration};
 
 use ash::vk;
-use drm::{
-    Device as DrmDevice, DriverCapability,
-    buffer::{DrmFourcc, DrmModifier, Handle as DrmBufferHandle, PlanarBuffer as DrmPlanarBuffer},
-    control::{Device as DrmControlDevice, FbCmd2Flags, framebuffer},
-};
+use drm::{buffer::Handle as DrmBufferHandle, control::framebuffer};
 
 /// Type alias for the GBM device we hold per pool. Instantiated with
 /// the KMS DRM device the pool was constructed against — allocations
@@ -119,12 +116,9 @@ use super::{
     device::VkContext,
     probe_digest::ProbeDigestPipeline,
     probe_pattern::CopiedProbePatternPipeline,
-    target::{
-        COPIED_TRANSPORT_IMAGE_USAGE, DrawableImage, DrawableImageError, ExportableImage,
-        NonExplicitLinearLayoutPolicy, allocate_copied_source_exact,
-    },
+    target::{DrawableImage, ExportableImage},
 };
-use crate::kms::scanout_route::{RenderKmsRelationship, ScanoutRoute};
+use crate::kms::scanout_route::ScanoutRoute;
 
 pub(crate) use super::target::CopiedSourcePlan;
 

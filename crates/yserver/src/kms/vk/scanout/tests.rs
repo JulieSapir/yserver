@@ -1,4 +1,6 @@
 use super::*;
+use crate::kms::scanout_route::RenderKmsRelationship;
+use drm::control::FbCmd2Flags;
 
 const LINEAR: u64 = super::super::dri3::DRM_FORMAT_MOD_LINEAR;
 // Representative tiled modifiers (real AMD GFX9+ vendor-tiled values).

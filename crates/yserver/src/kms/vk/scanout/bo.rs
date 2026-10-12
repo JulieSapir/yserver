@@ -1,4 +1,29 @@
-use super::*;
+use crate::kms::vk::{
+    device::VkContext,
+    scanout::{
+        AllocationCleanupPolicy, BoState, DisposableProbeError, ExportSemaphoreReuseState,
+        GbmDevice, GbmScanoutError, ModesetReleased, PartialScanoutBoAllocation, ProbeFence,
+        ScanoutAllocationPlan, ScanoutBo, ScanoutOwnership, TransferResources, VkScanoutFb,
+        VkScanoutImage,
+        alloc_plan::scanout_allocation_plans,
+        errors::{scanout_io_context, scanout_vk_error},
+        image_alloc::{
+            addfb_flags_for_modifier, allocate_gbm_scanout_image, allocate_transfer_resources,
+            allocate_vk_scanout_image, create_export_semaphore, destroy_scanout_image,
+            destroy_transfer_resources,
+        },
+        modifiers::scanout_modifier_candidates,
+        probe::wait_copy_free_probe_fence,
+    },
+};
+use ash::vk;
+use drm::control::Device as _;
+use std::{
+    io,
+    os::fd::{AsFd as _, FromRawFd as _, OwnedFd},
+    rc::Rc,
+    sync::Arc,
+};
 
 pub(super) fn release_drm_handles_strict<Fb, Gem>(
     framebuffer: &mut Option<Fb>,

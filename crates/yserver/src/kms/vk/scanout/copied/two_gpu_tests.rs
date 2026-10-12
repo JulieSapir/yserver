@@ -1,4 +1,5 @@
 use super::*;
+use crate::kms::vk::scanout::DisposableProbeAttempt;
 
 use std::{ffi::CStr, sync::Arc};
 

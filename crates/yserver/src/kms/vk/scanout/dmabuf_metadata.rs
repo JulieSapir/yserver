@@ -1,4 +1,21 @@
-use super::*;
+use crate::kms::{
+    scanout_route::{RenderKmsRelationship, ScanoutRoute},
+    vk::{
+        device::VkContext,
+        scanout::{
+            DmabufAllocationDirection, DmabufDirectionIncompatibility, DmabufDirectionMetadata,
+            DmabufDirectionVerdict, DmabufLinearMetadata, DmabufScanoutIncompatibility,
+            DmabufScanoutMetadata, DmabufScanoutUncertainty, DmabufScanoutVerdict, KmsLinearLayout,
+            ScanoutMetadataSupport,
+            modifiers::{
+                format_modifiers, probe_scanout_linear_feature,
+                probe_scanout_modifier_single_plane_feature,
+            },
+        },
+    },
+};
+use ash::vk;
+use drm::{Device as _, DriverCapability};
 
 pub(super) const DRM_PRIME_CAP_IMPORT: u64 = 1 << 0;
 pub(super) const DRM_PRIME_CAP_EXPORT: u64 = 1 << 1;

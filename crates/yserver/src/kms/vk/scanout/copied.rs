@@ -1,4 +1,52 @@
-use super::*;
+use crate::kms::{
+    scanout_route::ScanoutRoute,
+    vk::{
+        device::VkContext,
+        probe_digest::ProbeDigestPipeline,
+        probe_pattern::CopiedProbePatternPipeline,
+        scanout::{
+            AllocationCleanupPolicy, CopiedDestinationOwnership, CopiedDisposableProbeAttempt,
+            CopiedProbeReadback, CopiedRenderSource, CopiedRenderTargetContents, CopiedScanoutPlan,
+            CopiedScanoutPool, CopiedSourceOwnership, CopiedTransportPreparation,
+            DisposableProbeError, ExportSemaphoreReuseState, PendingProbeSubmissions, ProbeFence,
+            RetainedSyncFile, ScanoutBoPool, ScanoutOwnership,
+            alloc_plan::{
+                assemble_copied_scanout_plans, exact_copied_source_plans,
+                validate_copied_route_pair,
+            },
+            bo::{close_modeset_released, leak_owned_backing},
+            errors::{
+                copied_drawable_error, copied_quiescence_result, scanout_error_is_device_lost,
+                scanout_io_context, scanout_vk_error,
+            },
+            image_alloc::{
+                allocate_transfer_resources, create_export_semaphore, destroy_transfer_resources,
+            },
+            probe::{
+                completed_probe_validation, copied_probe_digest_readback_error, create_probe_fence,
+                finish_disposable_probe_attempt, finish_pending_probe_failure,
+                probe_buffer_to_host_barrier, submit_copied_source_probe,
+                tight_bgra_buffer_image_copy, tight_mapped_bgra_bytes,
+                validate_copied_probe_digest_fiducials, validate_copied_probe_digest_freshness,
+                validate_copied_probe_fiducials, validate_copied_probe_freshness,
+                verify_copied_probe_digests, verify_copied_probe_pixels,
+                wait_copied_probe_fence_pair,
+            },
+        },
+        target::{
+            CopiedSourcePlan, DrawableImage, NonExplicitLinearLayoutPolicy,
+            allocate_copied_source_exact,
+        },
+    },
+};
+use ash::vk;
+use std::{
+    io,
+    os::fd::OwnedFd,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[cfg(test)]
 mod two_gpu_tests;
