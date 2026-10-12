@@ -95,7 +95,8 @@ def journal_gaps(path: str) -> list[str]:
     """Why a raw TET journal is incomplete (empty when it is complete).
 
     Every TC start (`10`) needs its TC end (`80`), every TP start (`200`) its
-    result (`220`), and the journal needs exactly one TCC end (`900`).
+    result (`220`), the journal needs exactly one TCC end (`900`), and at least
+    one test-purpose result.
     """
     tc_start: dict[str, int] = {}
     tc_end: dict[str, int] = {}
@@ -118,6 +119,8 @@ def journal_gaps(path: str) -> list[str]:
                 key = (fields[0], fields[1])
                 d[key] = d.get(key, 0) + 1
     gaps = []
+    if not tp_result:
+        gaps.append("no test-purpose results (220)")
     if ends != 1:
         gaps.append(f"{ends} TCC end (900) records, want 1")
     for tc in sorted(tc_start.keys() | tc_end.keys()):
