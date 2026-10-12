@@ -23,10 +23,20 @@ mod portable;
 mod trait_impl;
 
 #[cfg(test)]
+use crate::kms::render::backend::portable::{
+    apply_gc_function, apply_z_plane_mask, border_ring_rects, bordered_storage_extent,
+    clip_trap_bbox_to_extents, composite_needs_source_snapshot, compute_render_composite_clip,
+    copy_area_clip_gpu_eligible, default_window_init_color, depth_plane_mask,
+    dst_picture_clip_by_children, migrated_content_copy, picture_source_domain_clip,
+    read_z_pixmap_pixel, take_first_occurrence, write_z_pixmap_pixel, z_to_xy_planes,
+};
+use crate::kms::render::backend::portable::{
+    compute_copy_area_dst_rects, intersect_rect_with_clip,
+};
+#[cfg(test)]
 use kms::*;
 #[cfg(test)]
 pub(super) use portable::parse_composite_glyph_items;
-use portable::*;
 
 #[cfg(test)]
 mod tests;
