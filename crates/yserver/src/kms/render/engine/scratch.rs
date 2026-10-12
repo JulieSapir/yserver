@@ -1,4 +1,16 @@
-use super::*;
+use crate::kms::{
+    render::{
+        engine::{
+            ClipSnapshot, RenderEngine, RenderError, RenderFlushReason, SampledScratchImage,
+            ScratchImage, SnapshotId, frame::snapshot_first_touch,
+        },
+        platform::PlatformBackend,
+        store::{DrawableId, DrawableStore},
+    },
+    vk::device::VkContext,
+};
+use ash::vk;
+use std::sync::Arc;
 
 impl ScratchImage {
     pub(super) fn size_bytes(&self) -> u64 {

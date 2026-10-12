@@ -1,4 +1,19 @@
-use super::*;
+use crate::kms::{
+    render::{
+        engine::{
+            GetImagePhases, RenderEngine, RenderEngineInner, RenderError, StagingPool, SubmittedOp,
+            staging::upload_copy_align,
+        },
+        platform::{FenceTicket, PlatformBackend},
+        store::{DrawableId, DrawableStore, RetiredImage},
+    },
+    vk::device::VkContext,
+};
+use ash::vk;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 impl SubmittedOp {
     /// Phase B.2 Mechanism 3 helper: attach a retired

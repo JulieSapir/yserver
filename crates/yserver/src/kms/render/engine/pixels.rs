@@ -1,4 +1,5 @@
-use super::*;
+use crate::kms::render::engine::RenderError;
+use ash::vk;
 
 /// X11 ZPixmap source row stride for a given depth + width. Per
 /// the wire format: scanline padded to 32 bits.

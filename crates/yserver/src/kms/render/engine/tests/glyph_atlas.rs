@@ -1,4 +1,12 @@
 use super::*;
+use crate::kms::{
+    render::{
+        platform::PlatformBackend,
+        store::DrawableStore,
+        target::{Dst, Src},
+    },
+    vk::glyph::{AtlasEntry, GlyphKey},
+};
 
 #[test]
 #[ignore = "needs live Vulkan ICD"]

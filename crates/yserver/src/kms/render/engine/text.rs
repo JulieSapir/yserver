@@ -1,4 +1,23 @@
-use super::*;
+use crate::kms::{
+    render::{
+        engine::{
+            ImageTextStats, PreparedGlyph, RenderEngine, RenderEngineInner, RenderError,
+            RenderFlushReason, StorageTextTarget, fill_copy::clamp_rect_to,
+            staging::UPLOAD_VERTEX_ALIGN,
+        },
+        glyph_atlas::GlyphAtlas,
+        platform::{FenceTicket, PlatformBackend},
+        store::DrawableStore,
+        target::Dst,
+    },
+    vk::{
+        glyph::{AtlasEntry, GlyphKey, GlyphLayout},
+        ops::{render::CompositeTarget, text::TextRunTarget},
+        text_pipeline::TextPipeline,
+    },
+};
+use ash::vk;
+use std::sync::Arc;
 
 impl RenderEngineInner {
     /// Look up or lazily build the text pipeline for

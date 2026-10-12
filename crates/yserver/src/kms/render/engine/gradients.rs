@@ -1,4 +1,8 @@
-use super::*;
+use crate::kms::render::{
+    engine::{PicturePaintState, RenderEngine, RenderError},
+    platform::PlatformBackend,
+};
+use ash::vk;
 
 impl RenderEngine {
     /// Stage 3b + B.2 fix + B.3 hotfix 2: drop the engine's

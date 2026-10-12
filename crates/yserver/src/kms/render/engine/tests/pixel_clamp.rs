@@ -1,4 +1,5 @@
 use super::*;
+use crate::kms::cpu_types::Rectangle16;
 
 #[test]
 fn decode_pixel_bgra_round_trip() {

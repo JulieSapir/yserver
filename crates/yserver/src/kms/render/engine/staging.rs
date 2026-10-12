@@ -1,4 +1,9 @@
-use super::*;
+use crate::kms::{
+    render::engine::{RenderEngineInner, StagingBuffer, StagingPool},
+    vk::device::VkContext,
+};
+use ash::vk;
+use std::{ptr::NonNull, sync::Arc};
 
 /// Usage of every upload arena block (#177): instance/vertex data for the
 /// glyph and trapezoid pipelines, and the source of glyph-atlas uploads.

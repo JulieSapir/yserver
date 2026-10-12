@@ -1,4 +1,22 @@
-use super::*;
+use crate::kms::{
+    cpu_types::{Rectangle16, Repeat},
+    render::{
+        engine::{
+            CompositeGlyphInput, GlyphRunCommon, ImageTextStats, RenderEngine, RenderEngineInner,
+            RenderError, RenderFlushReason, SourceDrawable,
+            composite::dst_has_alpha_for_pict_format, emit::build_render_clip_scissors_to,
+            fill_copy::clamp_rect_to, staging::UPLOAD_VERTEX_ALIGN,
+        },
+        glyph_atlas::GlyphAtlas,
+        glyph_pixels::GlyphSourceFormat,
+        platform::{FenceTicket, PlatformBackend},
+        store::DrawableStore,
+        target::Dst,
+    },
+    vk::glyph::{AtlasEntry, GlyphKey, GlyphLayout},
+};
+use ash::vk;
+use std::{collections::HashSet, sync::Arc};
 
 impl RenderEngineInner {
     /// Whether the glyph atlas can take every glyph of a request that

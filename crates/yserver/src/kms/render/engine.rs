@@ -42,15 +42,22 @@ mod staging;
 mod text;
 mod traps;
 
+#[cfg(test)]
 use composite::*;
+#[cfg(test)]
 use emit::*;
 pub(crate) use fill_copy::*;
+#[cfg(test)]
 use frame::*;
 pub(crate) use glyphs::*;
 pub(crate) use pixels::*;
 #[cfg(test)]
-use put_get::{clamp_put_rect, clamp_put_rect_to};
+use put_get::clamp_put_rect;
+#[cfg(test)]
+use put_get::clamp_put_rect_to;
+#[cfg(test)]
 use scratch::*;
+#[cfg(test)]
 use staging::*;
 
 // ────────────────────────────────────────────────────────────────
@@ -74,22 +81,16 @@ use ash::vk;
 
 use super::{
     glyph_atlas::GlyphAtlas,
-    glyph_pixels::{GlyphPixels, GlyphSourceFormat},
-    platform::{FenceTicket, PlatformBackend, PresentCompletionSignal},
-    present_completion::{PendingPresentBatch, PendingPresentEntry, PresentBatchWait},
-    store::{DrawableId, DrawableStore, RetiredImage},
-    target::{Dst, Src},
+    glyph_pixels::GlyphPixels,
+    platform::FenceTicket,
+    present_completion::PendingPresentBatch,
+    store::{DrawableId, RetiredImage},
 };
-use crate::kms::{
-    cpu_types::{PictTransform, Rectangle16, Repeat},
-    vk::{
-        device::VkContext,
-        dst_readback::DstReadback,
-        glyph::{AtlasEntry, GlyphKey, GlyphLayout},
-        ops::{render::CompositeTarget, text::TextRunTarget},
-        render_pipeline::{RenderPipelineCache, SolidColorImage},
-        text_pipeline::TextPipeline,
-    },
+use crate::kms::vk::{
+    device::VkContext,
+    dst_readback::DstReadback,
+    render_pipeline::{RenderPipelineCache, SolidColorImage},
+    text_pipeline::TextPipeline,
 };
 
 // ────────────────────────────────────────────────────────────────

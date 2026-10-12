@@ -1,4 +1,10 @@
-use super::*;
+use crate::kms::render::{
+    engine::{MaskedCopyMask, RenderEngine, RenderError, SnapshotId},
+    platform::{FenceTicket, PlatformBackend},
+    store::{DrawableId, DrawableStore},
+    target::{Dst, Src},
+};
+use ash::vk;
 
 impl RenderEngine {
     /// Task 12 test-only: current_layout of a registered snapshot, or `None`.

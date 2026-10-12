@@ -1,4 +1,13 @@
 use super::*;
+use crate::kms::{
+    render::{
+        glyph_pixels::GlyphSourceFormat,
+        platform::PlatformBackend,
+        store::DrawableStore,
+        target::{Dst, Src},
+    },
+    vk::glyph::{GlyphKey, GlyphLayout},
+};
 
 // ── #137 step 1: pin-ceiling reservation for the instance buffer ──
 //

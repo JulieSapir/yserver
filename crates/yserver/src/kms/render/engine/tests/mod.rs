@@ -5,6 +5,10 @@ mod memory_frame;
 mod pixel_clamp;
 mod render_composite;
 use super::*;
+use crate::kms::{
+    cpu_types::Repeat,
+    render::{platform::PlatformBackend, store::DrawableStore, target::Dst},
+};
 
 // ── CopyArea joint src/dst clamp (negative-offset smear fix) ──
 // Pure arithmetic; no Vk. Expected values are grounded in the X11

@@ -1,4 +1,10 @@
-use super::*;
+use crate::kms::render::{
+    engine::{RenderEngine, RenderError},
+    platform::PlatformBackend,
+    store::{DrawableId, DrawableStore},
+};
+use ash::vk;
+use std::sync::Arc;
 
 impl RenderEngine {
     /// GLX-TFP (Task 1.2): permanently migrate a server-owned pixmap

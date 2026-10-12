@@ -1,4 +1,19 @@
-use super::*;
+use crate::kms::{
+    cpu_types::Rectangle16,
+    render::{
+        engine::{
+            DstPassSession, RecordedCompositeTarget, RenderEngineInner, RenderError,
+            StorageTextTarget, TrapPrimKind,
+            composite::{
+                drawable_for_render_view, ensure_drawable_view, sampler_config_for_shader_repeat,
+            },
+            fill_copy::{clamp_rect, resolve_recorded_bounds},
+        },
+        store::DrawableStore,
+    },
+    vk::{device::VkContext, ops::render::CompositeTarget},
+};
+use ash::vk;
 
 /// Phase B.1 Task 12: replay a single `RecordedOp` into `cb`. Caller
 /// holds `&mut inner` and `&mut store`; this function consumes the

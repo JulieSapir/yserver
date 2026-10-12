@@ -1,4 +1,24 @@
-use super::*;
+use crate::kms::{
+    cpu_types::{PictTransform, Rectangle16, Repeat},
+    render::{
+        engine::{
+            CachedDrawableView, CompositeStats, DrawableViewInfo, PicturePaintState, RenderEngine,
+            RenderEngineInner, RenderError, RenderFlushReason, ResolvedSource, SamplerConfig,
+            SourceDrawable, StorageCompositeTarget, SwizzleClass, fill_copy::clamp_rect_to,
+        },
+        platform::PlatformBackend,
+        store::{DrawableId, DrawableStore},
+        target::Dst,
+    },
+    vk::{
+        device::VkContext,
+        dst_readback::DstReadback,
+        ops::render::CompositeTarget,
+        render_pipeline::{RenderPipelineCache, SolidColorImage},
+    },
+};
+use ash::vk;
+use std::{collections::HashMap, sync::Arc};
 
 impl RenderEngineInner {
     /// Phase B.2 Task 4 (USER-codex U-R6.F1 — LOAD-BEARING):

@@ -1,4 +1,18 @@
-use super::*;
+use crate::kms::render::{
+    engine::{
+        CoalesceClass, CoalesceCounts, DstPassSession, FrameBuilderTraceFilter, RenderEngine,
+        RenderEngineInner, RenderError, RenderFlushReason, SampledScratchImage, ScratchImage,
+        SessionStep, SnapshotId, SubmittedOp,
+        emit::{
+            close_dst_color_pass, emit_recorded_op_into_cb, emit_session_continue_draws,
+            emit_session_open_and_draws,
+        },
+    },
+    platform::{FenceTicket, PlatformBackend, PresentCompletionSignal},
+    present_completion::{PendingPresentBatch, PendingPresentEntry, PresentBatchWait},
+    store::{DrawableId, DrawableStore},
+};
+use ash::vk;
 
 /// Pure fold over the per-op classification. `prev_pass_dst` drives the
 /// all-kinds `coalescable` count; `open_composite_dst` drives the

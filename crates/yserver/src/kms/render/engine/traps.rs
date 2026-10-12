@@ -1,4 +1,24 @@
-use super::*;
+use crate::kms::{
+    cpu_types::{PictTransform, Rectangle16, Repeat},
+    render::{
+        engine::{
+            CompositeStats, PicturePaintState, RenderEngine, RenderError, RenderFlushReason,
+            ResolvedSource, TrapPrimKind,
+            composite::{
+                drawable_for_render_view, dst_has_alpha_for_pict_format,
+                resolve_force_opaque_pict_format, swizzle_class_for_pict_format,
+            },
+            emit::build_render_clip_scissors_to,
+            fill_copy::clamp_rect_to,
+            staging::UPLOAD_VERTEX_ALIGN,
+        },
+        platform::PlatformBackend,
+        store::DrawableStore,
+        target::Dst,
+    },
+};
+use ash::vk;
+use std::sync::Arc;
 
 impl RenderEngine {
     /// Stage 3e.2: lazy-init trap pipeline + mask scratch. Idempotent.

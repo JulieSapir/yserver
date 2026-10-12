@@ -1,4 +1,11 @@
 use super::*;
+use crate::kms::{
+    cpu_types::Rectangle16,
+    render::{
+        store::DrawableStore,
+        target::{Dst, Src},
+    },
+};
 
 #[test]
 #[ignore = "needs live Vulkan ICD"]

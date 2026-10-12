@@ -1,4 +1,12 @@
 use super::*;
+use crate::kms::{
+    cpu_types::{Rectangle16, Repeat},
+    render::{
+        platform::PlatformBackend,
+        store::DrawableStore,
+        target::{Dst, Src},
+    },
+};
 
 // ── Stage 3c.3 acceptance tests ─────────────────────────────
 //

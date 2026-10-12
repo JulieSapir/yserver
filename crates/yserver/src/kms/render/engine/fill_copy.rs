@@ -1,4 +1,20 @@
-use super::*;
+use crate::kms::{
+    cpu_types::Rectangle16,
+    render::{
+        engine::{
+            MaskedCopyMask, RenderEngine, RenderError, RenderFlushReason, SampledScratchImage,
+            ScratchImage,
+            frame::snapshot_first_touch,
+            pixels::decode_x11_pixel_for_storage,
+            scratch::{allocate_sampled_scratch_image, allocate_scratch_image},
+        },
+        platform::PlatformBackend,
+        store::{DrawableId, DrawableStore},
+        target::{Dst, Src},
+    },
+};
+use ash::vk;
+use std::sync::Arc;
 
 impl RenderEngine {
     // ── Op: fill_rect / fill_rect_batch ─────────────────────────
