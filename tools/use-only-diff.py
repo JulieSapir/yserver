@@ -46,7 +46,12 @@ def strip(text):
     lines = text.split("\n")
     drop = {k for s, e in module_uses(text) for k in range(s, e + 1)}
     s = "\n".join(l for k, l in enumerate(lines) if k not in drop)
-    return " ".join(re.sub(r"\bpub\((crate|self|super|in [^)]*)\)", " ", s).split())
+    s = re.sub(r"\bpub\((crate|self|super|in [^)]*)\)", " ", s)
+    # rustfmt layout (a signature that fits on one line loses its trailing
+    # comma) is not a token change; `(x,)` vs `(x)` still differs.
+    r = subprocess.run(["rustfmt", "+nightly", "--edition", "2024", "--emit", "stdout"],
+                       input=s, capture_output=True, text=True)
+    return " ".join((r.stdout if r.returncode == 0 else s).split())
 
 
 def flatten(stmt):
@@ -210,6 +215,9 @@ def self_test():
         ("#[allow(\n    unused,\n    reason = \"x\"\n)]\nuse a::*;\nfn g() {}\n", "fn g() {}\n", True),
         ("#[allow(\n    unused\n)]\nfn g() {}\n", "fn g() {}\n", False),
         ("fn g() { a + b }\n", "fn g() { a - b }\n", False),
+        ("pub(in crate::a) fn long_name_here(\n    first_argument: u32,\n    second_argument: u32,\n) {}\n",
+         "fn long_name_here(first_argument: u32, second_argument: u32) {}\n", True),
+        ("fn g() -> (u32,) {\n    (1,)\n}\n", "fn g() -> (u32,) {\n    (1)\n}\n", False),
     ]
     ok = all((strip(a) == strip(b)) == want for a, b, want in cases)
     ok &= flatten("use crate::{a::{self, B as C}, d};") == [("a", "crate::a"), ("C", "crate::a::B"), ("d", "crate::d")]
