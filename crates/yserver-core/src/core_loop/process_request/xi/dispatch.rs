@@ -1,4 +1,5 @@
 use super::*;
+use yserver_protocol::x11::ClientByteOrder;
 
 pub(in crate::core_loop::process_request) fn handle_xi2_request(
     state: &mut ServerState,
@@ -9,7 +10,6 @@ pub(in crate::core_loop::process_request) fn handle_xi2_request(
     header: RequestHeader,
     body: &[u8],
 ) -> io::Result<RequestOutcome> {
-    use yserver_protocol::x11::ClientByteOrder;
     let byte_order = state
         .clients
         .get(&client_id.0)

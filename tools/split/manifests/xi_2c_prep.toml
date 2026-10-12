@@ -1,0 +1,11 @@
+# Phase 2c prep for handle_xi2_request: its fn-local import moves to module
+# scope so the per-minor fns (next commit) see it. Verified by
+# `split verify --extract` (hoist mode).
+source = "crates/yserver-core/src/core_loop/process_request.rs"
+module = "core_loop::process_request"
+file = "crates/yserver-core/src/core_loop/process_request/xi/dispatch.rs"
+
+[extract]
+fn = "handle_xi2_request"
+scrutinee = "minor"
+hoist = ["use yserver_protocol::x11::ClientByteOrder"]
