@@ -339,8 +339,10 @@ after 2–3.
    Aliases the parent defined (`Flags as SubmitFlags`) are kept, so bodies
    stay token-identical.
 2. The 59 test-only root imports move into the test modules that use them.
-3. Re-export globs stay: `mod.rs` `pub(super) use child::*` and the roots'
-   `pub(crate) use child::*` (~31; the lint does not flag them).
+3. Re-export globs (`mod.rs` `pub(super) use child::*`, the roots'
+   `pub(crate) use child::*`; the lint does not flag them) are not converted
+   into explicit lists. Ones that become unused after the explicit-import
+   rewrite are removed (clippy requires it).
 4. Visibility narrowing is limited to the proposed 231 items (private /
    `pub(super)`) in the split trees. No new `pub(in …)`; the rest of the
    crate is untouched.
@@ -354,6 +356,16 @@ after 2–3.
    (fixture above); hand edits keep generated trait imports unless rustc
    reports them unused; the exact AGENTS.md clippy command is in the gate.
    Merge is FF (see the commit sequence).
+8. (2026-10-12, during execution) Decision 6 is dropped:
+   `promote_pixmap_exportable`, `release_redirected_backing` and
+   `clear_area` are already one-call forwards (the "over 20 lines" counted
+   signatures and docs), so a delegate would only add a layer.
+9. (2026-10-12) A placement commit that empties a re-export glob gets a prep
+   commit with a temporary `#[allow(unused_imports, reason = …)]` on it, so
+   `split verify` sees unchanged imports; the backend import commit removes
+   the annotations. Moves between two existing sibling files are verified
+   with an audited `[[sibling_moves]]` manifest list (item, exact old and new
+   file); unlisted, misdirected and stale entries fail.
 
 ## Open questions (for codex, next round)
 
