@@ -25,7 +25,7 @@ use yserver_protocol::x11::{
 /// `parent` is typically `ROOT_WINDOW` (COW's parent); calling on other
 /// parents is a no-op (returns `children.len()`).
 #[must_use]
-pub(crate) fn cow_aware_top_index(parent: &Window) -> usize {
+pub(super) fn cow_aware_top_index(parent: &Window) -> usize {
     match parent.children.last() {
         Some(&last) if last == COMPOSITE_OVERLAY_WINDOW => parent.children.len() - 1,
         _ => parent.children.len(),
@@ -38,7 +38,7 @@ pub(crate) fn cow_aware_top_index(parent: &Window) -> usize {
 /// and Static (10) on a pure resize with no parent-origin shift all leave
 /// the child in place → `(0, 0)`. Integer division matches Xorg (`dw / 2`).
 #[must_use]
-pub(crate) fn win_gravity_delta(gravity: u8, dw: i32, dh: i32) -> (i32, i32) {
+pub(super) fn win_gravity_delta(gravity: u8, dw: i32, dh: i32) -> (i32, i32) {
     match gravity {
         2 => (dw / 2, 0),      // North
         3 => (dw, 0),          // NorthEast
