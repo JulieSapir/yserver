@@ -316,8 +316,8 @@ move would need hand-written imports in the destination file.
 11. Plan doc and `docs/status.md` updated.
 
 Merge: fast-forward. This is jos's standing rule for multi-commit refactor
-branches whose SHAs are in `.git-blame-ignore-revs`. AGENTS.md's "squash
-merge" line is being reconciled separately by jos.
+branches whose SHAs are in `.git-blame-ignore-revs`, and AGENTS.md now says
+PRs whose commits serve distinct purposes are fast-forward merged.
 
 HW smoke is not needed for 5–9 (use-only diff plus compile). For 2–4, use
 the phase-2 rule: lavapipe, and a short VT-switch and RANDR smoke on bee

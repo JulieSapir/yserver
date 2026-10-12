@@ -2009,3 +2009,18 @@ fn plain_leaf_moving_to_a_sibling_module_still_fails() {
         "k::h::fn g: missing after the move",
     );
 }
+
+#[test]
+fn name_before_not_equal_is_a_free_name() {
+    let (names, _, paths) = crate::scope::free_names(
+        "fn f(o: u32) -> bool { o & !MASK != 0 && k::LOCK != 0 && m!(o) }",
+        "a",
+    );
+    let has = |n: &str| names.iter().any(|(s, _)| s == n);
+    assert!(has("MASK") && has("k"), "{names:?}");
+    assert!(!has("m"), "{names:?}");
+    assert!(
+        paths.contains(&vec!["k".to_string(), "LOCK".to_string()]),
+        "{paths:?}"
+    );
+}

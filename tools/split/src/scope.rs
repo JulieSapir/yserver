@@ -1268,7 +1268,7 @@ pub fn free_names(tokens: &str, module: &str) -> FreeNames {
                         segs.push(n.to_string());
                         j += 3;
                     }
-                    if segs.len() > 1 && !is_punct(v.get(j + 1), '!') {
+                    if segs.len() > 1 && !is_bang(v, j + 1) {
                         self.paths.insert(segs);
                     }
                 }
@@ -1278,7 +1278,7 @@ pub fn free_names(tokens: &str, module: &str) -> FreeNames {
                     || is_punct(prev, '\'')
                     || is_punct(prev, '$')
                     || after_path
-                    || is_punct(v.get(i + 1), '!')
+                    || is_bang(v, i + 1)
                     || (is_punct(v.get(i + 1), ':') && !path_next)
                 {
                     continue;
@@ -1302,6 +1302,11 @@ pub fn free_names(tokens: &str, module: &str) -> FreeNames {
     };
     w.walk(&tts(tokens), false);
     (w.out, w.rel, w.paths)
+}
+
+/// A macro bang at `v[i]`: `!` not followed by `=` (`a != b` is a name).
+fn is_bang(v: &[TokenTree], i: usize) -> bool {
+    is_punct(v.get(i), '!') && !is_punct(v.get(i + 1), '=')
 }
 
 fn is_keyword(s: &str) -> bool {
