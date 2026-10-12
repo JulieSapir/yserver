@@ -1,4 +1,18 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::process_request::{
+        RequestOutcome, emit_x11_error_with_minor, redirect::retarget_glx_pixmap_export,
+        write_to_client,
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 /// Build the FBConfig list returned by `GetFBConfigs`. We synthesise
 /// from each X visual (depth-24 RGB and depth-32 ARGB), double buffered,

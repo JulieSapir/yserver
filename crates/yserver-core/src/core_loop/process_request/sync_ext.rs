@@ -1,4 +1,14 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{RequestOutcome, emit_x11_error_with_minor, write_to_client},
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, SequenceNumber},
+};
 
 /// A SYNC protocol error: `code` is either a core error or
 /// `SYNC_FIRST_ERROR + x11sync::BAD_*`.

@@ -1,4 +1,21 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        fanout::{emit_window_event_to_state, emit_xi2_focus_event_to_state},
+        process_request::{
+            FOCUS_CHANGE_MASK, RequestOutcome, XI2_MAJOR_OPCODE, emit_x11_error, write_to_client,
+            xi::{XI1_ERROR_BAD_DEVICE, xi1_error},
+        },
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 /// XIWarpPointer (XI 2.0 minor 41) — Xorg `ProcXIWarpPointer`
 /// (Xi/xiwarppointer.c): core WarpPointer for one device, with FP16.16

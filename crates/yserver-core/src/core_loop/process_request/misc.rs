@@ -1,4 +1,17 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{
+        RequestOutcome, emit_x11_error, emit_x11_error_with_minor, motion_history_range,
+        write_to_client,
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 /// X-Resource (`Res`) extension. `QueryClients` returns the real list of
 /// connected clients (their XID ranges); `QueryClientResources` returns

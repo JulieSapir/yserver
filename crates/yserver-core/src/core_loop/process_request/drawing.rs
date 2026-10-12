@@ -1,4 +1,27 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext, params::FillState},
+    core_loop::{
+        damage_fanout::{accumulate_damage_full_to_state, accumulate_damage_to_state},
+        fanout::emit_window_event_to_state,
+        process_request::{
+            CopyAreaSubRect, RequestOutcome, emit_x11_error,
+            redirect::{
+                current_bounding_in_parent, effective_redirect_mode_for_window,
+                redirected_ancestor_or_self,
+            },
+            validate_drawable_and_gc, validate_drawable_only, window_unviewable, write_to_client,
+            zpixmap_expected_len,
+        },
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 fn clear_extent(requested: u16, offset: i16, window_extent: u16) -> u16 {
     if requested != 0 {

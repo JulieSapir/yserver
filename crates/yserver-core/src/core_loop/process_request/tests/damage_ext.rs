@@ -1,4 +1,5 @@
 use super::*;
+use crate::resources::COMPOSITE_OVERLAY_WINDOW;
 
 /// Manual-mode redirect removes W from the normal scene and keeps
 /// B as an off-screen compositor source. B must not become a scene

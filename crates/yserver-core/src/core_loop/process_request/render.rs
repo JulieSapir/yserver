@@ -1,4 +1,23 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        damage_fanout::{
+            accumulate_damage_clip_by_children_to_state, accumulate_damage_full_to_state,
+            accumulate_damage_to_state,
+        },
+        process_request::{
+            RENDER_LAST_REQUEST, RequestOutcome, emit_x11_error_with_minor, window_unviewable,
+            write_to_client,
+        },
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 /// Clip RENDER `FillRectangles` wire rects (8-byte `xRectangle`s) to a
 /// `ClipByChildren` window's effective region — i.e. subtract the

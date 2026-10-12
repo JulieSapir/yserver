@@ -1,4 +1,17 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{
+        RequestOutcome, emit_x11_error_with_minor, send_reply_with_fd, write_to_client,
+        xid_out_of_client_range,
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::{io, os::fd::OwnedFd};
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 pub(super) fn handle_dri3_request(
     state: &mut ServerState,

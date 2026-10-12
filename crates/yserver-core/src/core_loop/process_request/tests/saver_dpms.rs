@@ -1,4 +1,5 @@
 use super::*;
+use crate::resources::MapState;
 
 #[test]
 fn dpms_force_level_rejects_when_disabled() {

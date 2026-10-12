@@ -1,4 +1,22 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        damage_fanout::accumulate_damage_to_state,
+        fanout::fanout_event_to_clients,
+        process_request::{
+            RequestOutcome, drawing::zpixmap_row_stride, emit_x11_error_with_minor,
+            send_reply_with_fd, supported_pixmap_depth, validate_drawable_and_gc, write_to_client,
+            zpixmap_expected_len,
+        },
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::{io, os::fd::OwnedFd};
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_mit_shm_request(

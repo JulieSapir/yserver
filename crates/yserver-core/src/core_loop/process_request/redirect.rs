@@ -1,4 +1,12 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::damage_fanout::{
+        accumulate_damage_border_to_state, accumulate_damage_full_to_state,
+    },
+    resources::{COMPOSITE_OVERLAY_WINDOW, MapState, ROOT_WINDOW, ViewabilityDelta},
+    server::ServerState,
+};
+use yserver_protocol::{x11, x11::ResourceId};
 
 /// Allocate the redirect's reason-1 backing for `window` and set
 /// `Window.redirected_backing`. Shared between B.6a (single-window

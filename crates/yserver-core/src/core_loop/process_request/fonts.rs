@@ -1,4 +1,14 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::process_request::{RequestOutcome, emit_x11_error, write_to_client},
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, SequenceNumber},
+};
 
 fn rewrite_reply_sequence(reply: &mut [u8], sequence: SequenceNumber) {
     if reply.len() >= 4 {

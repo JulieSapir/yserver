@@ -1,4 +1,42 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        damage_fanout::{
+            accumulate_damage_border_to_state, accumulate_damage_full_to_state,
+            accumulate_damage_to_state,
+        },
+        fanout::{
+            emit_visibility_unobscured_subtree_to_state, emit_window_event_to_state,
+            fanout_event_to_clients, subscribers_by_id,
+        },
+        process_request::{
+            RequestOutcome, emit_x11_error,
+            focus_pointer::{revert_core_focus_from, revert_core_focus_if_unviewable},
+            glx::glx_fbconfig_depth,
+            grabs::{confine_pointer_now, release_core_grabs_for_unviewable},
+            present_ext::{discard_stale_present_event, fire_present_configure_notify_for_window},
+            redirect::{
+                apply_viewability_delta_to_redirects, effective_redirect_mode_for_window,
+                has_redirected_ancestor, realize_storage_for_delta,
+                reapply_redirect_mode_after_map, release_storage_for_delta,
+                rotate_redirected_backing_on_resize, sync_redirect_backing,
+            },
+            selection::drop_selections_owned_by_windows,
+            write_to_client,
+        },
+    },
+    resources::{
+        BorderSource, COMPOSITE_OVERLAY_WINDOW, MapState, Pixmap, ROOT_WINDOW, ViewabilityDelta,
+        Window,
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::{collections::HashSet, io};
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 fn resolve_host_subwindow_visual_to_state(
     state: &ServerState,

@@ -1,4 +1,20 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{
+        RequestOutcome, XI2_FIRST_ERROR, emit_x11_error_with_minor, write_to_client,
+        xi::{
+            xi1_device_button_count, xi1_device_has_buttons, xi1_device_has_keys,
+            xi1_device_has_valuators,
+        },
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 fn effective_window_cursor(state: &ServerState, mut window: ResourceId) -> Option<ResourceId> {
     for _ in 0..256 {

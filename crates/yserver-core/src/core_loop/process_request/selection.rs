@@ -1,4 +1,20 @@
-use super::*;
+use crate::{
+    core_loop::{
+        fanout::{
+            client_target_id, fanout_event_to_clients, fanout_raw_event_to_clients,
+            selection_owner_target_id, subscribers_by_id,
+        },
+        process_request::{RequestOutcome, emit_x11_error, write_to_client},
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{AtomId, ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 pub(super) fn handle_set_selection_owner(
     state: &mut ServerState,

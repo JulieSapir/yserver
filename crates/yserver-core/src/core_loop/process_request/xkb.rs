@@ -1,4 +1,21 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        fanout::fanout_event_to_clients,
+        process_request::{
+            RequestOutcome, X_KB_SELECT_EVENTS, X_KB_SET_COMPAT_MAP, X_KB_SET_GEOMETRY,
+            X_KB_SET_INDICATOR_MAP, X_KB_SET_MAP, X_KB_SET_NAMES, X_KB_USE_EXTENSION,
+            XKB_LAST_REQUEST, emit_x11_error_with_minor, write_to_client,
+        },
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, SequenceNumber},
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_xkb_request(

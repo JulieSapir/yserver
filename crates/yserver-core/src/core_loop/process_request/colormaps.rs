@@ -1,4 +1,15 @@
-use super::*;
+use crate::{
+    core_loop::process_request::{
+        RequestOutcome, emit_x11_error, write_to_client, xid_out_of_client_range,
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, ResourceId, SequenceNumber},
+};
 
 /// StoreColors (89): always BadAccess on TrueColor (read-only) colormaps.
 pub(super) fn handle_store_colors(

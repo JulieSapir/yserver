@@ -1,4 +1,5 @@
 use super::*;
+use crate::resources::{COMPOSITE_OVERLAY_WINDOW, MapState};
 
 fn count_configure_notifies(bytes: &[u8]) -> usize {
     // X11 events are 32 bytes; ConfigureNotify event code is 22.

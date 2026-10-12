@@ -1,4 +1,19 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{
+        RequestOutcome, drawable_exists, emit_x11_error, emit_x11_error_with_minor,
+        windows::{destroy_window_subtree, handle_create_window, handle_map_window},
+        write_to_client,
+    },
+    resources::ROOT_WINDOW,
+    server::{ScreenSaverActive, ServerState},
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 /// Apply a DPMS level transition. Updates `state.dpms.power_level`
 /// **first** (so the page-flip gate trips immediately and an

@@ -44,6 +44,7 @@ use crate::{
     },
     resources::ROOT_WINDOW,
     server::{ClientState, ScreenSaverActive, ServerState},
+    xinput::XI2_PROPERTY_EVENT_MASK,
 };
 
 fn seed_present_clock(state: &mut ServerState, msc: u64, ust: u64) {

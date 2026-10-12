@@ -1,4 +1,22 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        fanout::fanout_event_to_clients,
+        process_request::{
+            RequestOutcome, XFIXES_MAJOR_OPCODE, XI2_FIRST_ERROR, emit_x11_error,
+            emit_x11_error_with_minor, gc_pixmap_cursor::release_displaced_gc_pixmaps,
+            windows::send_window_exposures, write_to_client, xid_out_of_client_range,
+        },
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use log::{debug, trace};
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{AtomId, ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 pub(super) fn mirror_shape_to_host_state(
     state: &ServerState,

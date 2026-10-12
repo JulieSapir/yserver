@@ -1,4 +1,5 @@
 use super::*;
+use crate::resources::MapState;
 
 /// GetImage of a window partly off the screen: BadMatch unless the
 /// window is redirected, when its bound is its backing (`DoGetImage`,

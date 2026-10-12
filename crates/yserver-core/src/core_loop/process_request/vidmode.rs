@@ -1,4 +1,16 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{
+        CurrentVidModeOutput, RequestOutcome, emit_x11_error_with_minor, write_to_client,
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, SequenceNumber},
+};
 
 pub(super) fn current_vidmode_output(state: &ServerState) -> Option<CurrentVidModeOutput> {
     use yserver_protocol::x11::xf86vidmode::ModeLine;

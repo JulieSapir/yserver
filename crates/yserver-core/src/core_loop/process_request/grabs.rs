@@ -1,4 +1,23 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::{
+        fanout::{emit_window_event_to_state, fanout_event_to_clients},
+        key_fanout::replay_frozen_key_to_focus,
+        pointer_fanout::replay_frozen_pointer_event_to_state,
+        process_request::{
+            RequestOutcome, XI2_MAJOR_OPCODE, emit_x11_error,
+            focus_pointer::emit_core_focus_transition, write_to_client,
+        },
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 pub(super) fn handle_allow_events(
     state: &mut ServerState,

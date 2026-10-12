@@ -1,4 +1,22 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        fanout::{emit_window_event_to_state, fanout_event_to_clients},
+        process_request::{
+            RequestOutcome, XI2_FIRST_ERROR, XI2_MAJOR_OPCODE, emit_x11_error,
+            emit_x11_error_with_minor, write_to_client,
+        },
+    },
+    properties,
+    server::{ServerState, XI_FIRST_EVENT},
+    xinput::{XI_DEVICE_PROPERTY_NOTIFY_OFFSET, XI2_PROPERTY_EVENT_MASK},
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{AtomId, ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 pub(super) fn window_host_xid(state: &ServerState, window: ResourceId) -> u32 {
     state

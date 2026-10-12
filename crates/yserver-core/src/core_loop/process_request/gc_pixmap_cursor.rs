@@ -1,4 +1,17 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::process_request::{
+        FREE_CURSOR_OPCODE, FREE_GC_OPCODE, FREE_PIXMAP_OPCODE, RequestOutcome, emit_x11_error,
+        supported_pixmap_depth, validate_gc_only, write_to_client, xid_out_of_client_range,
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 pub(super) fn handle_recolor_cursor(
     state: &mut ServerState,

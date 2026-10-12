@@ -88,48 +88,27 @@ mod largest_free_xid_gap_tests;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    collections::{HashMap, HashSet},
-    io,
-    os::fd::OwnedFd,
-};
+use std::{collections::HashSet, io, os::fd::OwnedFd};
 
-use log::{debug, trace};
-use yserver_protocol::x11::{self, AtomId, ClientId, RequestHeader, ResourceId, SequenceNumber};
+use log::debug;
+use yserver_protocol::{
+    x11,
+    x11::{AtomId, ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 #[cfg(test)]
 use crate::core_loop::pointer_fanout::pointer_event_fanout_to_state;
 use crate::{
-    backend::{
-        Backend, CrtcConfigApply, CrtcConfigToken, ModeSpec, OriginContext, params::FillState,
-    },
+    backend::{Backend, CrtcConfigApply, CrtcConfigToken, ModeSpec, OriginContext},
     core_loop::{
-        client_io::{self, WriteOutcome},
-        damage_fanout::{
-            accumulate_damage_border_to_state, accumulate_damage_clip_by_children_to_state,
-            accumulate_damage_full_to_state, accumulate_damage_to_state,
-            report_existing_damage_to_state,
-        },
-        fanout::{
-            client_target_id, emit_visibility_unobscured_subtree_to_state,
-            emit_window_event_to_state, emit_xi2_focus_event_to_state, fanout_event_to_clients,
-            fanout_raw_event_to_clients, selection_owner_target_id, subscribers_by_id,
-        },
+        client_io, client_io::WriteOutcome, fanout::fanout_event_to_clients,
         key_fanout::replay_frozen_key_to_focus,
         pointer_fanout::replay_frozen_pointer_event_to_state,
     },
     properties,
-    resources::{
-        BorderSource, COMPOSITE_OVERLAY_WINDOW, MapState, Pixmap, ROOT_WINDOW, ViewabilityDelta,
-        Window,
-    },
-    server::{
-        PendingPresentPixmap, PendingPresentRequest, ScreenSaverActive, ServerState, XI_FIRST_EVENT,
-    },
-    xinput::{
-        XI_DEVICE_KEY_PRESS_OFFSET, XI_DEVICE_PROPERTY_NOTIFY_OFFSET, XI2_DEVICE_CHANGED_MASK,
-        XI2_PROPERTY_EVENT_MASK,
-    },
+    resources::ROOT_WINDOW,
+    server::{ServerState, XI_FIRST_EVENT},
+    xinput::{XI_DEVICE_KEY_PRESS_OFFSET, XI2_DEVICE_CHANGED_MASK},
 };
 
 /// XI2 major opcode assigned by `extension_metadata("XInputExtension")`.

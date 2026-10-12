@@ -1,4 +1,25 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        damage_fanout::{accumulate_damage_full_to_state, report_existing_damage_to_state},
+        process_request::{
+            RequestOutcome, emit_x11_error_with_minor,
+            redirect::sync_redirect_backing,
+            shape_xfixes::{
+                drawable_full_rect_xfixes, format_region_rects, normalize_region_rects,
+            },
+            write_to_client,
+        },
+    },
+    resources::{COMPOSITE_OVERLAY_WINDOW, ROOT_WINDOW},
+    server::ServerState,
+};
+use log::{debug, trace};
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_composite_request(

@@ -1,4 +1,21 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        damage_fanout::accumulate_damage_to_state,
+        process_request::{
+            PRESENT_ALL_OPTIONS, PresentDomainSelection, RANDR_BAD_CRTC, RequestOutcome,
+            SYNC_BAD_FENCE, XFIXES_BAD_REGION, emit_x11_error_with_minor, window_unviewable,
+            write_to_client,
+        },
+    },
+    server::{PendingPresentPixmap, PendingPresentRequest, ServerState},
+};
+use log::debug;
+use std::{collections::HashMap, io};
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 /// Task 13 (spec §"Amendment 2026-08-01 — successor-gate relaxation"):
 /// single source of truth for whether `successor` provably presents its

@@ -1,4 +1,5 @@
 use super::*;
+use crate::xinput::XI2_PROPERTY_EVENT_MASK;
 
 // -----------------------------------------------------------------
 // XI 1.x device-property dispatch (minors 36/37/38/39) — byte-level.

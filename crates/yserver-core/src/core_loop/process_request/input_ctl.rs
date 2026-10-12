@@ -1,4 +1,19 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        fanout::fanout_event_to_clients,
+        process_request::{
+            RequestOutcome, emit_x11_error, write_to_client, xi::xi1_device_button_count,
+        },
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, RequestHeader, SequenceNumber},
+};
 
 pub(super) fn handle_query_keymap(
     state: &mut ServerState,
