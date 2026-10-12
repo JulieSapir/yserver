@@ -131,3 +131,21 @@ edbf67665bd10b3eb0fdf8191a3e86dbbe33af76
 
 # refactor(kms): split scanout into bo/copied/probe/image_alloc modules (move)
 83693c2d565229ef216be8b918e57b5a4c295c2a
+
+# refactor(xi): hoist handle_xi2_request's fn-local import (prep)
+e4552e7184276d32ae6447561c82aa8790dc3fca
+
+# refactor(xi): one fn per XI minor (extract)
+a0cc43da481e46469a07d64c0c2359adf39822a0
+
+# refactor(xi): split XI dispatch into devices/control/events/grabs/props/focus (move)
+ea82d0095f7c3274d179d2c91b932740cea033cf
+
+# refactor(randr): hoist handle_randr_request's fn-local items (prep)
+cd5d7798c3641cfda20b3fa7ca9b9bb17b8d1129
+
+# refactor(randr): one fn per RANDR minor (extract)
+9dfcc2e63fa8c1284eb2eca3af97ad1568bb4206
+
+# refactor(randr): split randr_ext into screen/output/crtc/provider/monitor/xinerama (move)
+e35594e1451aea8cfa71115dbcc12d2ba586463d
