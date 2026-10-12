@@ -508,7 +508,7 @@ bisectable). Optional 10, own commit: drop the tail `return`s with `clippy
 | 16 XI arms (1,190 lines) have no unit coverage | mechanical check + xts XI/XIproto + eiger smoke |
 | in-flight XI branches (`fix/xts-xi-winnable`, `codex/freeze-state-unification`) edit grab arms 13–19 / 51–55 | not waited for (decision 5); re-applied by hand afterwards (plan decision 7) |
 | ~48 `needless_return` allows are noise | optional commit 10 |
-| void XI1 arms still write an empty buffer | kept on purpose (2c changes no behaviour); follow-up question |
+| void XI1 arms still write an empty buffer | kept on purpose (2c changes no behaviour; decision 11) |
 | line estimates off | measured after fmt in the results section, as in earlier phases |
 
 ## Decisions (jos via coordinator, 2026-10-12, after codex review)
@@ -532,14 +532,13 @@ bisectable). Optional 10, own commit: drop the tail `return`s with `clippy
    XI/XIproto run before and after, compared per test purpose.
 9. Merge: fast-forward (distinct, bisectable steps, as every earlier phase-2
    branch); codex suggested squash, the standing rule wins.
+10. Lead-in `//` comments stay `//` on the new fns in this branch (bodies
+    and comments stay token-identical); a `///` conversion, if wanted, is a
+    later separate commit.
+11. Void XI1 requests keep the empty reply write (`xi_write_reply(state,
+    client_id, Vec::new())`): no behaviour change in a refactor.
 
 ## Open questions
-
-**For jos:**
-1. Lead-in `//` comments → `///` on the new fns: separate docs commit, or
-   leave?
-2. Follow-up seam (not 2c): void XI1 requests return `Handled` instead of
-   an empty write?
 
 **For codex (next round):**
 1. Grouping: does any arm sit in the wrong file by responsibility?
