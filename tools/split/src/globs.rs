@@ -252,7 +252,16 @@ impl<'a> G<'a> {
                 continue;
             }
             match self.glob_module(m, &u.path) {
-                Some(t) => out.extend(self.lookup(&t, name, ns, viewer, stack)),
+                Some(t) => out.extend(self.lookup(&t, name, ns, viewer, stack).into_iter().map(
+                    |mut c| {
+                        // An item behind a module `viewer` cannot name is
+                        // imported through this glob's module instead.
+                        if c.def && !self.reachable_path(&c.path, viewer) {
+                            c.path = abs(m, &[name.to_string()]);
+                        }
+                        c
+                    },
+                )),
                 None => {
                     self.opaque
                         .borrow_mut()
@@ -264,6 +273,19 @@ impl<'a> G<'a> {
         out.sort();
         out.dedup_by(|a, b| a.path == b.path);
         out
+    }
+
+    /// Every in-tree module on `crate::…` `path` (before its last segment)
+    /// that is not an ancestor of `viewer` is visible to `viewer`.
+    fn reachable_path(&self, path: &str, viewer: &str) -> bool {
+        let v = segs(path.strip_prefix("crate").unwrap_or(path));
+        (1..v.len()).all(|i| {
+            let m = v[..i].join("::");
+            scope::under(viewer, &m)
+                || self
+                    .mod_vis(&m)
+                    .is_none_or(|vis| admits(&scope(vis, parent(&m)), viewer))
+        })
     }
 
     /// Modules whose bindings a glob into `m` can supply, `m` included.

@@ -2157,3 +2157,17 @@ fn stale_sibling_move_fails() {
         "sibling move not needed",
     );
 }
+
+#[test]
+fn globs_imports_through_the_reexport_when_the_defining_module_is_private() {
+    let src = mem(&[
+        ("src/k.rs", "mod p;\nmod q;\nuse p::*;\n"),
+        ("src/k/p.rs", "mod w;\npub(super) use w::*;\n"),
+        ("src/k/p/w.rs", "pub(in crate::k) fn h() {}\n"),
+        ("src/k/q.rs", "use super::*;\n\nfn g() {\n    h();\n}\n"),
+    ]);
+    let t = crate::tree::load(&src, "src/k.rs", "k").unwrap();
+    let got = crate::globs::generate(&t, false, &[], &src).unwrap();
+    let q = got.iter().find(|f| f.file == "src/k/q.rs").unwrap();
+    assert_eq!(q.imports, ["use crate::k::p::h;"], "{:?}", q.imports);
+}
