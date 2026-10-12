@@ -8,7 +8,7 @@ usage: prune-unused-imports.py [--dry-run] [--roots <f.rs,...>] <file-or-dir>...
 With --roots, an import unused in every non-test unit but used under
 `cfg(test)` is deleted from those root files (decision 2: `split globs
 --tests` then moves it into the test modules) and gets `#[cfg(test)]`
-anywhere else.
+anywhere else, and on a root glob (tests name its items by path).
 
 The module-level `use` items of the given files are first exploded to one
 path per item, so every unused name is a whole item; `cargo +nightly fmt`
@@ -106,7 +106,8 @@ def main():
         if need <= units and item is not None:
             drop[file].add(item)
         elif roots is not None and units == {0, 1, 2} and item is not None and not tonly:
-            (drop if file in roots else gate)[file].add(item)
+            glob = "::*;" in open(file).read().split("\n")[line - 1]
+            (drop if file in roots and not glob else gate)[file].add(item)
         else:
             partial.append((file, line, sorted(units), texts[k]))
     n = 0

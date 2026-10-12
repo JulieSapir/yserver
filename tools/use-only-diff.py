@@ -129,7 +129,7 @@ def gated_lines(lines):
                 depth += lines[j].count("{") - lines[j].count("}")
                 opened |= "{" in lines[j]
                 out.add(j)
-                if (opened and depth <= 0) or (not opened and lines[j].rstrip().endswith(";")):
+                if (opened and depth <= 0) or (not opened and lines[j].rstrip().endswith((";", ","))):
                     break
                 j += 1
         i += 1
