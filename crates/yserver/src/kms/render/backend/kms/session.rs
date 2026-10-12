@@ -999,4 +999,65 @@ impl KmsBackend {
             Ok(())
         }
     }
+
+    pub(in crate::kms::render::backend) fn backend_session_on_vt_acquire(
+        &mut self,
+        state: &mut ServerState,
+    ) {
+        use crate::vt::state::VtEventKind;
+        use ::drm::Device as _;
+
+        log::info!("kms: VT acquire — begin; VT_RELDISP(VT_ACKACQ)");
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(console_guard) = self.console_guard.as_ref()
+            && let Err(err) = console_guard.vt_reldisp(crate::kms::console::VT_ACKACQ)
+        {
+            log::warn!("kms: VT_ACKACQ failed: {err}");
+        }
+        log::info!("kms: VT acquire — acked; drmSetMaster");
+
+        let mut acquired = true;
+        for device in &self.platform.devices {
+            if let Err(err) = try_acquire_master_bounded(
+                || device.device.acquire_master_lock(),
+                10,
+                std::time::Duration::from_millis(5),
+            ) {
+                log::error!(
+                    "kms: drmSetMaster failed on {} after retries: {err}",
+                    device.key
+                );
+                acquired = false;
+            }
+        }
+        if !acquired {
+            log::error!(
+                "kms: at least one DRM device did not regain master; keeping scanout closed and exiting"
+            );
+            for device in &self.platform.devices {
+                if let Err(error) = device.device.release_master_lock() {
+                    log::warn!(
+                        "kms: cleanup drmDropMaster failed on {} after partial acquire: {error}",
+                        device.key
+                    );
+                }
+            }
+            self.request_exit();
+            return;
+        }
+
+        log::info!("kms: VT acquire — master held={acquired}; run_resume");
+        self.drive_vt_event(state, VtEventKind::Enable);
+        if self.vt_state != crate::vt::state::VtState::Active {
+            log::error!(
+                "kms: VT acquire did not reach Active ({:?}); keeping input paused",
+                self.vt_state
+            );
+            return;
+        }
+        log::info!("kms: VT acquire — resumed; resume input");
+        self.resume_input_thread();
+
+        log::info!("kms: VT acquire — done");
+    }
 }

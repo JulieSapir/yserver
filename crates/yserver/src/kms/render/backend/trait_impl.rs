@@ -247,48 +247,7 @@ impl Backend for KmsBackend {
         randr_crtc_id: u32,
         targets: &[u64],
     ) -> io::Result<usize> {
-        let Some(crtc_key) = self.present_crtc_key(randr_crtc_id) else {
-            return Ok(0);
-        };
-        let Some(device) = self
-            .platform
-            .device_for_key(crtc_key.device_key)
-            .map(|device| Rc::clone(&device.device))
-        else {
-            return Ok(0);
-        };
-        let mut newly_unsupported = false;
-        let result =
-            self.arm_present_absolute_vblank_with(crtc_key, targets, |crtc_key, target| {
-                let crtc_id = u32::from(crtc_key.crtc);
-                match crate::drm::page_flip::queue_crtc_sequence(
-                    &device,
-                    crtc_id,
-                    /* relative */ false,
-                    target,
-                    absolute_seq_user_data(crtc_id),
-                ) {
-                    Ok(_) => Ok(true),
-                    Err(e)
-                        if e.raw_os_error() == Some(libc::EOPNOTSUPP)
-                            || e.raw_os_error() == Some(libc::ENOTTY) =>
-                    {
-                        newly_unsupported = true;
-                        Ok(false)
-                    }
-                    Err(e) => Err(e),
-                }
-            });
-        if newly_unsupported {
-            log::warn!(
-                "DRM_IOCTL_CRTC_QUEUE_SEQUENCE returned EOPNOTSUPP from the absolute \
-                 vblank arm on {} — disabling sequence arming on that device",
-                crtc_key.device_key,
-            );
-            self.crtc_queue_sequence_unsupported_devices
-                .insert(crtc_key.device_key);
-        }
-        result
+        Self::backend_present_arm_present_absolute_vblank(self, randr_crtc_id, targets)
     }
 
     fn present_scanout_blackout(&self) -> bool {
@@ -334,61 +293,7 @@ impl Backend for KmsBackend {
     }
 
     fn on_vt_acquire(&mut self, state: &mut ServerState) {
-        use crate::vt::state::VtEventKind;
-        use ::drm::Device as _;
-
-        log::info!("kms: VT acquire — begin; VT_RELDISP(VT_ACKACQ)");
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        if let Some(console_guard) = self.console_guard.as_ref()
-            && let Err(err) = console_guard.vt_reldisp(crate::kms::console::VT_ACKACQ)
-        {
-            log::warn!("kms: VT_ACKACQ failed: {err}");
-        }
-        log::info!("kms: VT acquire — acked; drmSetMaster");
-
-        let mut acquired = true;
-        for device in &self.platform.devices {
-            if let Err(err) = try_acquire_master_bounded(
-                || device.device.acquire_master_lock(),
-                10,
-                std::time::Duration::from_millis(5),
-            ) {
-                log::error!(
-                    "kms: drmSetMaster failed on {} after retries: {err}",
-                    device.key
-                );
-                acquired = false;
-            }
-        }
-        if !acquired {
-            log::error!(
-                "kms: at least one DRM device did not regain master; keeping scanout closed and exiting"
-            );
-            for device in &self.platform.devices {
-                if let Err(error) = device.device.release_master_lock() {
-                    log::warn!(
-                        "kms: cleanup drmDropMaster failed on {} after partial acquire: {error}",
-                        device.key
-                    );
-                }
-            }
-            self.request_exit();
-            return;
-        }
-
-        log::info!("kms: VT acquire — master held={acquired}; run_resume");
-        self.drive_vt_event(state, VtEventKind::Enable);
-        if self.vt_state != crate::vt::state::VtState::Active {
-            log::error!(
-                "kms: VT acquire did not reach Active ({:?}); keeping input paused",
-                self.vt_state
-            );
-            return;
-        }
-        log::info!("kms: VT acquire — resumed; resume input");
-        self.resume_input_thread();
-
-        log::info!("kms: VT acquire — done");
+        Self::backend_session_on_vt_acquire(self, state)
     }
 
     fn on_display_hotplug(&mut self, _state: &mut ServerState) {

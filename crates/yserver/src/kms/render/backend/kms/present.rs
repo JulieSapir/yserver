@@ -1214,6 +1214,55 @@ impl KmsBackend {
         })
     }
 
+    pub(in crate::kms::render::backend) fn backend_present_arm_present_absolute_vblank(
+        &mut self,
+        randr_crtc_id: u32,
+        targets: &[u64],
+    ) -> io::Result<usize> {
+        let Some(crtc_key) = self.present_crtc_key(randr_crtc_id) else {
+            return Ok(0);
+        };
+        let Some(device) = self
+            .platform
+            .device_for_key(crtc_key.device_key)
+            .map(|device| Rc::clone(&device.device))
+        else {
+            return Ok(0);
+        };
+        let mut newly_unsupported = false;
+        let result =
+            self.arm_present_absolute_vblank_with(crtc_key, targets, |crtc_key, target| {
+                let crtc_id = u32::from(crtc_key.crtc);
+                match crate::drm::page_flip::queue_crtc_sequence(
+                    &device,
+                    crtc_id,
+                    /* relative */ false,
+                    target,
+                    absolute_seq_user_data(crtc_id),
+                ) {
+                    Ok(_) => Ok(true),
+                    Err(e)
+                        if e.raw_os_error() == Some(libc::EOPNOTSUPP)
+                            || e.raw_os_error() == Some(libc::ENOTTY) =>
+                    {
+                        newly_unsupported = true;
+                        Ok(false)
+                    }
+                    Err(e) => Err(e),
+                }
+            });
+        if newly_unsupported {
+            log::warn!(
+                "DRM_IOCTL_CRTC_QUEUE_SEQUENCE returned EOPNOTSUPP from the absolute \
+                 vblank arm on {} — disabling sequence arming on that device",
+                crtc_key.device_key,
+            );
+            self.crtc_queue_sequence_unsupported_devices
+                .insert(crtc_key.device_key);
+        }
+        result
+    }
+
     pub(in crate::kms::render::backend) fn backend_present_pin_present_source(
         &mut self,
         host_xid: u32,

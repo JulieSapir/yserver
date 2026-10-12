@@ -1,0 +1,13 @@
+# Explicit-imports plan, placement fix: the last two full trait bodies of
+# `impl Backend for KmsBackend` (VT acquire, absolute vblank arm) move to
+# inherent `backend_<subsystem>_<method>` helpers; the trait methods forward.
+source = "crates/yserver/src/kms/render/backend.rs"
+module = "kms::render::backend"
+dir = "crates/yserver/src/kms/render/backend"
+root_form = "file"
+table = "backend_vt_vblank.paths"
+modules = []
+
+[log_targets]
+"kms::session::impl KmsBackend::fn backend_session_on_vt_acquire" = "log macros without target: the delegated body moves from kms::render::backend::trait_impl to kms::render::backend::kms::session; both stay under kms::render::backend, so backend-level RUST_LOG filters still match"
+"kms::present::impl KmsBackend::fn backend_present_arm_present_absolute_vblank" = "log macros without target: the delegated body moves from kms::render::backend::trait_impl to kms::render::backend::kms::present; both stay under kms::render::backend, so backend-level RUST_LOG filters still match"
