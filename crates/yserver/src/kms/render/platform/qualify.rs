@@ -401,7 +401,7 @@ pub(super) fn copy_free_candidate_error(
 /// context. The returned value owns no Vulkan or DRM resource and can be handed
 /// to a later live replay boundary.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn qualify_copy_free_scanout_plan(
+fn qualify_copy_free_scanout_plan(
     probe_vk: Arc<VkContext>,
     scanout_device: Rc<drm::Device>,
     output: &crate::platform::drm::Output,
@@ -465,7 +465,7 @@ pub(crate) fn qualify_copy_free_scanout_plan(
 /// modeset. A recoverable live-only rejection is returned separately so the
 /// synchronous compatibility wrapper can preserve its established fallback.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn replay_copy_free_scanout_plan(
+pub(super) fn replay_copy_free_scanout_plan(
     live_vk: Arc<VkContext>,
     scanout_device: Rc<drm::Device>,
     output: &crate::platform::drm::Output,
@@ -644,7 +644,7 @@ pub(super) fn allocate_copy_free_scanout_pool(
 /// Qualify one exact copied representation using only disposable A/B contexts.
 /// The KMS destination passes TEST_ONLY before any submitted content probe.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn qualify_copied_scanout_plan(
+fn qualify_copied_scanout_plan(
     probe_render_vk: Arc<VkContext>,
     probe_sink_vk: Arc<VkContext>,
     scanout_device: Rc<drm::Device>,
@@ -725,7 +725,7 @@ pub(crate) fn qualify_copied_scanout_plan(
 /// Replay one already-qualified copied representation on the live A/B
 /// contexts, repeating TEST_ONLY before an optional first modeset.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn replay_copied_scanout_plan(
+pub(super) fn replay_copied_scanout_plan(
     live_render_vk: Arc<VkContext>,
     live_sink_vk: Arc<VkContext>,
     scanout_device: Rc<drm::Device>,

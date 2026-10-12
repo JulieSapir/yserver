@@ -256,7 +256,7 @@ pub(crate) struct FlushOutcome {
 /// Stage 5 Task 6.1: epoll event-data token for the backend's
 /// wakeup_eventfd. Per-batch sync_file FDs use their raw fd as the
 /// token instead, distinguishing them from the wakeup_eventfd.
-pub(crate) const WAKEUP_EVENTFD_TOKEN: u64 = u64::MAX;
+const WAKEUP_EVENTFD_TOKEN: u64 = u64::MAX;
 
 /// One source-renderer completion retained by the platform until its
 /// `sync_file` becomes readable.  The stable [`OutputKey`] and monotonic job
@@ -310,7 +310,7 @@ pub(crate) struct SequenceCompletion {
     pub(crate) sequence: u64,
 }
 
-pub(crate) type DrainedPageFlipEvents = (Vec<(usize, PresentClockSample)>, Vec<SequenceCompletion>);
+type DrainedPageFlipEvents = (Vec<(usize, PresentClockSample)>, Vec<SequenceCompletion>);
 
 /// Process-local identity of one KMS CRTC.
 ///
@@ -393,16 +393,16 @@ const SCANOUT_POOL_DEPTH: usize = 3;
 /// Fresh completion timeout for each submitted disposable-probe fence.
 /// Allocation, atomic TEST_ONLY, pipeline setup, and completed CPU content
 /// validation are not charged to this GPU-liveness bound.
-pub(crate) const PRIME_RENDER_PROBE_TIMEOUT_NS: u64 = 200_000_000;
+pub(super) const PRIME_RENDER_PROBE_TIMEOUT_NS: u64 = 200_000_000;
 
-pub(crate) struct PreparedScanoutPool {
+struct PreparedScanoutPool {
     pool: ScanoutBoPool,
     /// The exact framebuffer synchronously installed by the candidate loop.
     /// Its BO is already marked `OnScreen` before ownership leaves the helper.
     committed_framebuffer: Option<::drm::control::framebuffer::Handle>,
 }
 
-pub(crate) struct PreparedCopiedScanoutPool {
+struct PreparedCopiedScanoutPool {
     pool: CopiedScanoutPool,
     committed_framebuffer: Option<::drm::control::framebuffer::Handle>,
 }
@@ -460,13 +460,13 @@ pub(crate) enum ScanoutQualificationError {
     DeviceLost(io::Error),
 }
 
-pub(crate) enum ExactPlanReplay<T> {
+enum ExactPlanReplay<T> {
     Prepared(T),
     Rejected(io::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum CopyFreeScanoutError {
+enum CopyFreeScanoutError {
     #[error("{0}")]
     Candidates(io::Error),
     #[error("terminal disposable copy-free probe failure: {0}")]
@@ -476,7 +476,7 @@ pub(crate) enum CopyFreeScanoutError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum CopiedScanoutError {
+enum CopiedScanoutError {
     #[error("{0}")]
     Candidates(io::Error),
     #[error("terminal disposable copied probe failure: {0}")]
@@ -701,7 +701,7 @@ pub(crate) struct DroppedRoute {
 }
 
 /// A placed rectangle: `(x, y, width, height)`.
-pub(crate) type LayoutRect = (i32, i32, u16, u16);
+pub(super) type LayoutRect = (i32, i32, u16, u16);
 
 /// Outcome of a connector rescan.
 #[derive(Debug, Default)]

@@ -31,7 +31,7 @@ impl PlatformBackend {
     /// cases where the sampler config also differs; this helper
     /// owns the storage-side view that the scene compositor
     /// binds directly.
-    pub(crate) fn sample_view_components(format: vk::Format, depth: u8) -> vk::ComponentMapping {
+    fn sample_view_components(format: vk::Format, depth: u8) -> vk::ComponentMapping {
         match (format, depth) {
             (vk::Format::R8_UNORM, _) => vk::ComponentMapping {
                 r: vk::ComponentSwizzle::ZERO,

@@ -128,7 +128,7 @@ impl PlatformBackend {
         ready
     }
 
-    pub(crate) fn cancel_scanout_render_completions_for_output(&mut self, output_key: &OutputKey) {
+    pub(super) fn cancel_scanout_render_completions_for_output(&mut self, output_key: &OutputKey) {
         let mut index = 0;
         while index < self.pending_scanout_render_completions.len() {
             if self.pending_scanout_render_completions[index].output_key != *output_key {

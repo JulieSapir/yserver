@@ -28,7 +28,7 @@ impl CrtcKey {
 
 impl RenderDevice {
     #[must_use]
-    pub(crate) fn relationship_to(&self, kms: &KmsDevice) -> RenderKmsRelationship {
+    pub(super) fn relationship_to(&self, kms: &KmsDevice) -> RenderKmsRelationship {
         match self.advertised_primary_node {
             Some(primary) if primary == kms.key => RenderKmsRelationship::Same,
             Some(_) => RenderKmsRelationship::Different,
@@ -37,7 +37,7 @@ impl RenderDevice {
     }
 
     #[must_use]
-    pub(crate) fn scanout_route_to(&self, kms: &KmsDevice) -> ScanoutRoute {
+    pub(super) fn scanout_route_to(&self, kms: &KmsDevice) -> ScanoutRoute {
         ScanoutRoute::new(self.id, kms.key, self.relationship_to(kms))
     }
 }
@@ -145,7 +145,7 @@ impl PlatformBackend {
     }
 
     #[cfg(test)]
-    pub(crate) fn selected_render_device_mut(&mut self) -> Option<&mut RenderDevice> {
+    fn selected_render_device_mut(&mut self) -> Option<&mut RenderDevice> {
         let selected = self.selected_render_device?;
         self.render_devices
             .iter_mut()

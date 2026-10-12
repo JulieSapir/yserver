@@ -437,7 +437,7 @@ impl PlatformBackend {
     /// context and install the resulting pool/output through the ordinary
     /// synchronous modeset ownership path. This never probes another
     /// representation or falls back to a different transport.
-    pub(crate) fn enable_connector_with_qualified_plan(
+    fn enable_connector_with_qualified_plan(
         &mut self,
         output_key: &OutputKey,
         output: crate::platform::drm::Output,
@@ -1166,7 +1166,7 @@ impl PlatformBackend {
     /// full-damage repaint on the next composite tick. Called after
     /// `vt_state` commits to `Active` so the scanout gate is open
     /// when `composite_and_flip` runs.
-    pub(crate) fn post_full_damage_all_outputs(&mut self) {
+    fn post_full_damage_all_outputs(&mut self) {
         self.shutting_down = false; // ensure shutting_down doesn't suppress the repaint
         // `wake_for_damage` sets `scene_structure_dirty = true`; the
         // SceneCompositor picks this up on the next `tick` and repaints

@@ -38,7 +38,7 @@ impl PlatformBackend {
     /// `signal_fence` is IGNORED — the group's shared ticket owns the
     /// fence. The parameter stays in the signature for source
     /// compatibility with the engine; remove in Phase B.
-    pub(crate) fn submit_paint_cb(
+    fn submit_paint_cb(
         &mut self,
         cb: vk::CommandBuffer,
         _signal_fence: vk::Fence,

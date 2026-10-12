@@ -339,7 +339,7 @@ impl PlatformBackend {
     /// generation number for the in-flight frame.
     ///
     /// Returns the freshly-allocated generation.
-    pub(crate) fn record_present(&mut self, _output_idx: usize, _bo_idx: usize) -> u64 {
+    pub(super) fn record_present(&mut self, _output_idx: usize, _bo_idx: usize) -> u64 {
         self.next_present_generation = self
             .next_present_generation
             .checked_add(1)

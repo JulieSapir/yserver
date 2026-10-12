@@ -302,7 +302,7 @@ impl PlatformBackend {
     /// True iff this output's owning DRM device currently has an eligible
     /// cursor plane. Raw CRTC handles never participate in device selection.
     #[must_use]
-    pub(crate) fn cursor_plane_available_for_output(&self, output_idx: usize) -> bool {
+    pub(super) fn cursor_plane_available_for_output(&self, output_idx: usize) -> bool {
         let Some(layout) = self.outputs.get(output_idx) else {
             return false;
         };
@@ -386,7 +386,7 @@ impl PlatformBackend {
     /// Diagnostic/test hook: whether one particular device is permanently
     /// latched to software cursor composition.
     #[must_use]
-    pub(crate) fn hw_cursor_disabled_for_device(
+    pub(super) fn hw_cursor_disabled_for_device(
         &self,
         key: crate::platform::drm::DrmDeviceKey,
     ) -> bool {
@@ -856,7 +856,7 @@ impl PlatformBackend {
         true
     }
 
-    pub(crate) fn refresh_cursor_topology(&mut self) {
+    fn refresh_cursor_topology(&mut self) {
         let all_devices: HashSet<_> = self.devices.iter().map(|device| device.key).collect();
         self.refresh_cursor_topology_for_devices(&all_devices);
     }
