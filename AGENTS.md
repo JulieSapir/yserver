@@ -15,7 +15,7 @@ focus is on yserver (KMS) now
 - design docs (specs) go in docs/superpowers/specs
 - impl plans go in docs/superpowers/plans
 - work on feature branch for phases
-- squash merge when ready (ask confirmation)
+- squash merge when ready (ask confirmation); PRs with multiple commits serving distinct purposes are fast-forward merged instead, so each commit stays bisectable
 - Spec compliance is the goal, but if Xorg deviates from spec (unlikely), we need to follow Xorg, clients are tested for 40+ years on Xorg.
 
 ## environment
