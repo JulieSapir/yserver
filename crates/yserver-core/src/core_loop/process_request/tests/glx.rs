@@ -1,4 +1,8 @@
 use super::*;
+use crate::core_loop::process_request::glx::{
+    drawable_attributes_for, glx_extension_string, glx_fbconfig_depth, glx_fbconfig_visual,
+    glx_visual_fbconfig, synthesise_glx_fb_configs, synthesise_glx_visual_configs,
+};
 
 // #96: each visual-backed GLX FBConfig must advertise GLX_PBUFFER_BIT plus
 // the three GLX_MAX_PBUFFER_* caps, or Chromium/ANGLE can't allocate its

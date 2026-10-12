@@ -54,32 +54,64 @@ mod xkb;
 mod xshm;
 mod xtest;
 
-use colormaps::*;
-use composite_damage::*;
-use drawing::*;
-use dri3::*;
+use crate::core_loop::process_request::{
+    colormaps::{
+        handle_alloc_color, handle_alloc_color_cells, handle_alloc_color_planes,
+        handle_alloc_named_color, handle_copy_colormap_and_free, handle_create_colormap,
+        handle_free_colormap, handle_free_colors, handle_install_colormap,
+        handle_list_installed_colormaps, handle_lookup_color, handle_query_colors,
+        handle_store_colors, handle_store_named_color, handle_uninstall_colormap,
+    },
+    composite_damage::{handle_composite_request, handle_damage_request},
+    drawing::{
+        handle_clear_area, handle_copy_area, handle_copy_plane, handle_fill_poly, handle_get_image,
+        handle_image_text8, handle_image_text16, handle_poly_arc, handle_poly_fill_arc,
+        handle_poly_fill_rectangle, handle_poly_line, handle_poly_point, handle_poly_rectangle,
+        handle_poly_segment, handle_poly_text8, handle_poly_text16, handle_put_image,
+        zpixmap_row_stride,
+    },
+    dri3::handle_dri3_request,
+    fonts::{
+        handle_close_font, handle_get_font_path, handle_list_fonts, handle_list_fonts_with_info,
+        handle_open_font, handle_query_font, handle_query_text_extents, handle_set_font_path,
+    },
+    gc_pixmap_cursor::{
+        handle_change_gc, handle_copy_gc, handle_create_cursor, handle_create_gc,
+        handle_create_glyph_cursor, handle_create_pixmap, handle_free_cursor, handle_free_gc,
+        handle_free_pixmap, handle_query_best_size, handle_recolor_cursor,
+        handle_set_clip_rectangles, handle_set_dashes,
+    },
+    glx::handle_glx_request,
+    input_ctl::{
+        handle_bell, handle_change_keyboard_control, handle_change_keyboard_mapping,
+        handle_change_pointer_control, handle_get_keyboard_control, handle_get_keyboard_mapping,
+        handle_get_modifier_mapping, handle_get_pointer_control, handle_get_pointer_mapping,
+        handle_query_keymap, handle_set_modifier_mapping, handle_set_pointer_mapping,
+    },
+    misc::{
+        handle_big_requests_request, handle_ge_request, handle_get_motion_events,
+        handle_grab_server, handle_kill_client, handle_list_extensions, handle_list_hosts,
+        handle_query_extension, handle_set_close_down_mode, handle_ungrab_server,
+        handle_x_resource_request, handle_xcmisc_request,
+    },
+    render::handle_render_request,
+    vidmode::handle_xf86vidmode_request,
+    xkb::handle_xkb_request,
+    xshm::handle_mit_shm_request,
+    xtest::handle_xtest_request,
+};
 pub(crate) use focus_pointer::*;
-use fonts::*;
-use gc_pixmap_cursor::*;
-use glx::*;
 pub(crate) use grabs::*;
-use input_ctl::*;
-use misc::*;
 pub use present_ext::*;
 pub(crate) use props::*;
 pub use randr_ext::*;
 pub(crate) use redirect::*;
-use render::*;
 pub(crate) use saver_dpms::*;
 pub(crate) use selection::*;
 pub(crate) use shape_xfixes::*;
 pub(crate) use sync_ext::*;
-use vidmode::*;
 pub(crate) use windows::*;
 pub(crate) use xi::*;
-use xkb::*;
-use xshm::*;
-use xtest::*;
 
 #[cfg(test)]
 mod get_image_reply_tests;

@@ -1,5 +1,8 @@
 use super::*;
-use crate::backend::{CrtcConfigToken, ModeSpec};
+use crate::{
+    backend::{CrtcConfigToken, ModeSpec},
+    core_loop::process_request::vidmode::current_vidmode_output,
+};
 use yserver_protocol::x11::AtomId;
 
 #[test]

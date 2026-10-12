@@ -32,17 +32,55 @@ use crate::{
         focus_pointer::handle_xi_warp_pointer,
         write_to_client,
         xi::{
+            dispatch::{
+                control::{
+                    handle_xi1_change_device_control, handle_xi1_change_device_key_mapping,
+                    handle_xi1_change_feedback_control, handle_xi1_device_bell,
+                    handle_xi1_get_device_button_mapping, handle_xi1_get_device_control,
+                    handle_xi1_get_device_key_mapping, handle_xi1_get_device_modifier_mapping,
+                    handle_xi1_get_device_motion_events, handle_xi1_get_feedback_control,
+                    handle_xi1_query_device_state, handle_xi1_set_device_button_mapping,
+                    handle_xi1_set_device_modifier_mapping, handle_xi1_set_device_valuators,
+                },
+                devices::{
+                    handle_xi_get_client_pointer, handle_xi_query_device, handle_xi_query_version,
+                    handle_xi_set_client_pointer, handle_xi1_change_keyboard_device,
+                    handle_xi1_change_pointer_device, handle_xi1_close_device,
+                    handle_xi1_get_extension_version, handle_xi1_list_input_devices,
+                    handle_xi1_open_device, handle_xi1_set_device_mode,
+                },
+                events::{
+                    handle_xi_get_selected_events, handle_xi_select_events,
+                    handle_xi1_change_device_dont_propagate_list,
+                    handle_xi1_get_device_dont_propagate_list,
+                    handle_xi1_get_selected_extension_events, handle_xi1_select_extension_event,
+                    handle_xi1_send_extension_event,
+                },
+                focus::{
+                    handle_xi_barrier_release_pointer, handle_xi_change_cursor,
+                    handle_xi_get_focus, handle_xi_query_pointer, handle_xi1_get_device_focus,
+                    handle_xi1_set_device_focus,
+                },
+                grabs::{
+                    handle_xi_allow_events, handle_xi_grab_device, handle_xi_passive_grab_device,
+                    handle_xi_passive_ungrab_device, handle_xi_ungrab_device,
+                    handle_xi1_allow_device_events, handle_xi1_grab_device,
+                    handle_xi1_grab_device_button, handle_xi1_grab_device_key,
+                    handle_xi1_ungrab_device, handle_xi1_ungrab_device_button,
+                    handle_xi1_ungrab_device_key,
+                },
+                props::{
+                    handle_xi_change_property, handle_xi_delete_property, handle_xi_get_property,
+                    handle_xi_list_properties, handle_xi1_change_device_property,
+                    handle_xi1_delete_device_property, handle_xi1_get_device_property,
+                    handle_xi1_list_device_properties,
+                },
+            },
             handle_xi_change_hierarchy, handle_xi_set_focus, xi2_request_has_complete_dynamic_tail,
         },
     },
     server::ServerState,
 };
-use control::*;
-use devices::*;
-use events::*;
-use focus::*;
-use grabs::*;
-use props::*;
 use std::io;
 use yserver_protocol::{
     x11,

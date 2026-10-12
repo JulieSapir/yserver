@@ -1,4 +1,9 @@
 use super::*;
+#[cfg(test)]
+use crate::core_loop::process_request::vidmode::current_vidmode_mode_line;
+use crate::core_loop::process_request::vidmode::{
+    current_vidmode_output, vidmode_monitor_identity,
+};
 
 #[test]
 fn xf86vidmode_v2_mode_line_round_trips_current_randr_timing() {

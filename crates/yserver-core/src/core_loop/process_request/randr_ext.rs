@@ -23,15 +23,36 @@ mod xinerama;
 
 use crate::{
     backend::{Backend, CrtcConfigToken},
-    core_loop::process_request::{RANDR_REQUEST_COUNT, RequestOutcome, emit_x11_error_with_minor},
+    core_loop::process_request::{
+        RANDR_REQUEST_COUNT, RequestOutcome, emit_x11_error_with_minor,
+        randr_ext::{
+            monitor::{
+                handle_randr_delete_monitor, handle_randr_get_monitors, handle_randr_set_monitor,
+            },
+            output::{
+                handle_randr_change_output_property, handle_randr_configure_output_property,
+                handle_randr_delete_output_property, handle_randr_get_output_info,
+                handle_randr_get_output_primary, handle_randr_get_output_property,
+                handle_randr_list_output_properties, handle_randr_query_output_property,
+                handle_randr_set_output_primary,
+            },
+            provider::{
+                handle_randr_get_provider_info, handle_randr_get_providers,
+                handle_randr_provider_property, handle_randr_set_provider_offload_sink,
+                handle_randr_set_provider_output_source,
+            },
+            screen::{
+                handle_randr_get_screen_info, handle_randr_get_screen_resources,
+                handle_randr_get_screen_resources_current, handle_randr_get_screen_size_range,
+                handle_randr_query_version, handle_randr_select_input,
+                handle_randr_set_screen_size, set_screen_config,
+            },
+        },
+    },
     server::ServerState,
 };
 pub(crate) use crtc::*;
 use log::debug;
-use monitor::*;
-use output::*;
-use provider::*;
-use screen::*;
 use std::io;
 pub(super) use xinerama::*;
 use yserver_protocol::{

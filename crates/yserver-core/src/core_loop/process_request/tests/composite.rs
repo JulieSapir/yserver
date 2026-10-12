@@ -1,5 +1,7 @@
 use super::*;
-use crate::resources::MapState;
+use crate::{
+    core_loop::process_request::render::render_picture_damage_drawable, resources::MapState,
+};
 
 /// GetImage of a window partly off the screen: BadMatch unless the
 /// window is redirected, when its bound is its backing (`DoGetImage`,

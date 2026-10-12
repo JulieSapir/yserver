@@ -1,4 +1,5 @@
 use super::*;
+use crate::core_loop::process_request::misc::{advertised_extension_names, extension_query_reply};
 
 fn named_color_body(name: &[u8]) -> Vec<u8> {
     let mut body = Vec::new();

@@ -1,4 +1,8 @@
 use super::*;
+use crate::core_loop::process_request::{
+    misc::{advertised_extension_names, extension_query_reply},
+    xshm::{extract_shm_zpixmap_region, handle_mit_shm_put_image},
+};
 
 #[test]
 fn remote_clients_are_rejected_before_dri3_and_mit_shm_handlers() {

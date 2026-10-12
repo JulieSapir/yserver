@@ -1,4 +1,8 @@
 use super::*;
+use crate::core_loop::process_request::drawing::{
+    copy_area_effective_dst_rects, copy_area_source_split, xybitmap_to_target_zpixmap,
+    xybitmap_to_zpixmap,
+};
 
 #[test]
 fn xybitmap_to_zpixmap_preserves_lsb_first_bits_without_left_pad() {

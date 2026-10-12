@@ -1,4 +1,5 @@
 use super::*;
+use crate::core_loop::process_request::render::render_picture_damage_drawable;
 
 fn render_damage_fixture(
     render_return_region: Vec<yserver_protocol::x11::xfixes::RegionRect>,

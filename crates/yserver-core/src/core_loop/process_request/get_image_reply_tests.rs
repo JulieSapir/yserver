@@ -1,4 +1,4 @@
-use super::patch_get_image_reply_header;
+use crate::core_loop::process_request::drawing::patch_get_image_reply_header;
 use yserver_protocol::x11::{ClientByteOrder, SequenceNumber};
 
 #[test]

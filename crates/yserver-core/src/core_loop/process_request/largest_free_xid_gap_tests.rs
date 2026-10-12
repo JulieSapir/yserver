@@ -1,4 +1,4 @@
-use super::largest_free_xid_gap;
+use crate::core_loop::process_request::misc::largest_free_xid_gap;
 
 #[test]
 fn largest_free_xid_gap_cases() {
