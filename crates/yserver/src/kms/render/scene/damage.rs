@@ -59,7 +59,7 @@ impl SceneCompositor {
 
     /// Region-precise scene-structure damage (Stage 3+).
     #[track_caller]
-    pub(crate) fn mark_scene_structure_damage_rect(&mut self, output_idx: usize, r: vk::Rect2D) {
+    fn mark_scene_structure_damage_rect(&mut self, output_idx: usize, r: vk::Rect2D) {
         let event_id = if self.damage_audit_active() {
             self.record_damage_audit_event(Location::caller(), vec![r])
         } else {

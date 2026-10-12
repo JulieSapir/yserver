@@ -195,7 +195,7 @@ pub(crate) enum CursorAssignment {
 /// Stage 5 Phase D — transition queued on a `PendingAck` after the
 /// per-output commit succeeds. Consumed at retirement.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum CursorTransition {
+enum CursorTransition {
     /// Retire-time action: optionally upload (if `upload_version`
     /// != `CursorPlane.uploaded_version`), then `show_on_crtc` to
     /// bind the plane and reposition.
@@ -262,7 +262,7 @@ enum DeferredSceneRelease {
 /// Ring of recent output-damage regions keyed by generation.
 /// Depth = max(scanout_bo_count) + 1 per Stage 2 plan
 /// cross-cutting §"BufferAgeRing".
-pub(crate) struct BufferAgeRing {
+struct BufferAgeRing {
     entries: VecDeque<(u64, RegionSet)>,
     depth: usize,
 }
@@ -616,7 +616,7 @@ pub(crate) struct CursorEntry {
 /// from it (so a visibility bug that hides pixels shows up as a mismatch rather
 /// than passing clean on both sides), and the tests use it as the oracle.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Visibility {
+pub(super) enum Visibility {
     Off,
     On,
 }
