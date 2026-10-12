@@ -2024,3 +2024,25 @@ fn name_before_not_equal_is_a_free_name() {
         "{paths:?}"
     );
 }
+
+#[test]
+fn globs_imports_what_the_super_glob_supplied() {
+    let root = "mod c;\nmod d;\nuse std::rc::Rc;\nuse d::*;\npub trait T {\n    fn t(&self) {}\n}\nfn f() {}\n";
+    let c = "use super::*;\n\nfn g(x: u32) -> bool {\n    f();\n    let _ = Rc::new(1);\n    x != 0 && h() && 1u8.t() == ()\n}\n";
+    let d = "use super::*;\n\npub(super) fn h() -> bool {\n    true\n}\n";
+    let src = mem(&[("src/a.rs", root), ("src/a/c.rs", c), ("src/a/d.rs", d)]);
+    let t = crate::tree::load(&src, "src/a.rs", "a").unwrap();
+    let got = crate::globs::generate(&t, false, &[], &src).unwrap();
+    let c = got.iter().find(|f| f.file == "src/a/c.rs").unwrap();
+    assert_eq!(
+        c.imports,
+        [
+            "use crate::a::T as _;",
+            "use crate::a::d::h;",
+            "use crate::a::f;",
+            "use std::rc::Rc;"
+        ],
+        "{:?}",
+        c.imports
+    );
+}

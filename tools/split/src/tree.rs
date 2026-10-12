@@ -711,6 +711,8 @@ pub struct Tree {
     /// Every comment and wrapper doc attribute in the tree.
     pub pool: Vec<String>,
     pub files: Vec<String>,
+    /// Module path of every loaded file.
+    pub file_module: BTreeMap<String, String>,
 }
 
 struct FileCx<'a> {
@@ -825,6 +827,8 @@ impl Tree {
             claimed: Default::default(),
         };
         self.files.push(path.to_string());
+        self.file_module
+            .insert(path.to_string(), module.to_string());
         self.items(
             &cx,
             &ast.items,

@@ -5,6 +5,7 @@
 mod apply;
 mod bind;
 mod extract;
+mod globs;
 mod scope;
 mod testlist;
 #[cfg(test)]
@@ -23,6 +24,7 @@ const USAGE: &str = "usage:
   split apply <manifest.toml>
   split extract <extract.toml>
   split test-list <out-dir>
+  split globs <root.rs> <module> [--down] [--skip <module>]... [--write]
   split verify [--manifest <m.toml> | --root <file.rs> --module <path> | --extract <x.toml>]
                [--delegate <prefix>] [--tests <before-dir> <after-dir> [--target <bin:kind>]]
                [<rev>]
@@ -150,6 +152,7 @@ fn run() -> Res<bool> {
         Some("extract") => {
             extract::run(&extract::ExtractManifest::load(arg(1)?.as_ref())?, &repo).map(|()| true)
         }
+        Some("globs") => globs::run(&args[1..], &repo),
         Some("test-list") => testlist::snapshot(&repo, arg(1)?.as_ref()).map(|()| true),
         Some("verify") => {
             let (mut manifest, mut root, mut module, mut delegate, mut tests, mut rev) =
