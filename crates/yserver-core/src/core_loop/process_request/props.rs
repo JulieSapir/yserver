@@ -318,7 +318,7 @@ pub(in crate::core_loop) fn validate_xi_change(
 /// Commit one previously validated property only after its source-targeted
 /// backend operation succeeds. A missing property is recreated with
 /// XICreateDeviceProperty's writable/deletable defaults.
-pub(in crate::core_loop) fn commit_validated_xi_change(
+fn commit_validated_xi_change(
     state: &mut ServerState,
     change: &ValidatedXiChange,
 ) -> Result<crate::xinput::PropWhat, PropertyDispatchError> {
@@ -421,7 +421,7 @@ pub(super) fn is_xtest_marker_property(
     ) && property == state.xtest_device_atom
 }
 
-pub(in crate::core_loop) enum PropertyChangeOutcome {
+pub(super) enum PropertyChangeOutcome {
     Changed(crate::xinput::PropWhat),
     Pending(crate::core_loop::message::XiConfigRequest),
 }

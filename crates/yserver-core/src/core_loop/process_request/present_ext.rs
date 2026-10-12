@@ -2592,7 +2592,7 @@ fn fire_present_notify_msc_complete_events(
 /// vblank clock — this is what keeps a compositor's `present` frame clock
 /// running at the display refresh rate.
 #[cfg(test)]
-pub(crate) fn fire_due_present_notify_msc(state: &mut ServerState, msc: u64, ust: u64) {
+pub(super) fn fire_due_present_notify_msc(state: &mut ServerState, msc: u64, ust: u64) {
     let mut domains: Vec<(u32, u64)> = state
         .present_pending_msc
         .iter()
@@ -2886,7 +2886,7 @@ pub(crate) fn fire_due_present_completions_for_domain(
 /// truly-stuck case (the producer fence never signals) is the same
 /// pre-existing exposure that entry always had regardless of blackout,
 /// and the purge paths (destroy/disconnect/shutdown) clear it.
-pub(crate) fn fire_all_present_completions_now(state: &mut ServerState, backend: &mut dyn Backend) {
+pub(super) fn fire_all_present_completions_now(state: &mut ServerState, backend: &mut dyn Backend) {
     fire_present_completions_sweep(state, backend, true);
 }
 

@@ -903,7 +903,7 @@ fn emit_x11_error(
     emit_x11_error_with_minor(state, client_id, sequence, code, bad_value, 0, major_opcode)
 }
 
-pub(crate) fn emit_x11_error_with_minor(
+pub(super) fn emit_x11_error_with_minor(
     state: &mut ServerState,
     client_id: ClientId,
     sequence: SequenceNumber,
@@ -977,7 +977,7 @@ struct CopyAreaSubRect {
     height: u16,
 }
 
-pub(crate) fn write_to_client(
+pub(super) fn write_to_client(
     client: &mut crate::server::ClientState,
     client_id: ClientId,
     bytes: &[u8],

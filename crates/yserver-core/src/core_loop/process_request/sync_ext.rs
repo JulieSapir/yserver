@@ -915,7 +915,7 @@ fn check_new_alarm_trigger(state: &mut ServerState, alarm_id: u32, counter: u32)
 /// holds (Inactive, value kept, on INT64 overflow). The `AlarmNotify`
 /// carries the new state and the old wait value; the new wait value is
 /// stored after it is sent.
-pub(crate) fn alarm_trigger_fired(state: &mut ServerState, alarm_id: u32, value: i64) {
+fn alarm_trigger_fired(state: &mut ServerState, alarm_id: u32, value: i64) {
     use yserver_protocol::x11::sync as x11sync;
     let Some(a) = state.sync_alarms.get(&alarm_id) else {
         return;

@@ -488,7 +488,7 @@ pub(super) fn handle_warp_pointer(
 /// Which of Xorg's two source-rectangle tests a warp uses. Xorg keeps
 /// two copies that differ in one term (see [`warp_pointer_src_allows`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum WarpSrcRule {
+enum WarpSrcRule {
     /// `ProcWarpPointer` (dix/events.c).
     Core,
     /// `ProcXIWarpPointer` (Xi/xiwarppointer.c).
@@ -499,7 +499,7 @@ pub(super) enum WarpSrcRule {
 /// coordinates are already converted to whole pixels the way Xorg does
 /// it (`int src_x = stuff->src_x / (double)(1 << 16)`, which truncates
 /// toward zero).
-pub(super) struct WarpRequest {
+struct WarpRequest {
     src: ResourceId,
     dst: ResourceId,
     src_x: i32,
@@ -513,7 +513,7 @@ pub(super) struct WarpRequest {
 /// The first nonexistent window of a warp, in Xorg's lookup order: the
 /// destination is looked up before the source in both ProcWarpPointer
 /// and ProcXIWarpPointer.
-pub(super) fn warp_pointer_bad_window(state: &ServerState, req: &WarpRequest) -> Option<u32> {
+fn warp_pointer_bad_window(state: &ServerState, req: &WarpRequest) -> Option<u32> {
     [req.dst, req.src]
         .into_iter()
         .find(|w| w.0 != 0 && state.resources.window(*w).is_none())
@@ -531,11 +531,7 @@ pub(super) fn warp_pointer_bad_window(state: &ServerState, req: &WarpRequest) ->
 /// right/bottom edges as inclusive, and a zero width/height as "to the
 /// window's edge". The core copy skips the visibility test for the root
 /// window (`source->parent &&`); the XI copy always runs it.
-pub(super) fn warp_pointer_src_allows(
-    state: &ServerState,
-    req: &WarpRequest,
-    rule: WarpSrcRule,
-) -> bool {
+fn warp_pointer_src_allows(state: &ServerState, req: &WarpRequest, rule: WarpSrcRule) -> bool {
     if req.src.0 == 0 {
         return true;
     }
@@ -593,7 +589,7 @@ fn point_in_window_is_visible(state: &ServerState, window: ResourceId, x: i32, y
 /// through the backend's absolute-motion path (which generates the
 /// crossing and motion events a warp is specified to produce). Warps
 /// bypass pointer barriers.
-pub(super) fn apply_pointer_warp(
+fn apply_pointer_warp(
     state: &mut ServerState,
     backend: &mut dyn Backend,
     origin: Option<OriginContext>,

@@ -91,7 +91,7 @@ pub(crate) fn apply_dpms_transition(
 /// currently subscribed via `DPMSSelectInput(DPMS_INFO_NOTIFY_MASK)`.
 /// Uses the existing `fanout_event_to_clients` helper for sequence
 /// + byte-order + per-client write_or_buffer handling.
-pub(crate) fn emit_dpms_notify(state: &mut ServerState) {
+fn emit_dpms_notify(state: &mut ServerState) {
     use crate::nested::DPMS_MAJOR_OPCODE;
     use yserver_protocol::x11::dpms as x11dpms;
     if state.dpms.selected_by.is_empty() {
