@@ -6,7 +6,7 @@ use crate::{
     verify::{Spec, check},
 };
 
-struct Mem(BTreeMap<String, String>);
+pub(crate) struct Mem(pub(crate) BTreeMap<String, String>);
 
 impl Source for Mem {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
@@ -22,7 +22,7 @@ impl Source for Mem {
     }
 }
 
-fn mem(files: &[(&str, &str)]) -> Mem {
+pub(crate) fn mem(files: &[(&str, &str)]) -> Mem {
     Mem(files
         .iter()
         .map(|(p, t)| (p.to_string(), t.to_string()))
@@ -91,6 +91,7 @@ fn run(m: &Manifest, inner: &str, mod_rs: &str, y: &str) -> Vec<String> {
         new_root: m.new_root(),
         module: m.module.clone(),
         delegate: None,
+        extract: None,
     };
     check(&spec, &base, &head, &[]).unwrap().1
 }
@@ -171,6 +172,7 @@ fn same_file(before: &str, after: &str, delegate: bool) -> Vec<String> {
         new_root: "src/k.rs".into(),
         module: "k".into(),
         delegate: delegate.then(|| PREFIX.to_string()),
+        extract: None,
     };
     let base = mem(&[("src/k.rs", before)]);
     let head = mem(&[("src/k.rs", after)]);
@@ -237,6 +239,7 @@ fn delegate_prefix_must_be_an_identifier_prefix() {
             new_root: "src/k.rs".into(),
             module: "k".into(),
             delegate: Some(prefix.into()),
+            extract: None,
         };
         let base = mem(&[("src/k.rs", TRAIT_BEFORE)]);
         let head = mem(&[("src/k.rs", DELEGATED)]);
@@ -255,6 +258,7 @@ fn delegate_beside(other: &str) -> Vec<String> {
         new_root: "src/k.rs".into(),
         module: "k".into(),
         delegate: Some(PREFIX.into()),
+        extract: None,
     };
     let base = mem(&[("src/k.rs", TRAIT_BEFORE), ("other/src/z.rs", other)]);
     let head = mem(&[("src/k.rs", DELEGATED), ("other/src/z.rs", other)]);
@@ -393,6 +397,7 @@ fn split_with(
     };
     let spec = Spec {
         delegate: delegate.then(|| PREFIX.to_string()),
+        extract: None,
         ..self::spec_of(&m)
     };
     let base = mem(&[("src/a.rs", before)]);
@@ -574,6 +579,7 @@ fn spec_of(m: &Manifest) -> Spec<'_> {
         new_root: m.new_root(),
         module: m.module.clone(),
         delegate: None,
+        extract: None,
     }
 }
 
@@ -585,6 +591,7 @@ fn module_files(root: &str, extra: &[(&str, &str, &str)]) -> Vec<String> {
         new_root: "src/k.rs".into(),
         module: "k".into(),
         delegate: None,
+        extract: None,
     };
     let mut b = vec![("src/k.rs", root)];
     let mut a = vec![("src/k.rs", root)];
@@ -1141,6 +1148,7 @@ fn relative_path_to_the_same_module_passes() {
         new_root: "src/k.rs".into(),
         module: "k".into(),
         delegate: None,
+        extract: None,
     };
     let errs = check(
         &spec,
@@ -1298,6 +1306,7 @@ fn committed_manifests_are_not_outside_the_tree() {
         new_root: "src/k.rs".into(),
         module: "k".into(),
         delegate: None,
+        extract: None,
     };
     let src = mem(&[("src/k.rs", "fn f() {}\n")]);
     let touched = |p: &str| check(&spec, &src, &src, &[p.to_string()]).unwrap().1;
@@ -1362,6 +1371,7 @@ fn same_file_in(crate_files: &[(&str, &str)], before: &str, after: &str) -> Vec<
         new_root: "src/k.rs".into(),
         module: "k".into(),
         delegate: None,
+        extract: None,
     };
     let side = |k: &str| {
         let mut v = crate_files.to_vec();
@@ -1475,6 +1485,7 @@ fn same_file_info(before: &str, after: &str) -> (Vec<String>, Vec<String>) {
         new_root: "src/k.rs".into(),
         module: "k".into(),
         delegate: None,
+        extract: None,
     };
     check(
         &spec,
@@ -1749,6 +1760,7 @@ fn track_caller_fns_are_found_crate_wide() {
         new_root: "k/src/k.rs".into(),
         module: "k".into(),
         delegate: None,
+        extract: None,
     };
     let side = |k: &str| {
         let mut v = ws.to_vec();
@@ -1963,6 +1975,7 @@ fn delegate_across(after_t: &str, after_h: &str) -> Vec<String> {
         new_root: "src/k.rs".into(),
         module: "k".into(),
         delegate: Some(PREFIX.into()),
+        extract: None,
     };
     let root = "mod h;\nmod t;\n\npub struct K;\n";
     let t_before = "use super::*;\n\nimpl Backend for K {\n    fn f(&mut self, a: u32, b: u32) -> u32 {\n        a + b\n    }\n}\n";

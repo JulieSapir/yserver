@@ -3,10 +3,14 @@
 //! Paths are repo-relative; run from anywhere inside the repo.
 
 mod apply;
+mod bind;
+mod extract;
 mod scope;
 mod testlist;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_extract;
 mod tree;
 mod verify;
 
@@ -17,8 +21,9 @@ use tree::{Disk, Git, Res, Source};
 const USAGE: &str = "usage:
   split items <file.rs>
   split apply <manifest.toml>
+  split extract <extract.toml>
   split test-list <out-dir>
-  split verify [--manifest <m.toml> | --root <file.rs> --module <path>]
+  split verify [--manifest <m.toml> | --root <file.rs> --module <path> | --extract <x.toml>]
                [--delegate <prefix>] [--tests <before-dir> <after-dir> [--target <bin:kind>]]
                [<rev>]
 verify compares <rev>^ with <rev>, or HEAD with the working tree; --tests
@@ -27,7 +32,9 @@ also checks the test lists, snapshotted by test-list at those two trees.
 <prefix><subsystem>_<method>, a name absent from <rev>^ (or HEAD).
 --manifest (and its path table) is read from the working tree, not from
 <rev>: a manifest amended after its move commit (e.g. a new [locations]
-entry) applies when re-verifying that commit.";
+entry) applies when re-verifying that commit. --extract checks one
+dispatcher's arms moved into per-arm fns (or its fn-local items hoisted)
+in the same module.";
 
 fn git(args: &[&str]) -> Res<String> {
     let out = Command::new("git")
@@ -140,10 +147,14 @@ fn run() -> Res<bool> {
         Some("apply") => {
             apply::run(&apply::Manifest::load(arg(1)?.as_ref())?, &repo).map(|()| true)
         }
+        Some("extract") => {
+            extract::run(&extract::ExtractManifest::load(arg(1)?.as_ref())?, &repo).map(|()| true)
+        }
         Some("test-list") => testlist::snapshot(&repo, arg(1)?.as_ref()).map(|()| true),
         Some("verify") => {
             let (mut manifest, mut root, mut module, mut delegate, mut tests, mut rev) =
                 (None, None, None, None, None, None);
+            let mut extract = None;
             let mut target = None;
             let mut i = 1;
             while i < args.len() {
@@ -152,6 +163,7 @@ fn run() -> Res<bool> {
                     "--root" => (root, i) = (Some(arg(i + 1)?), i + 1),
                     "--module" => (module, i) = (Some(arg(i + 1)?), i + 1),
                     "--delegate" => (delegate, i) = (Some(arg(i + 1)?), i + 1),
+                    "--extract" => (extract, i) = (Some(arg(i + 1)?), i + 1),
                     "--tests" => (tests, i) = (Some((arg(i + 1)?, arg(i + 2)?)), i + 2),
                     "--target" => (target, i) = (Some(arg(i + 1)?), i + 1),
                     s if !s.starts_with('-') && rev.is_none() => rev = Some(s.to_string()),
@@ -162,20 +174,33 @@ fn run() -> Res<bool> {
             let m = manifest
                 .map(|p| apply::Manifest::load(p.as_ref()))
                 .transpose()?;
-            let spec = match (&m, root, module) {
-                (Some(m), None, None) => verify::Spec {
+            let x = extract
+                .map(|p| extract::ExtractManifest::load(p.as_ref()))
+                .transpose()?;
+            let spec = match (&m, root, module, &x) {
+                (Some(m), None, None, None) => verify::Spec {
                     manifest: Some(m),
                     old_root: m.source.clone(),
                     new_root: m.new_root(),
                     module: m.module.clone(),
                     delegate,
+                    extract: None,
                 },
-                (None, Some(r), Some(module)) => verify::Spec {
+                (None, Some(r), Some(module), None) => verify::Spec {
                     manifest: None,
                     old_root: r.clone(),
                     new_root: r,
                     module,
                     delegate,
+                    extract: None,
+                },
+                (None, None, None, Some(x)) if delegate.is_none() => verify::Spec {
+                    manifest: None,
+                    old_root: x.source.clone(),
+                    new_root: x.source.clone(),
+                    module: x.module.clone(),
+                    delegate: None,
+                    extract: Some(x),
                 },
                 _ => return Err(USAGE.into()),
             };

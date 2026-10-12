@@ -10,6 +10,7 @@ use syn::{Expr, FnArg, ImplItemFn, Pat, Stmt, Visibility, visit_mut::VisitMut};
 
 use crate::{
     apply::Manifest,
+    extract::{self, ExtractManifest},
     scope::{self, Names, scope},
     tree::{self, Leaf, Res, Source, Tree, dir_of, includes, join, tok},
 };
@@ -25,6 +26,9 @@ pub struct Spec<'a> {
     /// `--delegate <prefix>`: trait bodies may move to new inherent helpers
     /// named `<prefix><subsystem>_<method>` (see `helper_name`).
     pub delegate: Option<String>,
+    /// `--extract <m.toml>`: one dispatcher's arms became fns, or its
+    /// fn-local items module items (see `extract`).
+    pub extract: Option<&'a ExtractManifest>,
 }
 
 /// Old leaf key → new leaf key, from the manifest's table or the identity.
@@ -43,7 +47,7 @@ pub fn table(spec: &Spec, before: &Tree) -> Res<BTreeMap<String, String>> {
         .collect()
 }
 
-fn first_diff(a: &str, b: &str) -> String {
+pub(crate) fn first_diff(a: &str, b: &str) -> String {
     let i = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
     let lo = i.saturating_sub(60);
     let cut = |s: &str| s.get(lo..(i + 60).min(s.len())).unwrap_or("").to_string();
@@ -145,7 +149,7 @@ fn helper_name(prefix: &str, method: &str, helper: &str) -> Result<(), String> {
 /// occurs in: declarations, trait items, calls, method names, path segments
 /// and macro input alike (`r#` stripped). A file that does not tokenize
 /// contributes its words.
-fn prior_names(src: &dyn Source) -> BTreeMap<String, String> {
+pub(crate) fn prior_names(src: &dyn Source) -> BTreeMap<String, String> {
     fn walk(ts: proc_macro2::TokenStream, f: &str, out: &mut BTreeMap<String, String>) {
         for t in ts {
             match t {
@@ -299,13 +303,21 @@ pub fn check(
         scope::Crate::scan(base, &spec.old_root, &spec.module),
         scope::Crate::scan(head, &spec.new_root, &spec.module),
     ];
-    let rx = Resolution::new(
+    let mut rx = Resolution::new(
         &before,
         &after,
         &map,
         [&exceptions, &locations, &log_targets],
         crates,
     );
+    let ex_leaf = spec
+        .extract
+        .map(|m| extract::dispatcher(&before, m))
+        .transpose()?;
+    if let (Some(m), Some(l)) = (spec.extract, ex_leaf) {
+        rx.hoisted = extract::hoisted_names(m, base)?;
+        rx.non_traits = extract::non_trait_hoists(m, base, &l.module)?;
+    }
     let inc_macros = scope::including_macros(&before);
     let btok: Vec<String> = before
         .leaves
@@ -323,6 +335,9 @@ pub fn check(
     let mut delegations: Vec<(&Leaf, String)> = Vec::new();
     let mut extra: Vec<&Leaf> = Vec::new();
     for (key, (b, a)) in &groups {
+        if ex_leaf.is_some_and(|l| l.okey() == *key) {
+            continue;
+        }
         let mut a: Vec<(&Leaf, String)> = a.iter().map(|l| (*l, norm_tokens(key, l))).collect();
         let mut unpaired = Vec::new();
         for ob in b {
@@ -514,6 +529,33 @@ pub fn check(
             ));
         }
     }
+    let mut ex_info = Vec::new();
+    if let Some(m) = spec.extract {
+        let prior_map = std::cell::OnceCell::new();
+        let prior = |n: &str| prior_map.get_or_init(|| prior_names(base)).get(n).cloned();
+        let module = ex_leaf.map(|l| l.module.clone()).unwrap_or_default();
+        let positional = |t: &str| {
+            let bound = |n: &str| {
+                rx.names[1].resolve(&module, n, scope::TYPE | scope::VALUE | scope::MACRO)
+            };
+            let cx = scope::Idents::new(&rx.aliases, &rx.tracked, &bound);
+            scope::positional(t, &cx)
+        };
+        let cx = extract::Cx {
+            m,
+            base,
+            head,
+            before: &before,
+            after: &after,
+            names: &rx.names,
+            sites: &rx.macros,
+            prior: &prior,
+            positional: &positional,
+        };
+        let (i, e) = extract::check(&cx, &mut news)?;
+        ex_info = i;
+        errs.extend(e);
+    }
     for n in news {
         errs.push(format!("{}: new leaf ({}:{})", n.key(), n.file, n.line));
     }
@@ -547,6 +589,11 @@ pub fn check(
                     *allow.entry((u.module.clone(), u.text())).or_default() += 1;
                 }
             }
+        }
+    }
+    if let (Some(m), Some(l)) = (spec.extract, ex_leaf) {
+        for u in extract::hoisted_uses(m, base, &l.module)? {
+            *allow.entry((u.module.clone(), u.text())).or_default() += 1;
         }
     }
     let (ub, ua) = (uses(&before), uses(&after));
@@ -626,6 +673,7 @@ pub fn check(
         "log targets: {desc} leaves moved to descendant modules (prefix filters preserved); {} audited log target exceptions",
         used[2].len()
     ));
+    info.extend(ex_info);
     info.push(NOT_COVERED.to_string());
     if !shadow.is_empty() {
         info.push(format!(
@@ -720,6 +768,12 @@ struct Resolution<'a> {
     /// Test leaves moved with positional / module-sensitive code, and
     /// production leaves with implicit log targets moved to a descendant.
     tests: std::cell::RefCell<[usize; 3]>,
+    /// `--extract` prep: names of the hoisted fn-local items. A leaf that
+    /// binds one itself (`extract::binds_locally`) is not compared on it.
+    hoisted: BTreeSet<String>,
+    /// `--extract` prep: trait-scope ids of hoisted imports proven to name
+    /// no trait (`extract::non_trait_hoists`).
+    non_traits: BTreeSet<String>,
 }
 
 fn hash(s: &str) -> u64 {
@@ -785,6 +839,8 @@ impl<'a> Resolution<'a> {
             binding_calls,
             crates,
             tests: Default::default(),
+            hoisted: BTreeSet::new(),
+            non_traits: BTreeSet::new(),
         }
     }
 
@@ -862,9 +918,20 @@ impl<'a> Resolution<'a> {
             errs.extend(
                 names
                     .iter()
+                    .filter(|(n, _)| {
+                        !(i < bodies.len()
+                            && self.hoisted.contains(n)
+                            && extract::binds_locally(&ob.tokens, n))
+                    })
                     .filter_map(|(n, ns)| self.diff(&key, what, ob, na, n, *ns)),
             );
             for p in &paths {
+                if i < bodies.len()
+                    && self.hoisted.contains(&p[0])
+                    && extract::binds_locally(&ob.tokens, &p[0])
+                {
+                    continue;
+                }
                 let ns = scope::TYPE | scope::VALUE;
                 let (b, a) = (
                     self.names[0].resolve_path(&ob.module, p, ns),
@@ -882,7 +949,9 @@ impl<'a> Resolution<'a> {
             self.names[0].traits(&ob.module),
             self.names[1].traits(&na.module),
         );
-        if tb != ta {
+        let only_non_traits_added =
+            tb.is_subset(&ta) && ta.difference(&tb).all(|t| self.non_traits.contains(t));
+        if tb != ta && !only_non_traits_added {
             errs.push(format!(
                 "{key}: traits in scope changed (method calls may dispatch elsewhere)\n      before: {tb:?}\n      after:  {ta:?}"
             ));
