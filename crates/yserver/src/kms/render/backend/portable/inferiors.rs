@@ -152,11 +152,7 @@ impl KmsBackend {
     }
 
     /// The destination drawable's own extent in local coordinates.
-    pub(in crate::kms::render::backend) fn dst_local_extent(
-        &self,
-        dst_host_xid: u32,
-        dst_id: DrawableId,
-    ) -> Rectangle16 {
+    pub(super) fn dst_local_extent(&self, dst_host_xid: u32, dst_id: DrawableId) -> Rectangle16 {
         if let Some(g) = self.windows.get(&dst_host_xid) {
             Rectangle16 {
                 x: 0,
@@ -281,7 +277,7 @@ impl KmsBackend {
 
     /// Paste [`Self::inferior_pieces`] of `host` over `buf`, its `area`
     /// read in `host`'s content space (4-byte pixels).
-    pub(in crate::kms::render::backend) fn paste_inferiors(
+    pub(super) fn paste_inferiors(
         &mut self,
         host: u32,
         backing: DrawableId,
@@ -411,7 +407,7 @@ impl KmsBackend {
 
     /// Run `op` with Picture `host_pic` pointing at `window` through
     /// `clip` (both in `window`'s space), then put the picture back.
-    pub(in crate::kms::render::backend) fn with_dst_picture_on<R>(
+    pub(super) fn with_dst_picture_on<R>(
         &mut self,
         host_pic: u32,
         window: u32,
@@ -620,7 +616,7 @@ impl KmsBackend {
     /// to the engine.
     /// Build the per-call stroke snapshot from the GC state captured
     /// in `apply_draw_state`.
-    pub(in crate::kms::render::backend) fn current_stroke_state(
+    pub(super) fn current_stroke_state(
         &self,
         _foreground: u32,
     ) -> crate::kms::render::stroke::StrokeState {
@@ -717,7 +713,7 @@ impl KmsBackend {
         self.scene.root_overlay_toggle(client, value, &vk_rects);
     }
 
-    pub(in crate::kms::render::backend) fn emit_stroke_output(
+    pub(super) fn emit_stroke_output(
         &mut self,
         origin: Option<OriginContext>,
         host_xid: u32,

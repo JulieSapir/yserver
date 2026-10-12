@@ -210,9 +210,7 @@ impl KmsBackend {
     /// Startup scanout remains limited to the outputs activated during
     /// platform bring-up; connected secondary-card connectors are registered
     /// as available but off until a RANDR client enables them.
-    pub(in crate::kms::render::backend) fn seed_initial_connector_topology(
-        &mut self,
-    ) -> io::Result<()> {
+    pub(super) fn seed_initial_connector_topology(&mut self) -> io::Result<()> {
         self.reserve_randr_provider_ids();
 
         // Preserve historical XID allocation order: active startup outputs
@@ -1704,7 +1702,7 @@ impl KmsBackend {
         entry.last_enabled = None;
     }
 
-    pub(in crate::kms::render::backend) fn run_display_rescan(&mut self, state: &mut ServerState) {
+    pub(super) fn run_display_rescan(&mut self, state: &mut ServerState) {
         // Defer while VT-suspended: DRM master is dropped, so a rescan's
         // modeset ioctls would fail/wedge. (The old guard also required
         // VT switching drops DRM master, so gate rescans on `vt_state`.
@@ -1839,7 +1837,7 @@ impl KmsBackend {
 // ───────────────────────────────────────────────────────────────
 
 impl KmsBackend {
-    pub(in crate::kms::render::backend) fn live_crtc_and_gamma_size(
+    fn live_crtc_and_gamma_size(
         &self,
         output_key: &OutputKey,
     ) -> io::Result<
@@ -1872,10 +1870,7 @@ impl KmsBackend {
         Ok(Some((layout.key.device_key, crtc, size)))
     }
 
-    pub(in crate::kms::render::backend) fn nominal_gamma_size(
-        &self,
-        output_key: &OutputKey,
-    ) -> u16 {
+    fn nominal_gamma_size(&self, output_key: &OutputKey) -> u16 {
         match self.live_crtc_and_gamma_size(output_key) {
             Ok(Some((_, _, size))) => size,
             Ok(None) => self
@@ -1895,7 +1890,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn cached_gamma(&self, output_key: &OutputKey) -> GammaLut {
+    fn cached_gamma(&self, output_key: &OutputKey) -> GammaLut {
         if let Some(lut) = self.gamma_luts.borrow().get(output_key).cloned() {
             return lut;
         }
@@ -1906,11 +1901,7 @@ impl KmsBackend {
         lut
     }
 
-    pub(in crate::kms::render::backend) fn cached_gamma_for_current_size(
-        &self,
-        output_key: &OutputKey,
-        size: u16,
-    ) -> GammaLut {
+    fn cached_gamma_for_current_size(&self, output_key: &OutputKey, size: u16) -> GammaLut {
         let lut = self.cached_gamma(output_key);
         if lut.len() == usize::from(size) {
             return lut;
@@ -1922,10 +1913,7 @@ impl KmsBackend {
         resampled
     }
 
-    pub(in crate::kms::render::backend) fn apply_gamma_to_live_output(
-        &self,
-        output_key: &OutputKey,
-    ) -> io::Result<()> {
+    fn apply_gamma_to_live_output(&self, output_key: &OutputKey) -> io::Result<()> {
         use ::drm::control::Device as ControlDevice;
 
         let Some((device_key, crtc, gamma_size)) = self.live_crtc_and_gamma_size(output_key)?
@@ -1951,7 +1939,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn reapply_gamma_for_live_outputs(&self) {
+    pub(super) fn reapply_gamma_for_live_outputs(&self) {
         let output_keys: Vec<OutputKey> = self
             .platform
             .outputs

@@ -178,7 +178,7 @@ impl KmsBackend {
     /// [`Self::fill_solid_rects`] with the raster op and plane mask
     /// given rather than taken from the last client GC, so a
     /// server-internal paint can state its own.
-    pub(in crate::kms::render::backend) fn fill_solid_rects_with(
+    pub(super) fn fill_solid_rects_with(
         &mut self,
         target: PaintTarget,
         fg: u32,
@@ -685,7 +685,7 @@ impl KmsBackend {
     /// (`Tiled`, `Stippled`, `OpaqueStippled`) use a CPU read/modify/write
     /// fallback so X11 function, plane-mask, tile/stipple origin, and
     /// opaque-background semantics all stay exact.
-    pub(in crate::kms::render::backend) fn fill_rects_honoring_fill_state(
+    pub(super) fn fill_rects_honoring_fill_state(
         &mut self,
         origin: Option<OriginContext>,
         host_xid: u32,
@@ -1087,9 +1087,7 @@ impl KmsBackend {
 }
 
 /// The bounding box of the non-empty `rects`, or `None` when there are none.
-pub(in crate::kms::render::backend) fn vk_rects_bbox(
-    rects: &[ash::vk::Rect2D],
-) -> Option<ash::vk::Rect2D> {
+pub(super) fn vk_rects_bbox(rects: &[ash::vk::Rect2D]) -> Option<ash::vk::Rect2D> {
     let mut it = rects
         .iter()
         .filter(|r| r.extent.width > 0 && r.extent.height > 0);
@@ -1116,7 +1114,7 @@ pub(in crate::kms::render::backend) fn vk_rects_bbox(
 
 /// Copy `piece` (same space as both images) from `src`, a tightly packed
 /// 4-byte-per-pixel image of `src_rect`, into `dst`, one of `dst_rect`.
-pub(in crate::kms::render::backend) fn blit_rows_4bpp(
+pub(super) fn blit_rows_4bpp(
     src: &[u8],
     src_rect: ash::vk::Rect2D,
     dst: &mut [u8],
@@ -1147,9 +1145,7 @@ pub(in crate::kms::render::backend) fn blit_rows_4bpp(
 }
 
 /// The bounding box of the non-empty `rects`, or `None` when there are none.
-pub(in crate::kms::render::backend) fn rects16_bbox(
-    rects: &[Rectangle16],
-) -> Option<ash::vk::Rect2D> {
+pub(super) fn rects16_bbox(rects: &[Rectangle16]) -> Option<ash::vk::Rect2D> {
     let mut it = rects.iter().filter(|r| r.width > 0 && r.height > 0);
     let first = it.next()?;
     let (mut x0, mut y0) = (i32::from(first.x), i32::from(first.y));
@@ -1177,7 +1173,7 @@ pub(in crate::kms::render::backend) fn rects16_bbox(
 /// `PixmapBytePad(width, depth) * height` (`dix/dispatch.c:2227-2228`).
 /// This is the length a `GetImage` reply must always carry, whatever a
 /// read's bounds allowed.
-pub(in crate::kms::render::backend) fn wire_image_len(depth: u8, width: u32, height: u32) -> usize {
+fn wire_image_len(depth: u8, width: u32, height: u32) -> usize {
     let bits_per_row = match depth {
         1 => width,
         4 => 4 * width,
@@ -1245,7 +1241,7 @@ pub(in crate::kms::render::backend) fn copy_area_clip_gpu_eligible(
 /// the Task 9 byte-exactness gate (32 / 24 / 8). Out-of-scope cases
 /// (non-Copy rop, partial plane mask, excluded depth) fall through to the
 /// existing run-based CPU/GPU path unchanged.
-pub(in crate::kms::render::backend) fn copy_area_masked_blit_eligible(
+fn copy_area_masked_blit_eligible(
     function: yserver_core::backend::GcFunction,
     plane_mask: u32,
     full_mask: u32,
@@ -1461,10 +1457,7 @@ pub(in crate::kms::render::backend) fn z_to_xy_planes(
     out
 }
 
-pub(in crate::kms::render::backend) fn depth_for_visual(
-    visual: HostSubwindowVisual,
-    parent_depth: Option<u8>,
-) -> u8 {
+pub(super) fn depth_for_visual(visual: HostSubwindowVisual, parent_depth: Option<u8>) -> u8 {
     match visual {
         HostSubwindowVisual::CopyFromParent => parent_depth.unwrap_or(24),
         HostSubwindowVisual::DepthOnly { depth } => {

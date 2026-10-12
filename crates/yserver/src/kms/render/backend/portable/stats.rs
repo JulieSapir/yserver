@@ -29,7 +29,7 @@ impl KmsBackend {
     /// Classify a v2 drawable by kind for the trace TSV's
     /// `target_kind` column. COW is held separately on
     /// `KmsBackend`; other kinds come from `DrawableKind`.
-    pub(in crate::kms::render::backend) fn submit_target_kind(&self, id: DrawableId) -> TargetKind {
+    pub(super) fn submit_target_kind(&self, id: DrawableId) -> TargetKind {
         if self.cow_id == Some(id) {
             return TargetKind::Cow;
         }
@@ -70,7 +70,7 @@ impl KmsBackend {
     /// Emit one trace event for a RENDER paint submit with full
     /// op + src/mask class info. `mask` of `None` writes
     /// `no_mask`; `Some(class)` writes the class.
-    pub(in crate::kms::render::backend) fn trace_render(
+    pub(super) fn trace_render(
         &mut self,
         kind: SubmitKind,
         target: DrawableId,
@@ -110,7 +110,7 @@ impl KmsBackend {
     /// class, or `SrcClass::Direct` if the xid doesn't resolve
     /// (rare — render sites already guard on `resolve_*`; this
     /// is a defensive default for the diagnostic).
-    pub(in crate::kms::render::backend) fn picture_src_class_by_xid(&self, xid: u32) -> SrcClass {
+    pub(super) fn picture_src_class_by_xid(&self, xid: u32) -> SrcClass {
         self.core
             .pictures
             .get(&xid)

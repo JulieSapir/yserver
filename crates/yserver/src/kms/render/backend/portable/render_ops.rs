@@ -539,10 +539,7 @@ impl KmsBackend {
     /// The scratch pixmap is freed by the caller through the ordinary
     /// `free_pixmap` path, so its storage retires behind the fence like any
     /// other drawable rather than being destroyed under in-flight GPU work.
-    pub(in crate::kms::render::backend) fn source_inferiors_snapshot(
-        &mut self,
-        host_pic: u32,
-    ) -> Option<u32> {
+    fn source_inferiors_snapshot(&mut self, host_pic: u32) -> Option<u32> {
         let Some(PictureRecord::Drawable { host_xid, .. }) = self.core.pictures.get(&host_pic)
         else {
             return None;
@@ -595,7 +592,7 @@ impl KmsBackend {
     /// root: `area` of it (its content space; `None` for all of it) as a
     /// scratch pixmap whose `(0, 0)` is `area`'s origin. `None` when its
     /// storage holds all it shows there already.
-    pub(in crate::kms::render::backend) fn window_inferiors_snapshot(
+    pub(super) fn window_inferiors_snapshot(
         &mut self,
         host_xid: u32,
         area: Option<vk::Rect2D>,
@@ -674,10 +671,7 @@ impl KmsBackend {
 /// radial). `stops_offset` is the offset in `body` where the
 /// `n_stops` u32 starts. Returns `None` if the body is short.
 /// Stops carry pos (FIXED 16.16) + 4 × u16 colour (straight).
-pub(in crate::kms::render::backend) fn parse_gradient_stops(
-    body: &[u8],
-    stops_offset: usize,
-) -> Option<Vec<GradientStop>> {
+fn parse_gradient_stops(body: &[u8], stops_offset: usize) -> Option<Vec<GradientStop>> {
     if body.len() < stops_offset + 4 {
         return None;
     }
@@ -714,11 +708,7 @@ pub(in crate::kms::render::backend) fn take_first_occurrence(
     !flag.swap(true, std::sync::atomic::Ordering::Relaxed)
 }
 
-pub(in crate::kms::render::backend) fn change_picture_apply_mask(
-    core: &mut KmsCore,
-    host_pic: u32,
-    body: &[u8],
-) {
+fn change_picture_apply_mask(core: &mut KmsCore, host_pic: u32, body: &[u8]) {
     if body.len() < 8 {
         return;
     }
@@ -896,10 +886,7 @@ pub(in crate::kms::render::backend) fn change_picture_apply_mask(
 /// glyph paint path only knows how to sample a single colour, so a
 /// proper LUT-sampled gradient on glyphs would need a separate
 /// pipeline (deferred past Stage 3).
-pub(in crate::kms::render::backend) fn first_stop_premul_of_gradient(
-    core: &KmsCore,
-    host_pic: u32,
-) -> Option<[f32; 4]> {
+pub(super) fn first_stop_premul_of_gradient(core: &KmsCore, host_pic: u32) -> Option<[f32; 4]> {
     let stop = match core.pictures.get(&host_pic)? {
         PictureRecord::LinearGradient { stops, .. }
         | PictureRecord::RadialGradient { stops, .. } => stops.first()?,
@@ -923,7 +910,7 @@ pub(in crate::kms::render::backend) fn first_stop_premul_of_gradient(
 /// redirect routing. The free function stays pure
 /// (`&KmsCore`-only) so it can also be called from contexts
 /// where the windows / parent chain isn't relevant.
-pub(in crate::kms::render::backend) fn resolve_dst_picture_for_render(
+pub(super) fn resolve_dst_picture_for_render(
     core: &KmsCore,
     host_pic: u32,
 ) -> Option<(u32, Option<Vec<Rectangle16>>)> {

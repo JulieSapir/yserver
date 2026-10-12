@@ -74,7 +74,7 @@ impl KmsBackend {
     /// `get_mut` rather than `entry().or_insert_with(..)` because taking
     /// the lifetime ref needs `&mut self` (alias_registry / store), which
     /// would conflict with an `entry` borrow of `self.exported_dmabufs`.
-    pub(in crate::kms::render::backend) fn ensure_exported_entry(
+    fn ensure_exported_entry(
         &mut self,
         id: crate::kms::render::store::DrawableId,
         backing: PixmapHandle,

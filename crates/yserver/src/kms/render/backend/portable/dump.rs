@@ -48,10 +48,7 @@ pub(in crate::kms::render::backend) fn dump_cursor_record_to_ppm(
 /// isn't recorded). Used by the diagnostic `render_composite`
 /// trace to show marco's declared sampling intent alongside the
 /// drawable-depth-derived sampling shape v2 currently uses.
-pub(in crate::kms::render::backend) fn picture_pict_format(
-    core: &crate::kms::core::KmsCore,
-    host_pic: u32,
-) -> u32 {
+pub(super) fn picture_pict_format(core: &crate::kms::core::KmsCore, host_pic: u32) -> u32 {
     if host_pic == 0 {
         return 0;
     }

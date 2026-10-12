@@ -332,7 +332,7 @@ impl KmsBackend {
             || self.scanout_m2.current.as_ref().is_some_and(references)
     }
 
-    pub(in crate::kms::render::backend) fn finish_cow_release(&mut self) {
+    fn finish_cow_release(&mut self) {
         self.deferred_cow_release = false;
 
         // Keep the backend COW projection and storage together until the
@@ -418,7 +418,7 @@ impl KmsBackend {
     /// participating CRTC. A sprite-only update can use the same ownership
     /// model: upload once per output route (deduplicated by version inside the
     /// cursor plane), then rebind at the current position.
-    pub(in crate::kms::render::backend) fn refresh_direct_cursor_on_all_outputs(
+    pub(super) fn refresh_direct_cursor_on_all_outputs(
         &mut self,
         record: &crate::kms::render::cursor::CursorRecord,
     ) -> bool {
@@ -490,7 +490,7 @@ impl KmsBackend {
         pin_id
     }
 
-    pub(in crate::kms::render::backend) fn retain_direct_present_wake(
+    pub(super) fn retain_direct_present_wake(
         &mut self,
         event: &yserver_core::backend::CompletedPresentEvent,
     ) {
@@ -503,10 +503,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn submit_direct_frame(
-        &mut self,
-        frame: &mut DirectPresentFrame,
-    ) -> io::Result<()> {
+    pub(super) fn submit_direct_frame(&mut self, frame: &mut DirectPresentFrame) -> io::Result<()> {
         #[cfg(test)]
         if self.scanout_m2.test_submit_direct_without_drm {
             frame.awaiting_outputs = (0..self.platform.outputs.len()).collect();
@@ -652,7 +649,7 @@ impl KmsBackend {
     /// disable every CRTC in order to release a grouped direct framebuffer.
     /// Failure is fatal: the direct source has already been released and the
     /// cached DPMS state cannot truthfully claim that scanout remains active.
-    pub(in crate::kms::render::backend) fn relight_after_direct_teardown(
+    pub(super) fn relight_after_direct_teardown(
         &mut self,
         required: bool,
         context: &'static str,
@@ -679,7 +676,7 @@ impl KmsBackend {
     /// authoritative. A subsequent topology query is allowed to remove or
     /// reassign those objects, so releasing the client framebuffer afterward
     /// would be too late.
-    pub(in crate::kms::render::backend) fn teardown_direct_before_topology_requery(
+    pub(super) fn teardown_direct_before_topology_requery(
         &mut self,
         context: &'static str,
     ) -> io::Result<bool> {
@@ -738,9 +735,7 @@ impl KmsBackend {
     /// pinned when that direct frame was submitted. This is the COW or nearest
     /// redirected backing for compositor frames, and the window's own backing
     /// for an Unredirected fullscreen frame.
-    pub(in crate::kms::render::backend) fn materialize_direct_shadow_for_unflip(
-        &mut self,
-    ) -> io::Result<()> {
+    pub(super) fn materialize_direct_shadow_for_unflip(&mut self) -> io::Result<()> {
         if self.scanout_m2.unflip_shadow_ready {
             return Ok(());
         }
@@ -826,7 +821,7 @@ impl KmsBackend {
     /// AMD rejects independent per-CRTC replacement with `ENOSPC`; replacing
     /// the complete set together avoids both that intermediate state and the
     /// visible blackout of a disable/re-enable cycle.
-    pub(in crate::kms::render::backend) fn submit_composed_unflip(&mut self) -> io::Result<()> {
+    fn submit_composed_unflip(&mut self) -> io::Result<()> {
         if !self.direct_scanout_topology_eligible() {
             return Err(io::Error::other(
                 "scanout M2: grouped unflip requires one DRM device and homogeneous refresh",
@@ -1699,7 +1694,7 @@ impl KmsBackend {
     /// `next_wakeup` never wakes for, the paint would be stranded (the
     /// xfce submenu bug — a menu painted after its map-compose sat
     /// off-screen until an unrelated event poked the loop).
-    pub(in crate::kms::render::backend) fn scene_wants_compose(&self) -> bool {
+    pub(super) fn scene_wants_compose(&self) -> bool {
         self.scene.scene_structure_dirty
             || self.store.has_pending_presentation_damage()
             // An invalidated or never-presented frame owes a repaint no producer

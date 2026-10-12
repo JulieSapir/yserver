@@ -147,7 +147,7 @@ pub(crate) struct WindowGeometry {
     pub(crate) cursor: Option<u32>,
 }
 
-pub(crate) type WindowsMap = HashMap<u32, WindowGeometry>;
+pub(super) type WindowsMap = HashMap<u32, WindowGeometry>;
 
 /// [`WindowsMap`] counting its mutable borrows, so a clip computed from
 /// it can tell it is still current ([`KmsBackend::subwindow_mode_clip`]).
@@ -597,7 +597,7 @@ pub(crate) struct RandrIdAllocator {
 /// must never alias by accident. Same-device provider coalescing is an
 /// explicit projection decision based on Vulkan's advertised primary node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum RandrProviderEndpoint {
+enum RandrProviderEndpoint {
     Kms(crate::platform::drm::DrmDeviceKey),
     Render(crate::kms::render::platform::RenderDeviceId),
 }
@@ -647,7 +647,7 @@ pub(crate) enum ConnectorConfig {
 /// [`ConnectorConfig::restorable_route`], so that addition stays local
 /// instead of touching each consumer (design, "P3 extends `last_enabled`").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RememberedRoute {
+struct RememberedRoute {
     pub mode: yserver_core::backend::ModeSpec,
     pub x: i32,
     pub y: i32,
@@ -655,7 +655,7 @@ pub(crate) struct RememberedRoute {
 
 impl ConnectorConfig {
     /// The route policy this config remembers, or `None` when it is `Off`.
-    pub(crate) fn restorable_route(self) -> Option<RememberedRoute> {
+    fn restorable_route(self) -> Option<RememberedRoute> {
         match self {
             Self::Off => None,
             Self::Enabled {
@@ -677,7 +677,7 @@ impl ConnectorConfig {
     }
 
     /// The layout rectangle this config occupies, or `None` when it is `Off`.
-    pub(crate) fn placed_rect(self) -> Option<crate::kms::render::platform::LayoutRect> {
+    fn placed_rect(self) -> Option<crate::kms::render::platform::LayoutRect> {
         match self {
             Self::Off => None,
             Self::Enabled {
@@ -849,7 +849,7 @@ impl RandrIdAllocator {
         self.next
     }
 
-    pub(crate) fn provider_id_for(&mut self, endpoint: RandrProviderEndpoint) -> u32 {
+    fn provider_id_for(&mut self, endpoint: RandrProviderEndpoint) -> u32 {
         if let Some(id) = self.providers.get(&endpoint) {
             return *id;
         }
@@ -864,16 +864,13 @@ impl RandrIdAllocator {
     /// projected earlier in the process lifetime but is not part of the
     /// current provider set. Request paths must additionally validate the
     /// result against [`KmsBackend::randr_provider_endpoints`].
-    pub(crate) fn provider_endpoint_for_id(
-        &self,
-        provider_id: u32,
-    ) -> Option<RandrProviderEndpoint> {
+    fn provider_endpoint_for_id(&self, provider_id: u32) -> Option<RandrProviderEndpoint> {
         self.providers
             .iter()
             .find_map(|(endpoint, id)| (*id == provider_id).then_some(*endpoint))
     }
 
-    pub(crate) fn ids_for(&mut self, output_key: &OutputKey) -> ConnectorIds {
+    fn ids_for(&mut self, output_key: &OutputKey) -> ConnectorIds {
         if let Some(entry) = self.connectors.get(output_key) {
             return entry.ids;
         }
@@ -900,7 +897,7 @@ impl RandrIdAllocator {
         ids
     }
 
-    pub(crate) fn mode_id(&mut self, mode: &crate::platform::drm::Mode) -> u32 {
+    pub(super) fn mode_id(&mut self, mode: &crate::platform::drm::Mode) -> u32 {
         let identity = ModeIdentity::from(mode);
         if let Some(id) = self.modes.get(&identity) {
             return *id;
@@ -913,7 +910,7 @@ impl RandrIdAllocator {
     /// Output keys whose layout a client has explicitly configured
     /// (SetCrtcConfig/SetScreenSize). The auto-layout recompact must
     /// leave these where the client placed them — see Task 5.1.
-    pub(crate) fn client_configured_keys(&self) -> HashSet<OutputKey> {
+    fn client_configured_keys(&self) -> HashSet<OutputKey> {
         self.connectors
             .iter()
             .filter(|(_, e)| e.client_configured)
@@ -921,7 +918,7 @@ impl RandrIdAllocator {
             .collect()
     }
 
-    pub(crate) fn connected_keys(&self) -> HashSet<OutputKey> {
+    pub(super) fn connected_keys(&self) -> HashSet<OutputKey> {
         self.connectors
             .iter()
             .filter(|(_, entry)| entry.connected)
@@ -929,7 +926,7 @@ impl RandrIdAllocator {
             .collect()
     }
 
-    pub(crate) fn known_connectors(&self) -> Vec<(OutputKey, ConnectorIds)> {
+    fn known_connectors(&self) -> Vec<(OutputKey, ConnectorIds)> {
         self.connectors
             .iter()
             .map(|(key, entry)| (key.clone(), entry.ids))
@@ -939,7 +936,7 @@ impl RandrIdAllocator {
     /// Get or create the registry entry for a connector, allocating
     /// stable ids on first sight. New entries default to disconnected,
     /// Off, not-client-configured, empty mode list.
-    pub(crate) fn entry_mut(&mut self, key: &OutputKey) -> &mut ConnectorEntry {
+    fn entry_mut(&mut self, key: &OutputKey) -> &mut ConnectorEntry {
         if !self.connectors.contains_key(key) {
             // Allocate ids (also inserts the default entry).
             let _ = self.ids_for(key);

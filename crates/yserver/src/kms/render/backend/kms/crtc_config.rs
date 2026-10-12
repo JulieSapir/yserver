@@ -39,7 +39,7 @@ impl KmsBackend {
     /// until every CRTC has been disabled successfully. On failure the caller
     /// fail-stops without applying the snapshot, which is safer than dropping
     /// a framebuffer the kernel may still scan out.
-    pub(in crate::kms::render::backend) fn pending_pageflip_crtcs(&self) -> HashSet<CrtcKey> {
+    pub(super) fn pending_pageflip_crtcs(&self) -> HashSet<CrtcKey> {
         self.platform
             .outputs
             .iter()
@@ -61,7 +61,7 @@ impl KmsBackend {
             .collect()
     }
 
-    pub(in crate::kms::render::backend) fn quiesce_before_topology_mutation(
+    pub(super) fn quiesce_before_topology_mutation(
         &mut self,
         context: &'static str,
     ) -> io::Result<()> {
@@ -117,7 +117,7 @@ impl KmsBackend {
         Ok(())
     }
 
-    pub(in crate::kms::render::backend) fn recover_failed_crtc_config(
+    fn recover_failed_crtc_config(
         &mut self,
         restore_old_topology: bool,
         original: io::Error,
@@ -149,7 +149,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn scanout_m1_topology_signature(&self) -> u64 {
+    pub(super) fn scanout_m1_topology_signature(&self) -> u64 {
         use std::hash::{Hash, Hasher};
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -237,7 +237,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn wake_crtc_config_ready(&self) {
+    pub(super) fn wake_crtc_config_ready(&self) {
         let Some(sender) = self.input_sender.as_ref() else {
             return;
         };
@@ -246,10 +246,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn remove_crtc_config_ready_announcement(
-        &mut self,
-        token: CrtcConfigToken,
-    ) {
+    fn remove_crtc_config_ready_announcement(&mut self, token: CrtcConfigToken) {
         self.ready_crtc_config_announcements
             .retain(|announced| *announced != token);
     }
@@ -266,7 +263,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn crtc_enable_needs_async_qualification(
+    fn crtc_enable_needs_async_qualification(
         &self,
         output_key: &OutputKey,
         mode: yserver_core::backend::ModeSpec,
@@ -293,7 +290,7 @@ impl KmsBackend {
         })
     }
 
-    pub(in crate::kms::render::backend) fn enqueue_prepared_crtc_config_probe(
+    fn enqueue_prepared_crtc_config_probe(
         &mut self,
         output_id: u32,
         output_key: OutputKey,
@@ -385,7 +382,7 @@ impl KmsBackend {
         Ok(token)
     }
 
-    pub(in crate::kms::render::backend) fn discover_crtc_config_output(
+    fn discover_crtc_config_output(
         &mut self,
         output_key: &OutputKey,
         output_device: &Rc<crate::drm::Device>,
@@ -422,10 +419,7 @@ impl KmsBackend {
         })
     }
 
-    pub(in crate::kms::render::backend) fn stale_crtc_config_probe_reason(
-        &self,
-        pending: &PendingCrtcConfigProbe,
-    ) -> Option<String> {
+    fn stale_crtc_config_probe_reason(&self, pending: &PendingCrtcConfigProbe) -> Option<String> {
         if !self.scanout_allowed() {
             return Some(format!(
                 "VT/DRM-master state is {:?}, not Active",

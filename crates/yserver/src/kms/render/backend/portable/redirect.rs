@@ -96,7 +96,7 @@ impl KmsBackend {
     /// most of that content via the normal paint flow for
     /// non-compositor cases, and the Stage 4d compositor-floor
     /// scene-walk presents siblings directly.
-    pub(in crate::kms::render::backend) fn seed_backing_from_parent(
+    pub(super) fn seed_backing_from_parent(
         &mut self,
         w_xid: u32,
         b_id: crate::kms::render::store::DrawableId,
@@ -219,7 +219,7 @@ impl KmsBackend {
     /// each window's leaf, not the about-to-be-installed route. Keep
     /// the per-window/stacking rules in sync with
     /// `scene::emit_window_subtree` (scene.rs:2406).
-    pub(in crate::kms::render::backend) fn overlay_backing_inferiors(
+    pub(super) fn overlay_backing_inferiors(
         &mut self,
         w_xid: u32,
         b_id: crate::kms::render::store::DrawableId,

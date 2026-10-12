@@ -377,10 +377,7 @@ impl KmsBackend {
 /// Sum of character advances for a run, with the X11 nonexistent-
 /// char rule: missing chars use the font's default_char; if that's
 /// missing too they contribute 0 (drawn as nothing).
-pub(in crate::kms::render::backend) fn text_advance(
-    fs: &crate::kms::core::FontState,
-    chars: &[char],
-) -> i32 {
+fn text_advance(fs: &crate::kms::core::FontState, chars: &[char]) -> i32 {
     let default_ci =
         char::from_u32(u32::from(fs.metrics.default_char)).and_then(|d| fs.char_info_cache.get(&d));
     chars

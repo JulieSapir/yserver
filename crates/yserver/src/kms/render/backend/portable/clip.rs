@@ -109,7 +109,7 @@ impl KmsBackend {
     /// possible, then intersect `rects` against the current clip state.
     /// If the source pixmap has been freed after installation into the GC,
     /// the cached bytes remain valid and only the clip origin is updated.
-    pub(in crate::kms::render::backend) fn intersect_with_current_clip_live(
+    pub(super) fn intersect_with_current_clip_live(
         &mut self,
         rects: &[Rectangle16],
     ) -> Vec<Rectangle16> {
@@ -321,10 +321,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn materialize_pending_clip_mask_cache_on_free(
-        &mut self,
-        host_xid: u32,
-    ) {
+    pub(super) fn materialize_pending_clip_mask_cache_on_free(&mut self, host_xid: u32) {
         let Some(cache) = self.clip_mask_cache.as_ref() else {
             return;
         };
@@ -401,10 +398,7 @@ impl KmsBackend {
 
     /// Storage dimensions for a host xid, in pixels. `None` if the
     /// drawable is unknown.
-    pub(in crate::kms::render::backend) fn drawable_dims(
-        &self,
-        host_xid: u32,
-    ) -> Option<(u32, u32)> {
+    pub(super) fn drawable_dims(&self, host_xid: u32) -> Option<(u32, u32)> {
         let id = self.store.lookup(host_xid)?;
         let d = self.store.get(id)?;
         Some((d.storage.extent.width, d.storage.extent.height))
@@ -422,7 +416,7 @@ impl KmsBackend {
     /// against descendant C of redirected W at offset
     /// `(cx, cy)` against W lands at C's rect + `(cx, cy)` in
     /// W's backing.
-    pub(in crate::kms::render::backend) fn shift_rectangles_for_paint(
+    pub(super) fn shift_rectangles_for_paint(
         rects: &[Rectangle16],
         (dx, dy): (i32, i32),
     ) -> std::borrow::Cow<'_, [Rectangle16]> {
@@ -445,7 +439,7 @@ impl KmsBackend {
     /// A backing-space destination clip (`None` = unclipped) narrowed to
     /// where `dst_host_xid` may draw in a backing it shares
     /// ([`Self::shared_backing_draw_clip`]).
-    pub(in crate::kms::render::backend) fn narrow_dst_clip_to_shared_backing(
+    pub(super) fn narrow_dst_clip_to_shared_backing(
         &self,
         dst_host_xid: u32,
         target: &PaintTarget,
@@ -484,7 +478,7 @@ impl KmsBackend {
     /// through a redirected ancestor, the per-rect scissor in
     /// the engine operates against the backing's storage extent,
     /// so the clip must move with it.
-    pub(in crate::kms::render::backend) fn shift_dst_picture_clip(
+    pub(super) fn shift_dst_picture_clip(
         clip: Option<Vec<Rectangle16>>,
         offset: (i32, i32),
     ) -> Option<Vec<Rectangle16>> {
@@ -605,12 +599,12 @@ impl KmsBackend {
 }
 
 /// `v + by`, saturated to the wire's `INT16`.
-pub(in crate::kms::render::backend) fn shift_i16(v: i16, by: i32) -> i16 {
+pub(super) fn shift_i16(v: i16, by: i32) -> i16 {
     (i32::from(v) + by).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 /// `rects` through `clip`.
-pub(in crate::kms::render::backend) fn apply_subwindow_mode_clip(
+pub(super) fn apply_subwindow_mode_clip(
     clip: &SubwindowModeClip,
     rects: &[Rectangle16],
 ) -> Vec<Rectangle16> {
@@ -773,11 +767,7 @@ pub(in crate::kms::render::backend) fn intersect_rect_with_clip(
 ///
 /// Out-of-i16 results saturate; X11 fixed-point clips never need
 /// more than 16-bit signed coords on the wire.
-pub(in crate::kms::render::backend) fn translate_clip_rects(
-    rects: &[Rectangle16],
-    dx: i32,
-    dy: i32,
-) -> Vec<Rectangle16> {
+pub(super) fn translate_clip_rects(rects: &[Rectangle16], dx: i32, dy: i32) -> Vec<Rectangle16> {
     rects
         .iter()
         .map(|r| {
@@ -799,10 +789,7 @@ pub(in crate::kms::render::backend) fn translate_clip_rects(
 /// `union { a ∩ b : a ∈ a_list, b ∈ b_list }`.
 ///
 /// Helper for `compute_render_composite_clip` below.
-pub(in crate::kms::render::backend) fn intersect_clip_lists(
-    a: &[Rectangle16],
-    b: &[Rectangle16],
-) -> Vec<Rectangle16> {
+pub(super) fn intersect_clip_lists(a: &[Rectangle16], b: &[Rectangle16]) -> Vec<Rectangle16> {
     let mut out = Vec::with_capacity(a.len() * b.len());
     for ra in a {
         let ax0 = i32::from(ra.x);
@@ -831,9 +818,7 @@ pub(in crate::kms::render::backend) fn intersect_clip_lists(
     out
 }
 
-pub(in crate::kms::render::backend) fn local_rects_to_region(
-    rects: Vec<Rectangle16>,
-) -> Vec<xfixes::RegionRect> {
+pub(super) fn local_rects_to_region(rects: Vec<Rectangle16>) -> Vec<xfixes::RegionRect> {
     rects
         .into_iter()
         .map(|r| xfixes::RegionRect {
@@ -847,10 +832,7 @@ pub(in crate::kms::render::backend) fn local_rects_to_region(
 
 /// `rects` cut to `keep`, both in one coordinate space; pieces that no
 /// longer fit the wire types are dropped.
-pub(in crate::kms::render::backend) fn clip_rects16(
-    rects: &[Rectangle16],
-    keep: &[ash::vk::Rect2D],
-) -> Vec<Rectangle16> {
+pub(super) fn clip_rects16(rects: &[Rectangle16], keep: &[ash::vk::Rect2D]) -> Vec<Rectangle16> {
     rects
         .iter()
         .filter(|r| r.width > 0 && r.height > 0)
@@ -885,7 +867,7 @@ pub(in crate::kms::render::backend) fn clip_rects16(
 /// `outer \ inner` (top strip, bottom strip, middle-band left strip,
 /// middle-band right strip — Xorg/pixman band order). If `inner`
 /// doesn't intersect `outer`, returns `[outer]` unchanged.
-pub(in crate::kms::render::backend) fn subtract_one_rect_clip(
+pub(super) fn subtract_one_rect_clip(
     outer: ash::vk::Rect2D,
     inner: ash::vk::Rect2D,
 ) -> Vec<ash::vk::Rect2D> {

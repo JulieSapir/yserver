@@ -87,7 +87,7 @@ impl KmsBackend {
     /// undefined X byte across (a GL client's background is commonly 0,
     /// which picom then shows through). Called after each raw copy with
     /// the rects it wrote.
-    pub(in crate::kms::render::backend) fn stamp_opaque_alpha_if_shared(
+    pub(super) fn stamp_opaque_alpha_if_shared(
         &mut self,
         target: PaintTarget,
         rects: &[ash::vk::Rect2D],
@@ -380,7 +380,7 @@ impl KmsBackend {
 
     /// `border_width` of a tracked window as an `i32`, or 0 for the root
     /// / an untracked xid (#133: the root window has no border).
-    pub(in crate::kms::render::backend) fn window_border_width(&self, host_xid: u32) -> i32 {
+    pub(super) fn window_border_width(&self, host_xid: u32) -> i32 {
         self.windows
             .get(&host_xid)
             .map_or(0, |g| i32::from(g.border_width))
@@ -540,7 +540,7 @@ impl KmsBackend {
     /// the window's to overwrite) — `fbCopyWindow`'s old `borderClip`
     /// intersected with the new one. Whatever the copy cannot cover is
     /// exposed by the core configure path, as in Xorg.
-    pub(in crate::kms::render::backend) fn carry_shared_backing_pixels_on_move(
+    pub(super) fn carry_shared_backing_pixels_on_move(
         &mut self,
         host_xid: u32,
         source: SharedBackingMoveSource,
@@ -627,7 +627,7 @@ impl KmsBackend {
     /// coordinates so `copy_area` can subtract them before dispatch. Using
     /// each sibling's resolved backing offset, rather than just its immediate
     /// `(x, y)`, also handles cousins reached through wrapper windows.
-    pub(in crate::kms::render::backend) fn copy_area_shared_backing_occluders(
+    pub(super) fn copy_area_shared_backing_occluders(
         &self,
         dst_host_xid: u32,
         dst_target: &PaintTarget,

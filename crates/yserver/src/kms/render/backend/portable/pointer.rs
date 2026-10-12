@@ -49,10 +49,7 @@ impl KmsBackend {
     /// inputs. Falls back to the root container when the cursor resolves to
     /// the root window or the hit window has no host backing.
     #[allow(clippy::cast_possible_truncation)]
-    pub(in crate::kms::render::backend) fn resource_pointer_host_xid(
-        &mut self,
-        server_state: &ServerState,
-    ) -> u32 {
+    pub(super) fn resource_pointer_host_xid(&mut self, server_state: &ServerState) -> u32 {
         self.prune_input_only_pointer_hosts(server_state);
         let Some((mut resid, _, _)) = server_state
             .root_pointer_target_at(self.core.cursor_x as i16, self.core.cursor_y as i16)
@@ -379,7 +376,7 @@ impl KmsBackend {
         self.emit_pointer(ev);
     }
 
-    pub(in crate::kms::render::backend) fn emit_floating_pointer_event_at(
+    pub(super) fn emit_floating_pointer_event_at(
         &mut self,
         server_state: &ServerState,
         origin: yserver_core::core_loop::InputOrigin,

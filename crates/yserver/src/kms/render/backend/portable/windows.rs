@@ -161,10 +161,7 @@ impl KmsBackend {
     /// `configure_subwindow` (#143) and a border-width change migrates
     /// (see [`Self::relayout_window_leaf_storage_for_border_change`]),
     /// so both call [`Self::sync_window_leaf_storage`] directly.
-    pub(in crate::kms::render::backend) fn sync_window_leaf_storage_to_geometry(
-        &mut self,
-        host_xid: u32,
-    ) {
+    pub(super) fn sync_window_leaf_storage_to_geometry(&mut self, host_xid: u32) {
         self.sync_window_leaf_storage(host_xid, LeafContent::Discard);
     }
 
@@ -1029,7 +1026,7 @@ impl KmsBackend {
     /// source or the layout changes is what makes it correct at the
     /// next map. Xorg has to defer because its border pixels live in
     /// the screen pixmap, where an unmapped window owns nothing.
-    pub(in crate::kms::render::backend) fn paint_window_border(
+    pub(super) fn paint_window_border(
         &mut self,
         host_xid: u32,
         tile_origin: (i32, i32),
@@ -1281,7 +1278,7 @@ impl KmsBackend {
     /// `paint_window_background_rect` / `map_subwindow` pass `(0, 0)`
     /// for the same reason. Closing it is one plumbing change that
     /// fixes both tiles at once; it is not step 4's to make.
-    pub(in crate::kms::render::backend) fn border_tile_origin(&self, _host_xid: u32) -> (i32, i32) {
+    pub(super) fn border_tile_origin(&self, _host_xid: u32) -> (i32, i32) {
         (0, 0)
     }
 
@@ -1554,7 +1551,7 @@ impl KmsBackend {
 
     /// Record a window's geometry, parent and background, unviewable and without storage.
     #[allow(clippy::too_many_arguments)]
-    pub(in crate::kms::render::backend) fn register_window_geometry(
+    fn register_window_geometry(
         &mut self,
         host_xid: u32,
         x: i16,
@@ -1676,17 +1673,13 @@ impl KmsBackend {
     }
 
     /// True for the two windows whose storage is outside the viewability lifecycle.
-    pub(in crate::kms::render::backend) fn storage_lifecycle_exempt(&self, host_xid: u32) -> bool {
+    pub(super) fn storage_lifecycle_exempt(&self, host_xid: u32) -> bool {
         host_xid == self.core.window_id
             || host_xid == yserver_core::resources::COMPOSITE_OVERLAY_WINDOW.0
     }
 
     /// A paint op found no target: a known window is hidden (clipped away), anything else a gap.
-    pub(in crate::kms::render::backend) fn log_unresolved_target(
-        &self,
-        host_xid: u32,
-        method: &'static str,
-    ) {
+    pub(super) fn log_unresolved_target(&self, host_xid: u32, method: &'static str) {
         if self.windows.contains_key(&host_xid) {
             log::trace!("render {method}: window 0x{host_xid:x} is not viewable; clipped away");
         } else {

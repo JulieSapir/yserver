@@ -277,7 +277,7 @@ impl KmsBackend {
     /// top)`. Empty glyphs (e.g. SPACE) return a `(vec![0u8], 1, 1,
     /// lsb, top)` placeholder so the union-bbox math has something
     /// to work with. None when the font isn't known.
-    pub(in crate::kms::render::backend) fn render_glyph_for_cursor(
+    fn render_glyph_for_cursor(
         &self,
         font_xid: u32,
         ch: u16,
@@ -559,9 +559,7 @@ impl KmsBackend {
 
     /// Deadline for `next_wakeup`: the animation's next frame, only
     /// while it could actually be displayed (same gates as the tick).
-    pub(in crate::kms::render::backend) fn cursor_anim_deadline(
-        &self,
-    ) -> Option<std::time::Instant> {
+    pub(super) fn cursor_anim_deadline(&self) -> Option<std::time::Instant> {
         if !self.kms_outputs_active || !self.scanout_allowed() {
             return None;
         }
@@ -609,7 +607,7 @@ impl KmsBackend {
     /// former tail of `refresh_effective_cursor`, shared with the
     /// animation tick. Keeps the sample-view readiness guard
     /// (Vk-less fixtures build records without sprite allocs).
-    pub(in crate::kms::render::backend) fn display_cursor_by_handle(&mut self, xid: u32) {
+    fn display_cursor_by_handle(&mut self, xid: u32) {
         // XFIXES HideCursor: the effective cursor (and a running
         // animation) keep advancing, nothing reaches the screen.
         // `apply_cursor_hidden(false)` re-displays the current one.

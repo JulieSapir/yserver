@@ -23,7 +23,7 @@ use std::{
 };
 use yserver_core::{backend::Backend as _, server::ServerState};
 
-pub(in crate::kms::render::backend) fn try_acquire_master_bounded<F>(
+fn try_acquire_master_bounded<F>(
     mut attempt: F,
     attempts: usize,
     delay: std::time::Duration,
@@ -263,7 +263,7 @@ impl KmsBackend {
         self.input_thread_control = Some(control);
     }
 
-    pub(in crate::kms::render::backend) fn pause_input_thread(&self) -> bool {
+    fn pause_input_thread(&self) -> bool {
         if let Some(control) = self.input_thread_control.as_ref() {
             control.pause();
             true
@@ -272,7 +272,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn resume_input_thread(&self) {
+    fn resume_input_thread(&self) {
         if let Some(control) = self.input_thread_control.as_ref() {
             control.resume();
         }
@@ -283,7 +283,7 @@ impl KmsBackend {
     ///
     /// The input-event accumulator lives on the dedicated input thread; send
     /// the new extent via `InputThreadControl::push_resize`.
-    pub(in crate::kms::render::backend) fn update_input_extent(&mut self, fb_w: u16, fb_h: u16) {
+    pub(super) fn update_input_extent(&mut self, fb_w: u16, fb_h: u16) {
         let w = u32::from(fb_w);
         let h = u32::from(fb_h);
         if let Some(ctrl) = self.input_thread_control.as_ref() {
@@ -690,7 +690,7 @@ impl KmsBackend {
     /// Request process shutdown through the core-channel sender
     /// (same mechanism the input thread uses for Zap). Called on
     /// unrecoverable errors during resume or renderer/device loss.
-    pub(in crate::kms::render::backend) fn request_exit(&self) {
+    pub(super) fn request_exit(&self) {
         if let Some(s) = &self.input_sender {
             let _ = s.send(yserver_core::core_loop::Message::Shutdown);
         } else {

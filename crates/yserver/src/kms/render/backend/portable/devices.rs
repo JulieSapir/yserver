@@ -24,7 +24,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn handle_host_key(
+    fn handle_host_key(
         &mut self,
         state: &mut ServerState,
         raw: HostKeyEvent,
@@ -293,7 +293,7 @@ impl KmsBackend {
     /// enabled state. Server reset uses this while the old XI topology is
     /// still present; VT/removal cleanup additionally disables or unregisters
     /// the source afterwards.
-    pub(in crate::kms::render::backend) fn release_device_holds(
+    fn release_device_holds(
         &mut self,
         state: &mut ServerState,
         source_id: yserver_core::xinput::InputSourceId,
@@ -349,10 +349,7 @@ impl KmsBackend {
     /// Disable one physical facet in Xorg order. The hierarchy descriptor is
     /// captured while attached, then explicitly handed to the emitter before
     /// the live facet is floated.
-    pub(in crate::kms::render::backend) fn publish_disabled_xi_facet(
-        state: &mut ServerState,
-        device_id: u16,
-    ) {
+    fn publish_disabled_xi_facet(state: &mut ServerState, device_id: u16) {
         let was_enabled = state
             .xi_devices
             .device(device_id)

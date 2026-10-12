@@ -91,7 +91,7 @@ impl KmsBackend {
         Some(self.core.xkb_desc.key_action(keycode, slot))
     }
 
-    pub(in crate::kms::render::backend) fn lock_modifiers_action(
+    pub(super) fn lock_modifiers_action(
         &self,
         keycode: u8,
     ) -> Option<crate::kms::xkb_desc::Action> {
@@ -201,7 +201,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn cook_floating_host_key(
+    pub(super) fn cook_floating_host_key(
         &mut self,
         device_id: u16,
         raw: HostKeyEvent,
@@ -394,7 +394,7 @@ impl KmsBackend {
     /// keymap doesn't compile (a writer bug; never expected) the description
     /// and keymap stay and it's logged; the changes still go out, as Xorg's
     /// notifications do for a change that alters nothing.
-    pub(crate) fn mutate_keymap(
+    fn mutate_keymap(
         &mut self,
         f: impl FnOnce(&mut crate::kms::xkb_desc::XkbDesc) -> crate::kms::xkb_desc::XkbChanges,
     ) -> crate::kms::xkb_desc::XkbChanges {
@@ -414,7 +414,7 @@ impl KmsBackend {
     /// changes nothing and sends nothing. The events are Xorg's: a
     /// NewKeyboardNotify when the request's keycode range isn't the
     /// server's (and then nothing else), else `XkbSendNotification`'s.
-    pub(in crate::kms::render::backend) fn xkb_set_map(
+    fn xkb_set_map(
         &mut self,
         body: &[u8],
         client_is_ancient: bool,
@@ -495,10 +495,7 @@ impl KmsBackend {
     /// from the request, nTotalSI after), then for `recomputeActions` the
     /// `XkbSendNotification` of `XkbUpdateActions` over the whole keycode
     /// range (cause: our XKB major, minor 11).
-    pub(in crate::kms::render::backend) fn xkb_set_compat_map(
-        &mut self,
-        body: &[u8],
-    ) -> yserver_core::backend::XkbSetOutcome {
+    fn xkb_set_compat_map(&mut self, body: &[u8]) -> yserver_core::backend::XkbSetOutcome {
         use crate::kms::xkb_desc::set_compat;
         use yserver_core::backend::{XkbSetEvent, XkbSetOutcome};
         let req = Self::xkb_whole_request(11, body);
@@ -537,10 +534,7 @@ impl KmsBackend {
     /// whose map was set are recomputed, and nothing when no map is in use)
     /// and its notifications. The keyboard LEDs follow the new maps (the
     /// install resyncs them, Xorg's `XkbDDXUpdateDeviceIndicators`).
-    pub(in crate::kms::render::backend) fn xkb_set_indicator_map(
-        &mut self,
-        body: &[u8],
-    ) -> yserver_core::backend::XkbSetOutcome {
+    fn xkb_set_indicator_map(&mut self, body: &[u8]) -> yserver_core::backend::XkbSetOutcome {
         use crate::kms::xkb_desc::set_compat;
         use yserver_core::backend::{XkbIndicatorMapsChange, XkbSetEvent, XkbSetOutcome};
         let req = Self::xkb_whole_request(14, body);
@@ -585,7 +579,7 @@ impl KmsBackend {
     /// events are Xorg's: NamesNotify, then for indicator names an
     /// ExtensionDeviceNotify (IndicatorNames) with the names and maps
     /// present and the lit indicators.
-    pub(in crate::kms::render::backend) fn xkb_set_names(
+    fn xkb_set_names(
         &mut self,
         body: &[u8],
         atom_name: &dyn Fn(u32) -> Option<String>,
@@ -632,7 +626,7 @@ impl KmsBackend {
     /// changed, and NewKeyboardNotify(Geometry) over the unchanged keycode
     /// range. The geometry body isn't kept, so GetGeometry keeps answering
     /// found=False.
-    pub(in crate::kms::render::backend) fn xkb_set_geometry(
+    fn xkb_set_geometry(
         &mut self,
         body: &[u8],
         atom_name: &dyn Fn(u32) -> Option<String>,

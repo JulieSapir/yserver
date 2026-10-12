@@ -84,7 +84,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn register_pending_present_batch(
+    fn register_pending_present_batch(
         &mut self,
         mut batch: crate::kms::render::present_completion::PendingPresentBatch,
     ) {
@@ -125,7 +125,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn drain_engine_present_batches(&mut self) {
+    pub(super) fn drain_engine_present_batches(&mut self) {
         for batch in self.engine.drain_present_batches() {
             self.register_pending_present_batch(batch);
         }
@@ -195,7 +195,7 @@ impl KmsBackend {
         }
     }
 
-    pub(in crate::kms::render::backend) fn force_drain_all_present_batches(
+    pub(super) fn force_drain_all_present_batches(
         &mut self,
     ) -> Vec<yserver_core::backend::CompletedPresentEvent> {
         let mut completed = Vec::new();
