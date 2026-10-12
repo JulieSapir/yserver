@@ -1,3 +1,19 @@
+//! RANDR and Xinerama requests: `handle_randr_request` hands each RANDR
+//! minor to its own `handle_randr_*` fn. This file holds the CRTC-config
+//! continuation types, the helpers several groups share and the
+//! CreateMode/CreateLease and FreeLease stubs; the rest lives in:
+//!
+//! - `screen`: version, SelectInput, screen info, size and resources (0,
+//!   4–8, 25), RANDR 1.0 SetScreenConfig (2).
+//! - `output`: output info and primary (9, 30, 31), output properties
+//!   (10–15).
+//! - `crtc`: CRTC info and config (20, 21), gamma (22–24), transforms
+//!   (26, 27), panning (28, 29), the asynchronous CRTC-config
+//!   start/complete/reply.
+//! - `provider`: providers (32–35), provider properties (36–41).
+//! - `monitor`: monitors (42–44).
+//! - `xinerama`: the Xinerama extension.
+
 mod crtc;
 mod monitor;
 mod output;

@@ -1,3 +1,23 @@
+//! XInput requests, XI 1.x and XI2 on the one major opcode:
+//! `handle_xi2_request` checks the request length and hands each minor to
+//! its own `handle_xi1_*` / `handle_xi_*` fn; replies go out through
+//! `xi_write_reply`. XIWarpPointer lives in `focus_pointer`, XISetFocus and
+//! XIChangeHierarchy in `xi/mod.rs`. The per-minor fns live in:
+//!
+//! - `devices`: versions (1, 47), device lists (2, 48), open/close/mode
+//!   (3–5), keyboard/pointer device change (11, 12), client pointer
+//!   (44, 45).
+//! - `control`: motion history (10), feedback (22, 23), key/modifier/button
+//!   mappings (24–29), device state (30), bell (32), valuators (33), device
+//!   controls (34, 35).
+//! - `events`: XI1 selection (6, 7), don't-propagate lists (8, 9),
+//!   SendExtensionEvent (31), XI2 selection (46, 60).
+//! - `grabs`: XI1 grabs and AllowDeviceEvents (13–19), XI2 grabs and
+//!   XIAllowEvents (51–55).
+//! - `props`: XI1 (36–39) and XI2 (56–59) device properties.
+//! - `focus`: device focus (20, 21, 50), XIQueryPointer (40),
+//!   XIChangeCursor (42), barrier release (61).
+
 mod control;
 mod devices;
 mod events;
