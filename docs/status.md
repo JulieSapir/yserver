@@ -33,6 +33,11 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-12 FreeBSD dependency build workaround:** pin `libc` to
+  `0.2.189`; `0.2.190` removed `NOTE_PCTRLMASK` on FreeBSD, which
+  `nix 0.31.3` still requires. Revisit the pin when upstream compatibility
+  is restored.
+
 - **2026-10-07 #100 fix:** submit paint before
   DamageSubtract consumes coalesced damage and before XFixes FetchRegion
   publishes it. The KMS boundary drains render batches, open frames and queued
