@@ -58,6 +58,7 @@ fn manifest(dir: &str, edits: Vec<PathEdit>) -> Manifest {
         target: None,
         visibility: [("fn data".to_string(), "pub(super)".to_string())].into(),
         path_edits: edits,
+        sibling_moves: vec![],
         exceptions: BTreeMap::new(),
         locations: BTreeMap::new(),
         log_targets: BTreeMap::new(),
@@ -389,6 +390,7 @@ fn split_with(
         visibility: [("fn f".to_string(), "pub(super)".to_string())].into(),
         root_form: crate::apply::RootForm::Dir,
         path_edits: vec![],
+        sibling_moves: vec![],
         exceptions: BTreeMap::new(),
         locations: BTreeMap::new(),
         log_targets: BTreeMap::new(),
@@ -838,6 +840,7 @@ fn apply_and_verify_as(
         visibility: [("fn f".to_string(), "pub(super)".to_string())].into(),
         root_form,
         path_edits: edits,
+        sibling_moves: vec![],
         exceptions: BTreeMap::new(),
         locations: BTreeMap::new(),
         log_targets: BTreeMap::new(),
@@ -2044,5 +2047,113 @@ fn globs_imports_what_the_super_glob_supplied() {
         ],
         "{:?}",
         c.imports
+    );
+}
+
+/// `impl K { fn m }` in sibling file `a` moves to `dest` (`a` = no move),
+/// verified with the given `[[sibling_moves]]`.
+fn sibling(dest: &str, moves: &[(&str, &str, &str)]) -> Vec<String> {
+    let tmp = std::env::temp_dir().join(format!(
+        "split-test-{}-sib-{dest}-{}",
+        std::process::id(),
+        moves.len()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let table = format!(
+        "k::struct K => k::struct K\nk::a::impl K::fn m => k::{dest}::impl K::fn m\nk::b::fn g => k::b::fn g\nk::c::fn x => k::c::fn x\n"
+    );
+    std::fs::write(tmp.join("k.paths"), table).unwrap();
+    let m = Manifest {
+        source: "src/k.rs".into(),
+        module: "k".into(),
+        dir: "src/k".into(),
+        root_form: crate::apply::RootForm::File,
+        table: "k.paths".into(),
+        target: None,
+        visibility: BTreeMap::new(),
+        path_edits: vec![],
+        sibling_moves: moves
+            .iter()
+            .map(|(item, from, to)| crate::apply::SiblingMove {
+                item: (*item).into(),
+                from: (*from).into(),
+                to: (*to).into(),
+            })
+            .collect(),
+        exceptions: BTreeMap::new(),
+        locations: BTreeMap::new(),
+        log_targets: BTreeMap::new(),
+        modules: vec![],
+        path: tmp.join("k.toml"),
+    };
+    let root = "mod a;\nmod b;\nmod c;\n\npub struct K;\n";
+    let m_item = "impl K {\n    pub(super) fn m(&self) -> u32 {\n        1\n    }\n}\n";
+    let file = |own: &str, has_m: bool| {
+        format!(
+            "use super::*;\n\n{own}{}",
+            if has_m {
+                format!("\n{m_item}")
+            } else {
+                String::new()
+            }
+        )
+    };
+    let base = mem(&[
+        ("src/k.rs", root),
+        ("src/k/a.rs", &file("", true)),
+        ("src/k/b.rs", &file("fn g() -> u32 {\n    1\n}\n", false)),
+        ("src/k/c.rs", &file("fn x() -> u32 {\n    2\n}\n", false)),
+    ]);
+    let head = mem(&[
+        ("src/k.rs", root),
+        ("src/k/a.rs", &file("", dest == "a")),
+        (
+            "src/k/b.rs",
+            &file("fn g() -> u32 {\n    1\n}\n", dest == "b"),
+        ),
+        (
+            "src/k/c.rs",
+            &file("fn x() -> u32 {\n    2\n}\n", dest == "c"),
+        ),
+    ]);
+    let spec = Spec {
+        manifest: Some(&m),
+        old_root: m.source.clone(),
+        new_root: m.new_root(),
+        module: m.module.clone(),
+        delegate: None,
+        extract: None,
+    };
+    check(&spec, &base, &head, &[]).unwrap().1
+}
+
+const M: &str = "a::impl K::fn m";
+
+#[test]
+fn listed_sibling_move_passes() {
+    assert_eq!(sibling("b", &[(M, "a.rs", "b.rs")]), Vec::<String>::new());
+}
+
+#[test]
+fn unlisted_sibling_move_fails() {
+    has(
+        &sibling("b", &[]),
+        "loaded from src/k/b.rs (was src/k/a.rs)",
+    );
+}
+
+#[test]
+fn sibling_move_to_another_file_than_listed_fails() {
+    has(
+        &sibling("c", &[(M, "a.rs", "b.rs")]),
+        "but its sibling move is listed src/k/a.rs → src/k/b.rs",
+    );
+}
+
+#[test]
+fn stale_sibling_move_fails() {
+    has(
+        &sibling("a", &[(M, "a.rs", "b.rs")]),
+        "sibling move not needed",
     );
 }

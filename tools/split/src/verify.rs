@@ -258,6 +258,26 @@ pub fn check(
                 .push((e.from.clone(), e.to.clone()));
         }
     }
+    // Audited sibling-file moves, keyed by full old item key: (from, to).
+    let moves: BTreeMap<String, (String, String)> = spec
+        .manifest
+        .map(|m| {
+            m.sibling_moves
+                .iter()
+                .map(|x| {
+                    (
+                        tree::child(&m.full(""), &x.item),
+                        (join(&m.dir, &x.from), join(&m.dir, &x.to)),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let moved_used: std::cell::RefCell<BTreeSet<String>> = Default::default();
+    let files = SiblingMoves {
+        moves: &moves,
+        used: &moved_used,
+    };
     let vis_ok: BTreeMap<String, String> = spec
         .manifest
         .map(|m| {
@@ -397,6 +417,7 @@ pub fn check(
                         &inc_macros,
                         &mut incl,
                         false,
+                        &files,
                     ));
                 }
                 None => unpaired.push(*ob),
@@ -520,6 +541,7 @@ pub fn check(
                 &inc_macros,
                 &mut incl,
                 true,
+                &files,
             ));
         } else {
             errs.push(format!(
@@ -558,6 +580,9 @@ pub fn check(
     }
     for n in news {
         errs.push(format!("{}: new leaf ({}:{})", n.key(), n.file, n.line));
+    }
+    for k in moves.keys().filter(|k| !moved_used.borrow().contains(*k)) {
+        errs.push(format!("{k}: sibling move not needed"));
     }
     let used = rx.used.borrow();
     for (i, what) in ["exception", "location exception", "log target exception"]
@@ -684,11 +709,17 @@ pub fn check(
     Ok((info, errs))
 }
 
+struct SiblingMoves<'a> {
+    moves: &'a BTreeMap<String, (String, String)>,
+    used: &'a std::cell::RefCell<BTreeSet<String>>,
+}
+
 /// Include paths of a moved leaf resolve to the same bytes; `include!`,
 /// non-literal paths and macros that include are refused once the leaf
 /// changes directory, module or file. Leaves of files other than the split
 /// root must still come from the same file, except a delegated helper
-/// (`helper`), which may land in any file of the tree.
+/// (`helper`), which may land in any file of the tree, and a leaf listed
+/// under `[[sibling_moves]]` with exactly that old and new file.
 #[allow(clippy::too_many_arguments)]
 fn includes_ok(
     spec: &Spec,
@@ -700,10 +731,23 @@ fn includes_ok(
     inc_macros: &BTreeSet<String>,
     incl: &mut usize,
     helper: bool,
+    files: &SiblingMoves,
 ) -> Vec<String> {
     let mut errs = Vec::new();
     if !helper && ob.file != spec.old_root && na.file != ob.file {
-        errs.push(format!("{key}: loaded from {} (was {})", na.file, ob.file));
+        match files.moves.get(&ob.okey()) {
+            Some((from, to)) if *from == ob.file && *to == na.file => {
+                files.used.borrow_mut().insert(ob.okey());
+            }
+            Some((from, to)) => {
+                files.used.borrow_mut().insert(ob.okey());
+                errs.push(format!(
+                    "{key}: loaded from {} (was {}), but its sibling move is listed {from} → {to}",
+                    na.file, ob.file
+                ));
+            }
+            None => errs.push(format!("{key}: loaded from {} (was {})", na.file, ob.file)),
+        }
     }
     let moved = dir_of(&ob.file) != dir_of(&na.file);
     let relocated = ob.file != na.file || ob.module != na.module;

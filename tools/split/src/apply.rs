@@ -51,6 +51,10 @@ pub struct Manifest {
     /// descendant of its own (its log target leaves the old prefix).
     #[serde(default)]
     pub log_targets: BTreeMap<String, String>,
+    /// Audited moves of a leaf between two existing files of the tree (not
+    /// the split root): the only leaves `verify` lets change file.
+    #[serde(default)]
+    pub sibling_moves: Vec<SiblingMove>,
     pub modules: Vec<ModSpec>,
     #[serde(skip)]
     pub path: PathBuf,
@@ -76,6 +80,16 @@ pub struct ModSpec {
     /// Item keys (see `split items`); `*` matches any run of characters.
     #[serde(default)]
     pub items: Vec<String>,
+}
+
+/// One audited sibling-file move: old item key (relative, as in the other
+/// tables) and its exact old and new file, relative to `dir`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiblingMove {
+    pub item: String,
+    pub from: String,
+    pub to: String,
 }
 
 /// An include path literal edited by the move; both must resolve to the same
