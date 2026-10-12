@@ -26,6 +26,10 @@ def module_uses(text):
         l = lines[i]
         if l.startswith("#["):
             attr = i if attr is None else attr
+            depth = l.count("[") - l.count("]")
+            while depth > 0 and i + 1 < len(lines):
+                i += 1
+                depth += lines[i].count("[") - lines[i].count("]")
         elif USE.match(l):
             j = i
             while not re.search(r";\s*(//.*)?$", lines[j]):
@@ -203,6 +207,8 @@ def self_test():
         (body.format("min"), body.format("max"), False),
         ("#[cfg(test)]\nuse x::Y;\npub(crate) fn g() {}\n", "pub(super) fn g() {}\n", True),
         ("#[cfg(test)]\nfn g() {}\n", "fn g() {}\n", False),
+        ("#[allow(\n    unused,\n    reason = \"x\"\n)]\nuse a::*;\nfn g() {}\n", "fn g() {}\n", True),
+        ("#[allow(\n    unused\n)]\nfn g() {}\n", "fn g() {}\n", False),
         ("fn g() { a + b }\n", "fn g() { a - b }\n", False),
     ]
     ok = all((strip(a) == strip(b)) == want for a, b, want in cases)
