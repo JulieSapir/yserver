@@ -54,6 +54,10 @@ too_many_arguments = "allow"
 # protocol-parsing paths for no behavioural or measured gain.
 chunks_exact_to_as_chunks = "allow"
 
+# Explicit imports (docs/superpowers/plans/2026-10-12-explicit-imports.md);
+# `use super::*` in test modules and `pub` re-export globs are exempt.
+wildcard_imports = "warn"
+
 # Keep DWARF unwind info in release builds so `perf record --call-graph
 # dwarf` can resolve Rust frames. Without this, ~65% of samples in a
 # release-build flamegraph land in [unknown] frames. Optimisation level
