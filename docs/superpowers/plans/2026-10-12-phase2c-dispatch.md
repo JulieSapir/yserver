@@ -3,9 +3,11 @@
 Step 2c of `2026-10-08-source-layout-cleanup.md` ("split the arms … into
 per-minor fns, `xi2/` into `{events, devices, grabs, props, focus}`; reviewed
 as a refactor; HW XI smoke on eiger"). Branch `refactor/phase2c-dispatch`.
-**Proposal, not executed; revised 2026-10-12 after codex review** (tail
-params, binding check, drop order, splitter gate, xts baseline; decisions
-below). Inventory measured on master `4fdef034` with a
+**Executed 2026-10-12** on that branch (results and final trees below;
+xts XI/XIproto before/after and the eiger HW smoke pending); proposal
+revised after codex review (tail params, binding check, drop order,
+splitter gate, xts baseline; decisions below). Inventory measured on master
+`4fdef034` with a
 throwaway syn visitor over each match arm (not committed) and llvm-cov line
 coverage of the yserver-core lib tests (1,683 tests, default features).
 
@@ -409,7 +411,7 @@ delegate mode.
   56–59, 2, 48), `xinput test-xi2`, `tools/barrier-smoke.c` (61); RANDR:
   `xrandr --query`, mode/rotate/scale, `--setmonitor`, `--gamma`.
 
-## Target trees (estimated after fmt, ±5%: dedenting by 8 lets rustfmt rejoin lines)
+## Final trees (after `cargo +nightly fmt`)
 
 **XI**: under `xi/dispatch/`, so every log target stays a descendant of
 `process_request::xi::dispatch` (zero `[log_targets]` entries).
@@ -417,59 +419,106 @@ delegate mode.
 ```
 xi/mod.rs              575  unchanged (XI1 helpers, handle_xi_set_focus,
                             handle_xi_change_hierarchy, tail checks)
-xi/dispatch.rs        ~270  handle_xi2_request (length gates + match),
-                            xi_write_reply, child mod decls + globs
+xi/dispatch.rs         216  //! module map, handle_xi2_request (length
+                            gates + match), xi_write_reply, child mod decls
+                            + globs, the hoisted ClientByteOrder import
 xi/dispatch/
-  devices.rs          ~630  1, 47 version; 2, 48 enumeration; 3, 4, 5
+  devices.rs           649  1, 47 version; 2, 48 enumeration; 3, 4, 5
                             open/close/mode; 11, 12 change keyboard/pointer
                             device; 44, 45 client pointer
-  control.rs         ~1320  10 motion history; 22, 23 feedback; 24–29
+  control.rs          1307  10 motion history; 22, 23 feedback; 24–29
                             key/modifier/button maps; 30 device state;
                             32 bell; 33 valuators; 34, 35 device control
-  events.rs           ~780  6, 7 XI1 selection; 8, 9 dont-propagate;
+  events.rs            787  6, 7 XI1 selection; 8, 9 dont-propagate;
                             31 SendExtensionEvent; 46, 60 XI2 selection
-  grabs.rs           ~1770  13–19 XI1 grabs + AllowDeviceEvents;
+  grabs.rs            1772  13–19 XI1 grabs + AllowDeviceEvents;
                             51–55 XI2 grabs + XIAllowEvents
-  props.rs            ~650  36–39 XI1 properties; 56–59 XI2 properties
-  focus.rs            ~410  20, 21, 50 focus; 40 query pointer;
+  props.rs             649  36–39 XI1 properties; 56–59 XI2 properties
+  focus.rs             421  20, 21, 50 focus; 40 query pointer;
                             42 change cursor; 61 barrier release
 ```
 
-Extracted total ~5,560 for 4,793 arm lines (+16%: signatures, prelude,
-tail, attributes). Deviations from the plan's row: `control` added (14 arms,
-1.1k lines of feedback/mapping/control fit none of the five); `xi2/` →
-`xi/dispatch/` (the arms are XI1 and XI2, and the descendant rule);
-`focus` also holds the pointer requests. `grabs`/`props` repeat the
-basenames of `process_request/{grabs,props}.rs`; no body uses a `grabs::`
-or `props::` path (measured), so resolution is unaffected.
+`control` (14 arms) and `xi/dispatch/` instead of `xi2/` as proposed:
+the arms are XI1 and XI2, and the descendant rule. `grabs`/`props` repeat
+the basenames of `process_request/{grabs,props}.rs`; no body uses a
+`grabs::` or `props::` path, so resolution is unaffected.
 
 **RANDR**: under `randr_ext/` (descendants of `process_request::randr_ext`).
 
 ```
-randr_ext.rs     ~520  types, shared helpers (active_monitors,
-                       send_root_config_notify, unsupported warn, hoisted
-                       request_xid / RANDR_MAJOR_OPCODE / x11randr),
-                       handle_randr_request, the 16/45 and 46 stubs
+randr_ext.rs     387  //! module map, types, shared helpers (active_monitors,
+                      send_root_config_notify, unsupported warn pair,
+                      hoisted request_xid / RANDR_MAJOR_OPCODE / x11randr),
+                      handle_randr_request, the 16/45 and 46 stubs
 randr_ext/
-  screen.rs      ~610  0, 4, 5, 6, 7, 8, 25; set_screen_config + encoder (2)
-  output.rs      ~820  9, 30, 31; 10–15 output properties; output_exists,
-                       synthetic_output_property
-  crtc.rs        ~790  20, 21; 22–24 gamma; 26, 27 transform; 28, 29
-                       panning; crtc-config start/complete/reply;
-                       crtc_exists, crtc_is_leased
-  provider.rs    ~385  32–35; 36–41 provider properties;
-                       provider_relationship_protocol_error
-  monitor.rs     ~190  42–44
-  xinerama.rs    ~140  handle_xinerama_request: one [exceptions] entry
-                       (fn-local require_len! moves module; its expansion
-                       names resolve the same through `use super::*`)
+  screen.rs      611  0, 4, 5, 6, 7, 8, 25; set_screen_config + encoder (2),
+                      randr_client_knows_rates
+  output.rs      815  9, 30, 31; 10–15 output properties; output_exists,
+                      synthetic_output_property
+  crtc.rs        790  20, 21; 22–24 gamma; 26, 27 transform; 28, 29
+                      panning; crtc-config start/complete/reply;
+                      crtc_exists, crtc_is_leased
+  provider.rs    384  32–35; 36–41 provider properties;
+                      provider_relationship_protocol_error
+  monitor.rs     191  42–44
+  xinerama.rs    138  handle_xinerama_request: one [exceptions] entry
+                      (fn-local require_len! moves module; its expansion
+                      names resolve the same through `use super::*`)
 ```
 
-Helpers used by one child move with it; shared ones stay in the root
-(children see ancestor privates). `complete_crtc_config` is `pub(crate)`
-(called from `run.rs`): one root re-export on the manifest allowlist.
-Visibility delta: the callees become `pub(super)` (= today's reach: only the
-parent's dispatcher calls them): 58 XI, 36 RANDR.
+Helpers used by one child moved with it; shared ones stay in the root
+(children see ancestor privates). `send_root_config_notify` (only `monitor`
+calls it) stays in the root as listed in the approved tree. Root globs:
+`pub(crate) use crtc::*` keeps `complete_crtc_config` (run.rs) reachable as
+`process_request::complete_crtc_config`; `pub(super) use xinerama::*` keeps
+`handle_xinerama_request` reachable from the core dispatch (its visibility
+goes from `pub(super)` in `randr_ext` to `pub(in
+crate::core_loop::process_request)` in `xinerama`: same reach). Visibility
+delta, all `pub(super)` (= today's reach) except that one: 58 XI callees;
+33 RANDR callees + `set_screen_config`, its encoder and
+`start_crtc_config` (called across groups) + `handle_xinerama_request` = 37.
+
+## Results
+
+Commits on `refactor/phase2c-dispatch` (FF, distinct): `a6351fda`
+decisions 10–11, `0a571f85` splitter, `def9bef6` xts strict diff,
+`e4552e71` XI prep, `a0cc43da` XI extract, `ea82d009` XI move, `cd5d7798`
+RANDR prep, `9dfcc2e6` RANDR extract, `e35594e1` RANDR move, `88c1ff67`
+root docs, `c492f39c` blame-ignore for the six prep/extract/move commits. Manifests:
+`tools/split/manifests/{xi,randr}_2c_{prep,extract,move}.toml` (+ `.paths`).
+
+- **Splitter:** `bind.rs` 781 lines, `extract.rs` 1,833, fixtures
+  `tests_extract.rs` 448 (26 tests: one per modelled binding form, the
+  refusals, and the end-to-end cases listed above); 115 splitter tests,
+  clippy and nightly fmt clean. About 2× the 1.45k estimate, mostly
+  rustfmt's vertical layout of the checks.
+- **Prep (`verify --extract`, hoist):** XI 1 item, RANDR 8 items (9 names)
+  → OK. Two refinements were needed for RANDR, both narrowing a false
+  positive of the existing per-leaf check, not the check itself: a leaf
+  that binds a hoisted name itself (`set_screen_config`'s and
+  `handle_xinerama_request`'s own fn-local imports) is not compared on that
+  name (`extract::binds_locally`: an item at the top of the fn body, the
+  name absent from the signature); and the hoisted
+  `ClientByteOrder`/`x11randr` imports added to every leaf's traits in scope
+  are accepted only when proven non-traits by walking `yserver_protocol`'s
+  module tree to an enum / a module (`extract::non_trait_hoists`).
+- **Extract (`verify --extract`):** XI 58 arms → 13 returning, 12 void +
+  tail, 33 prelude + tail (exactly the inventory's 13/12/33), 4 kept,
+  `xi_write_reply`; 1,644 outer → param, 38 prelude, 1,289 module-scope
+  name occurrences checked. RANDR 35 arms → 34 returning, 1 void + tail
+  (SelectInput), 4 kept; 688 outer → param, 842 module scope. **No arm was
+  refused**: none extracted by hand (`by_hand` empty).
+- **Move (`verify --manifest --tests`):** XI 60/60 leaves identical, 58
+  visibility changes, 42 leaves with log calls moved to descendants; RANDR
+  57/57, 37 visibility changes, 1 audited exception, 7 log-target
+  descendants. Tests mapped 4013 / 4018 / 4126 (default / tcp-transport /
+  xdmcp), unchanged.
+- **Gate per commit:** nightly fmt, clippy `--workspace --all-targets -D
+  warnings` ×3 configs, workspace tests ×3 configs (core lib 1683 / 1683 /
+  1699, yserver lib 1619 / 1624 / 1626 + 116 ignored, protocol 391 / 391 /
+  481) green on every code commit; logs `target/gate-2c-<step>.log`.
+- **Pending (jos):** xts `XI` and `XIproto` on `4fdef034` and on this branch,
+  compared with `tools/xts-vs-baseline.py diff --strict`; eiger HW smoke.
 
 ## Commit sequence
 

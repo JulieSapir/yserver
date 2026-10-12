@@ -235,6 +235,10 @@ backend/
 `handle_xi2_request` / `handle_randr_request` into per-minor fns, `xi2/` into
 `{events, devices, grabs, props, focus}`. Reviewed as a refactor (bodies move
 per arm, not byte-pure), HW XI smoke on eiger. Not part of the move series.
+Executed 2026-10-12 (`2026-10-12-phase2c-dispatch.md`): `xi/dispatch/{devices,
+control, events, grabs, props, focus}`, `randr_ext/{screen, output, crtc,
+provider, monitor, xinerama}`; xts XI/XIproto before/after and the eiger HW
+smoke pending (jos).
 
 ## Phase 3: `yserver-render` crate (separate review, after phases 1–2)
 
@@ -440,7 +444,8 @@ phase 1 starts (jos writes that message).
 
 - **File size:** no non-test `.rs` over 5,000 lines and no test `.rs` over 6,000
   (ceilings; split by responsibility, not to hit a number). Exceptions until
-  their own steps land: `process_request/xi/dispatch.rs` (until 2c) and
+  their own steps land: `process_request/xi/dispatch.rs` (until 2c; 216
+  lines after it) and
   `backend/trait_impl.rs` (until 2.11b). CI step with an exception list.
 - **Tests:** rule 4 mapping holds against the phase-0 snapshot, plus tests
   added meanwhile.
