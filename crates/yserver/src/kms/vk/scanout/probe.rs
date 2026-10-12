@@ -53,7 +53,7 @@ impl DisposableProbeError {
     }
 
     #[must_use]
-    pub(crate) fn requires_quarantine(&self) -> bool {
+    pub(super) fn requires_quarantine(&self) -> bool {
         self.quarantine
     }
 
@@ -79,7 +79,7 @@ impl DisposableProbeError {
     }
 
     #[must_use]
-    pub(crate) fn as_io_error(&self) -> &io::Error {
+    pub(super) fn as_io_error(&self) -> &io::Error {
         &self.source
     }
 

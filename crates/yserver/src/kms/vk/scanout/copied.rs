@@ -220,7 +220,7 @@ impl CopiedRenderSource {
     /// The caller must first prove the renderer submission completed. A fresh
     /// semaphore is created before destroying the dirty one so allocation
     /// failure leaves the source quarantinable rather than half-initialized.
-    pub(crate) fn rearm_completion_semaphore_after_quiescence(&mut self) -> Result<(), vk::Result> {
+    fn rearm_completion_semaphore_after_quiescence(&mut self) -> Result<(), vk::Result> {
         if !self.completion_semaphore_reuse.needs_rearm() {
             return Ok(());
         }
