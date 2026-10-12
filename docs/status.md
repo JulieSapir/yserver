@@ -33,6 +33,15 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-12 explicit imports (branch `refactor/explicit-imports`):** the
+  121 non-test `use super::*` globs from the phase-1/2 splits and the
+  dispatcher roots' private downward globs are explicit `crate::` imports;
+  `clippy::wildcard_imports` is on. 173 split-tree items narrowed to private
+  / `pub(super)`. Tools: `split globs`, `tools/split/prune-unused-imports.py`,
+  `tools/use-only-diff.py`, `split verify` `[[sibling_moves]]`. Details and
+  deviations: `docs/superpowers/plans/2026-10-12-explicit-imports.md`
+  ("Execution"). FreeBSD check pending (jos).
+
 - **2026-10-12 FreeBSD dependency build workaround:** pin `libc` to
   `0.2.189`; `0.2.190` removed `NOTE_PCTRLMASK` on FreeBSD, which
   `nix 0.31.3` still requires. Revisit the pin when upstream compatibility

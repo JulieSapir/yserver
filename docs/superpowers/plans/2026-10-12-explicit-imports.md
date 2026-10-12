@@ -1,7 +1,8 @@
 # Proposal: explicit imports, narrower visibility, three placement fixes
 
 Follow-up to `2026-10-08-source-layout-cleanup.md` phase 2. Branch
-`refactor/explicit-imports` (from master `97aeeb24`). Proposal only.
+`refactor/explicit-imports` (from master `97aeeb24`). Executed 2026-10-12;
+see "Execution" at the end.
 Verification is deliberately light (maintainer, 2026-10-12): rustc in every
 config, the normal test gate, a FreeBSD check by jos before merge, and one
 cheap diff script. There is no new `split verify` mode.
@@ -376,3 +377,46 @@ after 2–3.
    example macro textual scope against path-imported macros?
 3. Should the inaccessible-inherent-method fallback be pinned by a scratch
    test before the visibility commits?
+
+## Execution (2026-10-12)
+
+**Numbers.** 121 non-test `use super::*` → 0; module-level `use` lines in
+the 167 touched files 528 → 2,482 (+1,954). Root imports: 230 names removed
+(unused, or moved into test modules), 57 imports now `#[cfg(test)]`. The
+24 dispatcher downward globs and `backend.rs`'s `use portable::*` are
+explicit lists. Visibility: 173 items narrowed (79 private, 94
+`pub(super)`), after rustc reverted the rest of the 233 the scan proposed
+(private-item errors and `private_interfaces`).
+
+**Workflow per subtree:** `split globs --write`, `prune-unused-imports.py
+--roots <root>` (six units), `split globs --tests HEAD --write` (what a test
+module's `use super::*` no longer supplies), prune until stable, `cargo
++nightly fmt`, gate incl. `tools/use-only-diff.py`.
+
+**Deviations from the proposal.**
+- Placement: the three trait_impl delegations dropped (decision 8). Each
+  placement commit that emptied a re-export glob has a prep commit with a
+  temporary `#[allow(unused_imports, reason)]`, removed in the backend import
+  commit; sibling moves verified with `[[sibling_moves]]` (decision 9).
+- The first core commit leaves `randr_ext.rs` and `xi/` with their globs (a
+  rewritten parent cannot feed un-rewritten children); the second does them
+  with their children.
+- Tests name root items by path (`crate::kms::render::engine::x`,
+  `use super::x`, fn-local uses), which moving into test modules cannot
+  serve without editing test bodies. So a test-only root glob, and the
+  names tests reach through `backend.rs`'s former `use portable::*`, stay
+  as `#[cfg(test)]` root imports; the backend `kms/mod.rs` re-exports used
+  only by tests are `#[cfg(test)]`, `session::*` is removed. Two test
+  modules' `use super::x` now name the defining module. clippy does not
+  flag the `#[cfg(test)]` globs.
+- `backend.rs` `pub(super) use portable::*` became private `use
+  portable::*` (rustc: it re-exported nothing at `pub(super)` in the lib
+  build) plus `#[cfg(test)] pub(super) use portable::parse_composite_glyph_items`
+  for the engine tests; then explicit in the dispatcher-style commit.
+- Hand fixes, each from a rustc error: `resources/mod.rs` `FontMetrics` and
+  `backend.rs` `PictureRecord`/`Rectangle16` as `#[cfg(test)]` root
+  imports (a root-own `cfg(test)` item or a fn-local test `use`).
+- `use-only-diff.py` compares rustfmt-normalized text: narrowing reflowed
+  signatures onto one line and dropped their trailing comma (fixture: a
+  `(x,)` → `(x)` change still fails).
+- `fence.rs` `std::rc::Weak` is `#[cfg(test)]`, as measured.
