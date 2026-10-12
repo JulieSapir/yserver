@@ -1,0 +1,20 @@
+# Phase 2c prep for handle_randr_request: its fn-local import, const and
+# helper fns move to module scope so the per-minor fns (next commit) see
+# them. Verified by `split verify --extract` (hoist mode).
+source = "crates/yserver-core/src/core_loop/process_request.rs"
+module = "core_loop::process_request"
+file = "crates/yserver-core/src/core_loop/process_request/randr_ext.rs"
+
+[extract]
+fn = "handle_randr_request"
+scrutinee = "minor"
+hoist = [
+  "use yserver_protocol::x11::{ClientByteOrder,randr as x11randr}",
+  "const RANDR_MAJOR_OPCODE",
+  "fn crtc_is_leased",
+  "fn provider_relationship_protocol_error",
+  "fn request_xid",
+  "fn output_exists",
+  "fn crtc_exists",
+  "fn synthetic_output_property",
+]

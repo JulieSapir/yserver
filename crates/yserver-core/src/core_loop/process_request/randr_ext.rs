@@ -1,4 +1,5 @@
 use super::*;
+use yserver_protocol::x11::{ClientByteOrder, randr as x11randr};
 
 /// Continuation data needed to finish an asynchronous `RRSetCrtcConfig`
 /// without redispatching the original request.
@@ -118,6 +119,78 @@ fn warn_randr_unsupported_once(
     }
 }
 
+const RANDR_MAJOR_OPCODE: u8 = 128;
+
+fn crtc_is_leased(_state: &ServerState, _crtc: u32) -> bool {
+    false
+}
+
+fn provider_relationship_protocol_error(
+    error: crate::randr::ProviderRelationshipError,
+) -> (u8, u32) {
+    match error {
+        crate::randr::ProviderRelationshipError::UnknownProvider(provider) => {
+            (RANDR_BAD_PROVIDER, provider)
+        }
+        // Xorg returns BadValue for a missing provider capability or an
+        // initiating provider that is not a GPU screen without assigning
+        // client->errorValue, so the wire value remains zero.
+        crate::randr::ProviderRelationshipError::MissingCapability(_)
+        | crate::randr::ProviderRelationshipError::NotGpuProvider(_) => (x11::error::BAD_VALUE, 0),
+    }
+}
+
+fn request_xid(body: &[u8]) -> u32 {
+    body.get(0..4)
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+        .unwrap_or(0)
+}
+
+fn output_exists(state: &ServerState, output: u32) -> bool {
+    state
+        .randr
+        .outputs
+        .iter()
+        .any(|candidate| candidate.output_id == output)
+}
+
+fn crtc_exists(state: &ServerState, crtc: u32) -> bool {
+    state
+        .randr
+        .outputs
+        .iter()
+        .any(|output| output.crtc_id == crtc)
+}
+
+/// Backend-synthesized read-only identity properties (`EDID` /
+/// `EDID_DATA` / `ConnectorType`), resolved live from
+/// `Backend::output_identity` rather than stored. Consulted only when
+/// `output_id` has no matching entry in `state.randr_output_properties`
+/// — a real store entry always shadows the synthesized value, matching
+/// Xorg's generic property store (a client `ChangeOutputProperty` on
+/// e.g. `EDID` overwrites whatever the driver put there).
+fn synthetic_output_property(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    output_id: u32,
+    property: AtomId,
+) -> Option<(u32, u8, Vec<u8>)> {
+    const XA_ATOM: u32 = 4;
+    const XA_INTEGER: u32 = 19;
+    let prop_name = state.atoms.name(property).map(str::to_owned);
+    let identity = backend.output_identity(output_id);
+    match (prop_name.as_deref(), identity) {
+        (Some("EDID" | "EDID_DATA"), Some((edid, _))) if !edid.is_empty() => {
+            Some((XA_INTEGER, 8, edid))
+        }
+        (Some("ConnectorType"), Some((_, ctype))) if !ctype.is_empty() => {
+            let atom = state.atoms.intern(&ctype, false).0;
+            Some((XA_ATOM, 32, atom.to_le_bytes().to_vec()))
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn handle_randr_request(
     state: &mut ServerState,
     backend: &mut dyn Backend,
@@ -126,74 +199,6 @@ pub(super) fn handle_randr_request(
     header: RequestHeader,
     body: &[u8],
 ) -> io::Result<RequestOutcome> {
-    use yserver_protocol::x11::{ClientByteOrder, randr as x11randr};
-    const RANDR_MAJOR_OPCODE: u8 = 128;
-    fn crtc_is_leased(_state: &ServerState, _crtc: u32) -> bool {
-        false
-    }
-    fn provider_relationship_protocol_error(
-        error: crate::randr::ProviderRelationshipError,
-    ) -> (u8, u32) {
-        match error {
-            crate::randr::ProviderRelationshipError::UnknownProvider(provider) => {
-                (RANDR_BAD_PROVIDER, provider)
-            }
-            // Xorg returns BadValue for a missing provider capability or an
-            // initiating provider that is not a GPU screen without assigning
-            // client->errorValue, so the wire value remains zero.
-            crate::randr::ProviderRelationshipError::MissingCapability(_)
-            | crate::randr::ProviderRelationshipError::NotGpuProvider(_) => {
-                (x11::error::BAD_VALUE, 0)
-            }
-        }
-    }
-    fn request_xid(body: &[u8]) -> u32 {
-        body.get(0..4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
-            .unwrap_or(0)
-    }
-    fn output_exists(state: &ServerState, output: u32) -> bool {
-        state
-            .randr
-            .outputs
-            .iter()
-            .any(|candidate| candidate.output_id == output)
-    }
-    fn crtc_exists(state: &ServerState, crtc: u32) -> bool {
-        state
-            .randr
-            .outputs
-            .iter()
-            .any(|output| output.crtc_id == crtc)
-    }
-    /// Backend-synthesized read-only identity properties (`EDID` /
-    /// `EDID_DATA` / `ConnectorType`), resolved live from
-    /// `Backend::output_identity` rather than stored. Consulted only when
-    /// `output_id` has no matching entry in `state.randr_output_properties`
-    /// — a real store entry always shadows the synthesized value, matching
-    /// Xorg's generic property store (a client `ChangeOutputProperty` on
-    /// e.g. `EDID` overwrites whatever the driver put there).
-    fn synthetic_output_property(
-        state: &mut ServerState,
-        backend: &mut dyn Backend,
-        output_id: u32,
-        property: AtomId,
-    ) -> Option<(u32, u8, Vec<u8>)> {
-        const XA_ATOM: u32 = 4;
-        const XA_INTEGER: u32 = 19;
-        let prop_name = state.atoms.name(property).map(str::to_owned);
-        let identity = backend.output_identity(output_id);
-        match (prop_name.as_deref(), identity) {
-            (Some("EDID" | "EDID_DATA"), Some((edid, _))) if !edid.is_empty() => {
-                Some((XA_INTEGER, 8, edid))
-            }
-            (Some("ConnectorType"), Some((_, ctype))) if !ctype.is_empty() => {
-                let atom = state.atoms.intern(&ctype, false).0;
-                Some((XA_ATOM, 32, atom.to_le_bytes().to_vec()))
-            }
-            _ => None,
-        }
-    }
     let byte_order = state
         .clients
         .get(&client_id.0)
