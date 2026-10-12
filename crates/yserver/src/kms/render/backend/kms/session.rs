@@ -1,4 +1,27 @@
-use super::*;
+use crate::{
+    drm,
+    kms::{
+        core::KmsCore,
+        render::{
+            backend::{
+                CrtcConfigProbeExecutor, KmsBackend, RandrIdAllocator, ScanoutM0Telemetry,
+                ScanoutM1ProbeCache, ScanoutM2State, TrackedWindows, WarnThrottle,
+                kms::export::probe_dmabuf_export_support,
+            },
+            engine::RenderEngine,
+            platform::PlatformBackend,
+            scene::SceneCompositor,
+            store::DrawableStore,
+            telemetry::Telemetry,
+        },
+    },
+};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet, VecDeque},
+    io,
+};
+use yserver_core::{backend::Backend as _, server::ServerState};
 
 pub(in crate::kms::render::backend) fn try_acquire_master_bounded<F>(
     mut attempt: F,

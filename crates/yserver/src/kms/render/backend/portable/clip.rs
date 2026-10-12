@@ -1,4 +1,18 @@
-use super::*;
+use crate::kms::{
+    core::PictureRecord,
+    cpu_types::Rectangle16,
+    render::{
+        backend::{
+            ClipMaskSnapshot, FillPatternCache, KmsBackend, SubwindowClipCacheEntry,
+            SubwindowModeClip,
+            portable::draw::{compute_copy_area_dst_rects, rects16_bbox},
+        },
+        target::{PaintTarget, Src},
+    },
+};
+use std::io;
+use yserver_core::backend::{ClipState, OriginContext, PixmapHandle};
+use yserver_protocol::x11::{ClipRectangles, xfixes};
 
 impl KmsBackend {
     /// Decode the wire-packed clip rectangle list (`Vec<u8>` of

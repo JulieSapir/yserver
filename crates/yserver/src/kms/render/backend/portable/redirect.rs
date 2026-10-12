@@ -1,4 +1,14 @@
-use super::*;
+use crate::kms::render::{
+    backend::{
+        ExportedBacking, KmsBackend, SeedInferiorDraw,
+        portable::windows::{bordered_storage_extent, default_window_init_color},
+    },
+    store::{AllocError, DrawableId, DrawableKind, Storage},
+    submit_trace::SubmitKind,
+    target::Dst,
+};
+use std::io;
+use yserver_core::backend::{Backend as _, OriginContext, PixmapHandle, WindowHandle};
 
 impl KmsBackend {
     /// Stage 4c.2 — compute the screen-absolute rect for a window's

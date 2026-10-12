@@ -1,4 +1,28 @@
-use super::*;
+use crate::kms::{
+    core::{GradientStop, KmsCore, PictureFilter, PictureRecord},
+    cpu_types::{PictTransform, Rectangle16, Repeat},
+    render::{
+        backend::{
+            COMPOSITE_GLYPHS_DROP_WARNED, KmsBackend,
+            portable::{
+                clip::{
+                    intersect_clip_lists, intersect_rect_with_clip, local_rects_to_region,
+                    shift_i16, translate_clip_rects,
+                },
+                draw::depth_plane_mask,
+                dump::picture_pict_format,
+            },
+        },
+        submit_trace::{Flags as SubmitFlags, SrcClass, SubmitKind},
+        target::{PaintTarget, Src},
+    },
+};
+use ash::vk;
+use std::{collections::HashMap, io};
+use yserver_core::backend::{
+    AnyHandle, Backend as _, GlyphSetHandle, OriginContext, PictureHandle,
+};
+use yserver_protocol::x11::{RENDER_FMT_A1, RENDER_FMT_A8, RENDER_FMT_ARGB32, xfixes};
 
 impl KmsBackend {
     /// Resolve a RENDER source / mask picture into what the engine samples.

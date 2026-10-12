@@ -1,4 +1,26 @@
-use super::*;
+use crate::kms::{
+    core::KmsCore,
+    render::{
+        backend::{
+            ConnectorConfig, KmsBackend, PaintTargetShape, RandrIdAllocator, ScanoutM0Telemetry,
+            ScanoutM1ProbeCache, ScanoutM2State, ScenePlacement, TrackedWindows, WarnThrottle,
+        },
+        engine::{RenderEngine, decode_x11_pixel_for_storage},
+        platform::PlatformBackend,
+        scene::SceneCompositor,
+        store::DrawableStore,
+        target::{Dst, Src},
+        telemetry::Telemetry,
+    },
+};
+use ash::vk;
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet, VecDeque},
+    io,
+    rc::Rc,
+};
+use yserver_core::{backend::Backend as _, server::ServerState};
 
 impl KmsBackend {
     /// Test-only entry point: drives the production `get_image` path

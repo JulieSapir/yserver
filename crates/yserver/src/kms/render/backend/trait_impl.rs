@@ -1,4 +1,18 @@
-use super::*;
+use crate::kms::render::backend::KmsBackend;
+use std::{any::Any, io};
+use yserver_core::{
+    backend::{
+        AnyHandle, Backend, BackendFdKind, ClipState, CrtcConfigApply, CrtcConfigToken,
+        CursorHandle, DrawState, Dri3Caps, Dri3ImportModifier, Dri3PixmapExport, FillState,
+        FontHandle, GlyphSetHandle, KeymapLoad, OriginContext, PictureHandle, PixmapHandle,
+        PresentCaps, PresentScanoutCandidate, PresentSourceWait, WindowHandle,
+    },
+    core_loop::HostInputEvent,
+    host_x11::{HostSubwindowConfig, HostSubwindowVisual, HostXidMap, PointerPosition},
+    resources::{ARGB_COLORMAP, ARGB_VISUAL},
+    server::ServerState,
+};
+use yserver_protocol::x11::{ClipRectangles, FontMetrics, ResourceId, xfixes};
 
 impl Backend for KmsBackend {
     // ── A. Accessors (mirror KmsBackend exactly) ────────────────

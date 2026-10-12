@@ -1,4 +1,28 @@
-use super::*;
+use crate::kms::{
+    cpu_types::{Rectangle16, Repeat},
+    render::{
+        backend::{
+            KmsBackend, LeafContent, WindowGeometry,
+            portable::{
+                clip::apply_subwindow_mode_clip,
+                draw::{compute_copy_area_dst_rects, depth_for_visual},
+            },
+        },
+        engine::decode_x11_pixel_for_storage,
+        platform::PlatformBackend,
+        store::{DrawableId, DrawableKind},
+        submit_trace::{Flags as SubmitFlags, SrcClass, SubmitKind},
+        target::{Dst, PaintTarget, Src},
+    },
+};
+use ash::vk;
+use std::io;
+use yserver_core::{
+    backend::{OriginContext, PixmapHandle, WindowHandle},
+    host_x11::{HostSubwindowConfig, HostSubwindowVisual},
+    server::ServerState,
+};
+use yserver_protocol::x11::{ResourceId, xfixes};
 
 /// #133 step 3 (3.3) — a window's storage extent: the bordered extent
 /// `(w + 2bw) x (h + 2bw)`, mirroring Xorg's `compAllocPixmap`

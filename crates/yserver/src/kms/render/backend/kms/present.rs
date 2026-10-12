@@ -1,4 +1,16 @@
-use super::*;
+use crate::kms::render::{
+    backend::{
+        ABSOLUTE_SEQ_TAG, DirectPresentFrame, KmsBackend, ScanoutM0Target, ScanoutM1ProbeEntry,
+        kms::scanout::{
+            phase_b_flip_in_flight_for_scheduler, scanout_direct_eligible,
+            scanout_m2_is_authoritative_root,
+        },
+    },
+    platform::CrtcKey,
+    target::PaintTarget,
+};
+use std::{collections::HashSet, io, rc::Rc};
+use yserver_core::backend::{Backend, PresentCaps, PresentScanoutCandidate, PresentSourceWait};
 
 /// `user_data` value for an absolute per-target arm on `crtc_id` — the
 /// single producer of the encoding `on_crtc_sequence_event` decodes, so

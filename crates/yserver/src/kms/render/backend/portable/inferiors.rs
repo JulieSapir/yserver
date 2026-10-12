@@ -1,4 +1,22 @@
-use super::*;
+use crate::kms::{
+    core::PictureRecord,
+    cpu_types::Rectangle16,
+    render::{
+        backend::{
+            InferiorPiece, KmsBackend, WindowGeometry,
+            portable::{
+                clip::{apply_subwindow_mode_clip, clip_rects16, intersect_rect_with_clip},
+                draw::{
+                    blit_rows_4bpp, compute_copy_area_dst_rects, depth_plane_mask, vk_rects_bbox,
+                },
+            },
+        },
+        store::DrawableId,
+        target::PaintTarget,
+    },
+};
+use ash::vk;
+use yserver_core::backend::OriginContext;
 
 impl KmsBackend {
     /// Compute the destination window's RENDER clipList for one paint op

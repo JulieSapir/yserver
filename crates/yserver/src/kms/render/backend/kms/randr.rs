@@ -1,4 +1,26 @@
-use super::*;
+use crate::{
+    kms::{
+        backend::OutputKey,
+        render::{
+            backend::{
+                ConnectorConfig, ConnectorRegistryDelta, GammaLut, KmsBackend, NotLiveConnector,
+                ProjectedRandrOutputState, RandrIdAllocator, RandrProviderEndpoint, RelightRequest,
+                portable::default_window_init_color,
+            },
+            engine::decode_x11_pixel_for_storage,
+            platform::{ConnectorSnapshot, PlatformBackend},
+            store::{DrawableKind, Storage},
+            target::Dst,
+        },
+    },
+    platform::drm::ModeIdentity,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    rc::Rc,
+};
+use yserver_core::{backend::Backend as _, server::ServerState};
 
 pub(in crate::kms::render::backend) fn reconcile_connector_probe(
     randr_id_alloc: &mut RandrIdAllocator,

@@ -1,4 +1,28 @@
-use super::*;
+use crate::kms::render::{
+    backend::{
+        DirectFrameSlot, DirectPresentFrame, KmsBackend, PENDING_RETIRE_POLL_INTERVAL,
+        ScanoutM0Coverage, ScanoutM0Shape, ScanoutM0Target, ScanoutM1OutputGeometry,
+        ScanoutM1ProbeEntry, WindowGeometry, WindowsMap, kms::randr::effective_refresh_matches,
+        portable::default_window_init_color,
+    },
+    store::{DrawableId, DrawableKind},
+    submit_trace::{
+        Flags as SubmitFlags, Op as SubmitOp, SrcClass, SubmitEvent, SubmitKind, TargetKind,
+    },
+    target::{Dst, Src},
+};
+use ash::vk;
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    os::fd::AsFd as _,
+    rc::Rc,
+};
+use yserver_core::{
+    backend::{Backend, OriginContext, PresentScanoutCandidate},
+    server::ServerState,
+};
+use yserver_protocol::x11::xfixes;
 
 pub(in crate::kms::render::backend) fn scanout_m2_is_authoritative_root(
     target: ScanoutM0Target,

@@ -1,4 +1,11 @@
-use super::*;
+use crate::kms::render::backend::{KmsBackend, LockFilterPriv, XKB_SA_LOCK_NO_UNLOCK};
+use std::collections::HashSet;
+use yserver_core::{
+    backend::Backend,
+    core_loop::HostInputEvent,
+    host_x11::{HostKeyEvent, PointerEventKind},
+    server::ServerState,
+};
 
 impl KmsBackend {
     fn stamp_host_key_without_master_transition(

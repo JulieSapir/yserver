@@ -22,69 +22,47 @@ mod kms;
 mod portable;
 mod trait_impl;
 
+#[cfg(test)]
 use kms::*;
-pub(super) use portable::*;
+#[cfg(test)]
+pub(super) use portable::parse_composite_glyph_items;
+use portable::*;
 
 #[cfg(test)]
 mod tests;
 
 use std::{
-    any::Any,
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet, VecDeque},
     io,
-    os::fd::{AsFd, OwnedFd},
-    rc::Rc,
+    os::fd::OwnedFd,
 };
 
+#[cfg(test)]
+use crate::kms::core::PictureRecord;
+#[cfg(test)]
+use crate::kms::cpu_types::Rectangle16;
 use ash::vk;
-use yserver_core::{
-    backend::{
-        AnyHandle, Backend, BackendFdKind, ClipState, CrtcConfigApply, CrtcConfigToken,
-        CursorHandle, DrawState, Dri3Caps, Dri3ImportModifier, Dri3PixmapExport, FillState,
-        FontHandle, GlyphSetHandle, KeymapLoad, OriginContext, PictureHandle, PixmapHandle,
-        PresentCaps, PresentScanoutCandidate, PresentSourceWait, WindowHandle, identity_ramp,
-        resample_channel,
-    },
-    core_loop::HostInputEvent,
-    host_x11::{
-        HostKeyEvent, HostPointerEvent, HostSubwindowConfig, HostSubwindowVisual, HostXidMap,
-        PointerEventKind, PointerPosition,
-    },
-    resources::{ARGB_COLORMAP, ARGB_VISUAL},
-    server::ServerState,
+use yserver_core::backend::{
+    CrtcConfigToken, PixmapHandle, PresentScanoutCandidate, identity_ramp, resample_channel,
 };
-use yserver_protocol::x11::{
-    ClipRectangles, FontMetrics, RENDER_FMT_A1, RENDER_FMT_A8, RENDER_FMT_ARGB32, ResourceId,
-    xfixes,
-};
+use yserver_protocol::x11::ResourceId;
 
 use crate::{
-    drm,
-    internal_probe::{ProbeKmsHandles, RouteProbeRequest},
+    internal_probe::RouteProbeRequest,
     kms::{
         backend::OutputKey,
-        core::{GradientStop, KmsCore, PictureFilter, PictureRecord},
-        cpu_types::{PictTransform, Rectangle16, Repeat},
+        core::KmsCore,
         render::{
-            engine::{RenderEngine, decode_x11_pixel_for_storage},
+            engine::RenderEngine,
             glyph_pixels::GlyphSourceFormat,
-            platform::{
-                ConnectorSnapshot, CrtcKey, PlatformBackend, QualifiedScanoutPlan,
-                is_terminal_disposable_probe_error,
-            },
+            platform::{CrtcKey, PlatformBackend, QualifiedScanoutPlan},
             scene::SceneCompositor,
-            store::{
-                AllocError, DrawableId, DrawableKind, DrawableStore, ImportedDmabufMetadata,
-                ImportedDmabufPlane, Storage,
-            },
-            submit_trace::{
-                Flags as SubmitFlags, Op as SubmitOp, SrcClass, SubmitEvent, SubmitKind, TargetKind,
-            },
-            target::{Dst, PaintTarget, Src},
+            store::{DrawableId, DrawableStore},
+            target::PaintTarget,
             telemetry::Telemetry,
         },
-        scanout_route::{RenderDeviceId, RenderKmsRelationship, ScanoutRoute},
+        scanout_route::ScanoutRoute,
     },
     platform::drm::ModeIdentity,
 };

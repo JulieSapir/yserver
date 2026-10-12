@@ -1,4 +1,11 @@
-use super::*;
+use crate::kms::render::backend::{InputOnlyPointerHost, KmsBackend, KmsButtonDiagnostic};
+use std::io;
+use yserver_core::{
+    backend::{Backend as _, CursorHandle, OriginContext},
+    host_x11::{HostPointerEvent, HostXidMap, PointerEventKind, PointerPosition},
+    server::ServerState,
+};
+use yserver_protocol::x11::ResourceId;
 
 impl KmsBackend {
     /// Deepest mapped window under the cursor. Walks

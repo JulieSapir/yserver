@@ -1,4 +1,19 @@
-use super::*;
+use crate::{
+    internal_probe::{ProbeKmsHandles, RouteProbeRequest},
+    kms::{
+        backend::OutputKey,
+        render::{
+            backend::{
+                ConnectorConfig, CrtcConfigProbeExecutor, CrtcConfigProbeJob, KmsBackend,
+                PendingCrtcConfigProbe, RandrProviderEndpoint,
+            },
+            platform::{CrtcKey, is_terminal_disposable_probe_error},
+        },
+        scanout_route::{RenderKmsRelationship, ScanoutRoute},
+    },
+};
+use std::{collections::HashSet, io, os::fd::AsFd as _, rc::Rc};
+use yserver_core::backend::{Backend as _, CrtcConfigApply, CrtcConfigToken};
 
 /// Reconcile the physical-output gate after a successful CRTC mutation.
 ///

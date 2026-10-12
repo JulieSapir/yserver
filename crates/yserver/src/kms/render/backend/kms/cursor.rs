@@ -1,4 +1,11 @@
-use super::*;
+use crate::kms::render::{
+    backend::KmsBackend,
+    target::{Dst, Src},
+};
+use std::io;
+use yserver_core::backend::{
+    Backend as _, CursorHandle, FontHandle, OriginContext, PictureHandle, PixmapHandle,
+};
 
 impl KmsBackend {
     /// Stage 3f.8: allocate the default cursor sprite (16×16 black

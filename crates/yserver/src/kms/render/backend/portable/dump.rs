@@ -1,4 +1,8 @@
-use super::*;
+use crate::kms::render::{
+    backend::{KmsBackend, WindowGeometry, kms::do_dump_scanout},
+    target::Src,
+};
+use std::io;
 
 /// Diagnostic helper: write the `CursorRecord`'s source BGRA bytes
 /// (as received from the X11 client, before any `load_image` /

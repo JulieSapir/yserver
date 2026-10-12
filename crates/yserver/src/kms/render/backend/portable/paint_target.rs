@@ -1,4 +1,18 @@
-use super::*;
+use crate::kms::{
+    cpu_types::Rectangle16,
+    render::{
+        backend::{
+            KmsBackend, SharedBackingMoveSource, WindowGeometry, order_pieces_for_in_place_move,
+            portable::{clip::intersect_rect_with_clip, draw::compute_copy_area_dst_rects},
+            shared_backing_move_pieces,
+        },
+        engine::decode_x11_pixel_for_storage,
+        platform::PlatformBackend,
+        store::{DrawableId, DrawableKind, Storage},
+        target::{Dst, PaintTarget, Src},
+    },
+};
+use yserver_core::host_x11::HostSubwindowConfig;
 
 impl KmsBackend {
     pub(in crate::kms::render::backend) fn init_root_storage(&mut self) {

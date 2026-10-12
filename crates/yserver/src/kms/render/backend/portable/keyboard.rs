@@ -1,4 +1,13 @@
-use super::*;
+use crate::kms::render::backend::{FloatingKeyboardState, KmsBackend};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+};
+use yserver_core::{
+    backend::{Backend as _, KeymapLoad, OriginContext},
+    host_x11::HostKeyEvent,
+    server::ServerState,
+};
 
 impl KmsBackend {
     // ── Input dispatch (Stage 3f.7) ─────────────────────────────

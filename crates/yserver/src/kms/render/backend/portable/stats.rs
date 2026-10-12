@@ -1,4 +1,14 @@
-use super::*;
+use crate::kms::{
+    core::PictureRecord,
+    render::{
+        backend::KmsBackend,
+        store::{DrawableId, DrawableKind},
+        submit_trace::{
+            Flags as SubmitFlags, Op as SubmitOp, SrcClass, SubmitEvent, SubmitKind, TargetKind,
+        },
+        telemetry::Telemetry,
+    },
+};
 
 impl KmsBackend {
     /// Telemetry accessor — used by the acceptance harness to

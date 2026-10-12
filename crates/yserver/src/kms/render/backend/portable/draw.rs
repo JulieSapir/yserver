@@ -1,4 +1,21 @@
-use super::*;
+use crate::kms::{
+    cpu_types::{Rectangle16, Repeat},
+    render::{
+        backend::{
+            GET_IMAGE_FORMAT_XY_PIXMAP, KmsBackend,
+            portable::clip::{clip_rects16, intersect_rect_with_clip, subtract_one_rect_clip},
+        },
+        engine::decode_x11_pixel_for_storage,
+        submit_trace::{Flags as SubmitFlags, Op as SubmitOp, SrcClass, SubmitEvent, SubmitKind},
+        target::{Dst, PaintTarget, Src},
+    },
+};
+use ash::vk;
+use std::io;
+use yserver_core::{
+    backend::{Backend as _, DrawState, FillState, OriginContext, PixmapHandle},
+    host_x11::HostSubwindowVisual,
+};
 
 impl KmsBackend {
     /// Compute the surviving destination scissor rects for a CopyArea, in

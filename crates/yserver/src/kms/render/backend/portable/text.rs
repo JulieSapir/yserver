@@ -1,4 +1,27 @@
-use super::*;
+use crate::kms::{
+    cpu_types::Rectangle16,
+    render::{
+        backend::{
+            KmsBackend, ParsedGlyph, ParsedGlyphItems,
+            portable::{
+                clip::local_rects_to_region,
+                dump::picture_pict_format,
+                render_ops::{
+                    dst_picture_clip_by_children, first_stop_premul_of_gradient,
+                    resolve_dst_picture_for_render,
+                },
+            },
+        },
+        engine::decode_x11_pixel_for_storage,
+        glyph_pixels::GlyphSourceFormat,
+        platform::PlatformBackend,
+        submit_trace::{Flags as SubmitFlags, Op as SubmitOp, SrcClass, SubmitEvent, SubmitKind},
+        target::PaintTarget,
+    },
+};
+use std::{collections::HashMap, io};
+use yserver_core::backend::{FontHandle, OriginContext};
+use yserver_protocol::x11::{FontMetrics, xfixes};
 
 impl KmsBackend {
     // ── Stage 3a: Core-text helpers ─────────────────────────────

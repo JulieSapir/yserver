@@ -1,4 +1,16 @@
-use super::*;
+use crate::kms::render::{
+    backend::{
+        DirectPresentFrame, KmsBackend, RootReadSource, RootScanoutRead, SCANOUT_READBACK_GRANULE,
+        ScanoutReadOrigin, ScanoutReadRoute, ScanoutReadSelection,
+        portable::{compute_copy_area_dst_rects, depth_plane_mask, dump_cursor_record_to_ppm},
+    },
+    platform::PlatformBackend,
+    submit_trace::SubmitKind,
+    target::{PaintTarget, Src},
+};
+use ash::vk;
+use std::io;
+use yserver_core::backend::Backend as _;
 
 impl KmsBackend {
     /// Screenshot fast-path for `CopyArea(src=root, …)` with the GC's
