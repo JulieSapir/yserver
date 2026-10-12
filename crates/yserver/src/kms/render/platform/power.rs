@@ -1,4 +1,5 @@
-use super::*;
+use crate::{drm, kms::render::platform::PlatformBackend};
+use std::{io, rc::Rc};
 
 impl PlatformBackend {
     // ── Disable output ──────────────────────────────────────────

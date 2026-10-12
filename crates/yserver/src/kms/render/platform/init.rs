@@ -1,4 +1,33 @@
-use super::*;
+use crate::{
+    drm,
+    kms::{
+        backend::{
+            ActiveOutput, OutputKey, PlatformInit, PlatformInitOutput,
+            platform_init as core_platform_init,
+        },
+        render::{
+            platform::{
+                BoGenerationEntry, CopiedScanoutError, CopyFreeScanoutError, FencePool,
+                InitialScanoutRollbackGuard, KmsCursorState, KmsDevice, PlatformBackend,
+                RenderDevice, RollbackScanoutOutput, SCANOUT_POOL_DEPTH, WAKEUP_EVENTFD_TOKEN,
+                cursor::initialize_cursor_plane_for_device,
+                qualify::{
+                    allocate_copied_scanout_pool, allocate_copy_free_scanout_pool,
+                    route_requires_copy_free_probe,
+                },
+                scanout_bos::check_scanout_liveness,
+            },
+            submit_group::SubmitGroup,
+        },
+        scanout_route::{RenderDeviceId, RenderKmsRelationship, ScanoutRoute},
+        vk::{
+            device::{VkContext, VulkanDeviceSelector},
+            ops::OpsCommandPool,
+            scanout::{OutputScanout, ScanoutBoPool},
+        },
+    },
+};
+use std::{collections::HashMap, io, os::fd::AsFd as _, path::PathBuf, rc::Rc, sync::Arc};
 
 fn drm_device_is_nvidia(device: &drm::Device) -> bool {
     use ::drm::Device as _;

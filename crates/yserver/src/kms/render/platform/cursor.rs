@@ -1,4 +1,12 @@
-use super::*;
+use crate::kms::render::platform::{
+    CursorFailureDisposition, CursorMoveOutcome, KmsCursorState, KmsDevice, PlatformBackend,
+    TransientCursorFallback,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    rc::Rc,
+};
 
 /// True iff a cursor-plane ioctl error means the driver does not
 /// implement the (legacy) cursor ioctls at all — a permanent,

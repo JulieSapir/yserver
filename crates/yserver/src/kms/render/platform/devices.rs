@@ -1,4 +1,17 @@
-use super::*;
+use crate::kms::{
+    backend::{ActiveOutput, OutputKey},
+    render::platform::{
+        CopiedQualificationSink, CrtcKey, KmsDevice, PlatformBackend, RenderDevice,
+        init::resolve_copied_sink_renderer,
+    },
+    scanout_route::{RenderDeviceId, RenderKmsRelationship, ScanoutRoute},
+    vk::device::{VkContext, VulkanDeviceSelector},
+};
+use std::{
+    io,
+    os::fd::{AsFd as _, AsRawFd as _, RawFd},
+    sync::Arc,
+};
 
 impl CrtcKey {
     pub(crate) fn new(

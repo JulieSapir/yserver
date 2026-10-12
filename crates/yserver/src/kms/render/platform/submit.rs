@@ -1,4 +1,22 @@
-use super::*;
+use crate::kms::{
+    render::{
+        platform::{
+            FenceTicket, FlushOutcome, PlatformBackend, PresentCompletionSignal,
+            fence::create_present_completion_signal,
+        },
+        submit_group::FlushReason,
+    },
+    vk::{
+        device::VkContext,
+        ops::{OpsCommandPool, submit_error_may_leave_pending},
+    },
+};
+use ash::vk;
+use std::{
+    io,
+    os::fd::{AsFd as _, AsRawFd as _},
+    sync::Arc,
+};
 
 impl PlatformBackend {
     /// VkContext accessor for the engine. Returns `None` on the

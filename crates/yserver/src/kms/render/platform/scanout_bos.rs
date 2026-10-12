@@ -1,4 +1,13 @@
-use super::*;
+use crate::kms::{
+    render::platform::{PlatformBackend, ScanoutBoToken},
+    vk::scanout::{BoPhase, BoState, OutputScanout},
+};
+use ash::vk;
+use std::{
+    io,
+    os::fd::{IntoRawFd, OwnedFd},
+    rc::Rc,
+};
 
 impl PlatformBackend {
     // ── I6b: scanout BO management ──────────────────────────────

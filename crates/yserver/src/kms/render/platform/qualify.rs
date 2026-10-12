@@ -1,4 +1,24 @@
-use super::*;
+use crate::{
+    drm,
+    kms::{
+        render::platform::{
+            CopiedQualificationSink, CopiedScanoutError, CopyFreeScanoutError, ExactPlanReplay,
+            PRIME_RENDER_PROBE_TIMEOUT_NS, PreparedCopiedScanoutPool, PreparedScanoutPool,
+            QualifiedScanoutPlan, SCANOUT_POOL_DEPTH, ScanoutQualificationError,
+            TerminalDisposableProbeMarker,
+        },
+        scanout_route::{RenderKmsRelationship, ScanoutRoute},
+        vk::{
+            device::{VkContext, VkInitError, VulkanDeviceSelector},
+            scanout::{
+                CopiedScanoutPlan, CopiedScanoutPool, DisposableProbeError, ScanoutAllocationPlan,
+                ScanoutBoPool,
+            },
+        },
+    },
+};
+use ash::vk;
+use std::{io, rc::Rc, sync::Arc};
 
 impl CopyFreeScanoutError {
     pub(super) fn into_io_error(self) -> io::Error {

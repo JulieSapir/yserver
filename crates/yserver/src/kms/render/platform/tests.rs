@@ -1,4 +1,13 @@
 use super::*;
+use crate::kms::{
+    backend::PlatformInitOutput, scanout_route::RenderKmsRelationship,
+    vk::scanout::DisposableProbeError,
+};
+use std::{
+    collections::HashSet,
+    os::fd::{AsFd as _, AsRawFd as _},
+};
+use yserver_core::backend::{BackendFdKind, PresentClockSource};
 
 #[test]
 fn prime_render_probe_fence_timeout_is_two_hundred_milliseconds() {

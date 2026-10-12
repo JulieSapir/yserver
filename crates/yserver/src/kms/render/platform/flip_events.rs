@@ -1,4 +1,18 @@
-use super::*;
+use crate::kms::{
+    backend::OutputKey,
+    render::platform::{
+        CrtcKey, DrainedPageFlipEvents, PageFlipRetirement, PendingScanoutRenderCompletion,
+        PlatformBackend, ReadyScanoutRenderCompletion, SequenceCompletion,
+    },
+    vk::scanout::BoPhase,
+};
+use std::{
+    collections::HashSet,
+    io,
+    os::fd::{AsFd as _, AsRawFd as _, OwnedFd, RawFd},
+    rc::Rc,
+};
+use yserver_core::backend::{BackendFdKind, PresentClockSample, PresentClockSource};
 
 impl PlatformBackend {
     pub(super) fn prune_present_clocks_to_live_outputs(&mut self) {

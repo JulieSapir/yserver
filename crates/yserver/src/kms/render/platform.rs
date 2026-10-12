@@ -44,10 +44,12 @@ mod submit;
 
 #[cfg(test)]
 use connectors::*;
+#[cfg(test)]
 use cursor::*;
-use fence::*;
+#[cfg(test)]
 use init::*;
 pub(crate) use qualify::*;
+#[cfg(test)]
 use scanout_bos::*;
 
 #[cfg(test)]
@@ -55,35 +57,28 @@ mod tests;
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io,
-    os::fd::{AsFd, AsRawFd, IntoRawFd, OwnedFd, RawFd},
-    path::PathBuf,
+    os::fd::OwnedFd,
     rc::{Rc, Weak},
     sync::Arc,
 };
 
 use ash::vk;
-use yserver_core::backend::{BackendFdKind, PresentClockSample, PresentClockSource};
+use yserver_core::backend::PresentClockSample;
 
 use crate::{
     drm,
     kms::{
-        backend::{
-            ActiveOutput, OutputKey, PlatformInit, PlatformInitOutput,
-            platform_init as core_platform_init,
-        },
-        render::{
-            store::Storage,
-            submit_group::{FlushReason, SubmitGroup},
-        },
-        scanout_route::{RenderKmsRelationship, ScanoutRoute},
+        backend::{ActiveOutput, OutputKey},
+        render::submit_group::{FlushReason, SubmitGroup},
+        scanout_route::ScanoutRoute,
         vk::{
-            device::{VkContext, VkInitError, VulkanDeviceSelector},
-            ops::{OpsCommandPool, submit_error_may_leave_pending},
+            device::{VkContext, VulkanDeviceSelector},
+            ops::OpsCommandPool,
             scanout::{
-                BoPhase, BoState, CopiedScanoutPlan, CopiedScanoutPool, DisposableProbeError,
-                OutputScanout, ScanoutAllocationPlan, ScanoutBoPool,
+                CopiedScanoutPlan, CopiedScanoutPool, OutputScanout, ScanoutAllocationPlan,
+                ScanoutBoPool,
             },
         },
     },

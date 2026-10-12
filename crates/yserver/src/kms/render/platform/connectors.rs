@@ -1,4 +1,29 @@
-use super::*;
+use crate::{
+    drm,
+    kms::{
+        backend::{ActiveOutput, OutputKey},
+        render::platform::{
+            BoGenerationEntry, ConnectorSnapshot, CopiedScanoutError, CopyFreeScanoutError,
+            DroppedRoute, ExactPlanReplay, KmsDevice, LayoutRect, PlatformBackend,
+            PreparedQualifiedConnector, QualifiedScanoutPlan, RescanResult,
+            ResolvedConnectorEnable, SCANOUT_POOL_DEPTH,
+            cursor::initialize_cursor_plane_for_device,
+            qualify::{
+                allocate_copied_scanout_pool, allocate_copy_free_scanout_pool,
+                replay_copied_scanout_plan, replay_copy_free_scanout_plan,
+                route_requires_copy_free_probe,
+            },
+        },
+        scanout_route::{RenderKmsRelationship, ScanoutRoute},
+        vk::scanout::{OutputScanout, ScanoutBoPool},
+    },
+};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    rc::Rc,
+    sync::Arc,
+};
 
 pub(super) fn scanout_pool_needs_reallocation(
     existing: Option<&ActiveOutput>,
