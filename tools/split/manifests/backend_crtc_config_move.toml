@@ -1,0 +1,45 @@
+# Explicit-imports plan, placement fix: the crtc-config lifecycle
+# (`backend_randr_{begin,drain_ready,finish,cancel,apply}_crtc_config(s)`)
+# moves from kms/randr.rs to kms/crtc_config.rs, next to its helpers. Names
+# unchanged.
+source = "crates/yserver/src/kms/render/backend.rs"
+module = "kms::render::backend"
+dir = "crates/yserver/src/kms/render/backend"
+root_form = "file"
+table = "backend_crtc_config_move.paths"
+modules = []
+
+[locations]
+"kms::randr::impl KmsBackend::fn backend_randr_apply_crtc_config" = "calls a #[track_caller] scene damage-audit helper (wake_for_damage) whose recorded caller file:line moves with the body (backend/kms/randr.rs → backend/kms/crtc_config.rs); only diagnostic source attribution changes (scene.rs overflow report and audit attribution), not damage computation"
+"kms::randr::impl KmsBackend::fn backend_randr_finish_crtc_config" = "calls a #[track_caller] scene damage-audit helper (wake_for_damage) whose recorded caller file:line moves with the body (backend/kms/randr.rs → backend/kms/crtc_config.rs); only diagnostic source attribution changes (scene.rs overflow report and audit attribution), not damage computation"
+"kms::randr::impl KmsBackend::fn backend_randr_randr_layout_changed" = "calls a #[track_caller] scene damage-audit helper (wake_for_damage) whose recorded caller line shifts inside backend/kms/randr.rs (the crtc-config bodies above it moved out); only diagnostic source attribution changes (scene.rs overflow report and audit attribution), not damage computation"
+
+[log_targets]
+"kms::randr::impl KmsBackend::fn backend_randr_apply_crtc_config" = "log macros without target: the body moves from kms::render::backend::kms::randr to its sibling kms::render::backend::kms::crtc_config; both stay under kms::render::backend, so backend-level RUST_LOG filters still match"
+"kms::randr::impl KmsBackend::fn backend_randr_drain_ready_crtc_configs" = "log macros without target: the body moves from kms::render::backend::kms::randr to its sibling kms::render::backend::kms::crtc_config; both stay under kms::render::backend, so backend-level RUST_LOG filters still match"
+"kms::randr::impl KmsBackend::fn backend_randr_finish_crtc_config" = "log macros without target: the body moves from kms::render::backend::kms::randr to its sibling kms::render::backend::kms::crtc_config; both stay under kms::render::backend, so backend-level RUST_LOG filters still match"
+
+[[sibling_moves]]
+item = "kms::randr::impl KmsBackend::fn backend_randr_begin_crtc_config"
+from = "kms/randr.rs"
+to = "kms/crtc_config.rs"
+
+[[sibling_moves]]
+item = "kms::randr::impl KmsBackend::fn backend_randr_drain_ready_crtc_configs"
+from = "kms/randr.rs"
+to = "kms/crtc_config.rs"
+
+[[sibling_moves]]
+item = "kms::randr::impl KmsBackend::fn backend_randr_finish_crtc_config"
+from = "kms/randr.rs"
+to = "kms/crtc_config.rs"
+
+[[sibling_moves]]
+item = "kms::randr::impl KmsBackend::fn backend_randr_cancel_crtc_config"
+from = "kms/randr.rs"
+to = "kms/crtc_config.rs"
+
+[[sibling_moves]]
+item = "kms::randr::impl KmsBackend::fn backend_randr_apply_crtc_config"
+from = "kms/randr.rs"
+to = "kms/crtc_config.rs"
