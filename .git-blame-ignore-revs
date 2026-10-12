@@ -149,3 +149,72 @@ cd5d7798c3641cfda20b3fa7ca9b9bb17b8d1129
 
 # refactor(randr): split randr_ext into screen/output/crtc/provider/monitor/xinerama (move)
 e35594e1451aea8cfa71115dbcc12d2ba586463d
+
+# refactor(kms): allow the session and present re-exports to go unused until the import rewrite (prep)
+de1ff506cf1da0dd6f0f4da169d2ae10c69ab711
+
+# refactor(kms): delegate on_vt_acquire / arm_present_absolute_vblank to kms/session and kms/present (delegate)
+f49fbaefa62c5006340748b504296330e01ee705
+
+# refactor(kms): allow the crtc_config re-export to go unused until the import rewrite (prep)
+9c5df20961e2dd698cb2a0c15767b828b4405d1e
+
+# refactor(kms): move crtc-config lifecycle from kms/randr into kms/crtc_config (move)
+26c69786b51b121cca9fe269160be2d0b68217eb
+
+# refactor(kms): allow the portable text re-export to go unused until the import rewrite (prep)
+f3f4cff724c1aac41e2826c784d3e3dab959296a
+
+# refactor(kms): move core text requests from portable/draw into portable/text (move)
+638eed09099e41650f46b39836181771a8943394
+
+# refactor(core): explicit imports in process_request/*
+175f9a2948c4a58dac58ba2cec4dfd28cf592cf4
+
+# refactor(core): explicit imports in xi/*, xi/dispatch/*, randr_ext.rs and randr_ext/*
+85139673e25b63c31274d87ceb882a4555fae1bb
+
+# refactor(core): explicit imports in resources/*
+b302a721d59bff83e8b37ca0115bcb2f11c9b4e4
+
+# refactor(kms): explicit imports in backend/{portable,kms}/*, trait_impl, for_tests
+ab09f18414afabdda6bd1303c7840dc0a8b5bd51
+
+# refactor(kms): explicit imports in engine/*
+5d8a43af43b202904fb6f34e613e0714ea841db1
+
+# refactor(kms): explicit imports in scene/*
+08daa62f3ba55c66bcea881af53f1f91586fb731
+
+# refactor(kms): explicit imports in platform/*
+2fe04de18ba994b0e4e512a215dfddbb9c9b0c9f
+
+# refactor(kms): explicit imports in vk/scanout/*
+58c2baf483a5c3773e9999cf7824966efc390b8a
+
+# refactor(core): explicit child imports in the process_request, xi/dispatch, randr_ext dispatchers
+934a8dfae9b3489d55eb6a7eee10000498b5c2f3
+
+# refactor(kms): explicit child imports in the backend root
+3d036fd4fdb682ebb41574bae730ba95f94692aa
+
+# refactor(kms): narrow scene visibility to private / pub(super)
+34f3b7de197d0bd1a7e94a0ed321643797807cae
+
+# refactor(kms): narrow engine visibility to private / pub(super)
+61719b412fc586cb07a9252f1b5594215bbd613f
+
+# refactor(kms): narrow platform visibility to private / pub(super)
+cbba672aad4f07faddf28aeeef686b2a693b42ee
+
+# refactor(kms): narrow scanout visibility to private / pub(super)
+6a4656ada5d1bda5e1f538794913ef0acb0757a0
+
+# refactor(kms): narrow backend visibility to private / pub(super)
+7b65740d4247955e6faa739146b09e005f2373ed
+
+# refactor(core): narrow process_request visibility to private / pub(super)
+ad41c5c6203c8ae9ddc43a83b9455e774b31ebdd
+
+# refactor(core): narrow resources visibility to private / pub(super)
+f61f26bf7545a2ad17f2ed1f327054093d2de4f8
