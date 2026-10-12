@@ -18,7 +18,7 @@ use std::{
 };
 
 use crate::{
-    scope::{MACRO, TYPE, VALUE, admits, free_names, invocations, scope},
+    scope::{self, MACRO, TYPE, VALUE, admits, free_names, invocations, scope},
     tree::{self, Disk, Res, Tree, UseItem},
 };
 
@@ -304,7 +304,7 @@ fn is_test_module(module: &str) -> bool {
 
 /// Imports for every non-test file under `root` (module `module`) holding a
 /// column-0 `use super::*;` (`down`: private `use <child>::*;`), skipping
-/// files under the `skip` modules.
+/// the `skip` modules and everything under them.
 pub fn generate(
     t: &Tree,
     down: bool,
@@ -314,7 +314,7 @@ pub fn generate(
     let g = G::new(t);
     let mut out = Vec::new();
     for (file, m) in &t.file_module {
-        if is_test_module(m) || skip.iter().any(|s| m.starts_with(&format!("{s}::"))) {
+        if is_test_module(m) || skip.iter().any(|s| scope::under(m, s)) {
             continue;
         }
         let text = String::from_utf8(src.read(file).ok_or_else(|| format!("{file}: not found"))?)
