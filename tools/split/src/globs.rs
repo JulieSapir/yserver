@@ -507,6 +507,7 @@ fn test_imports(before: &Tree, after: &Tree) -> Res<Vec<FileImports>> {
         let add: Vec<String> = b
             .iter()
             .filter(|(k, v)| a.get(*k) != Some(v))
+            .filter(|(k, _)| !ga.uses(m).any(|u| u.name.as_deref() == Some(k.as_str())))
             .map(|(_, v)| v.clone())
             .collect();
         for (k, v) in &a {
