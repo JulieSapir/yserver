@@ -8,6 +8,10 @@ mod scanout;
 mod session;
 
 use super::*;
+#[allow(
+    unused_imports,
+    reason = "temporary: re-export emptied by the next move commit; removed in the explicit-import rewrite"
+)]
 pub(super) use crtc_config::*;
 pub(super) use export::*;
 #[allow(
