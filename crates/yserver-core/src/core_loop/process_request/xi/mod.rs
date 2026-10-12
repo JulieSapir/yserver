@@ -1,7 +1,23 @@
 mod dispatch;
 
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::process_request::{
+        RequestOutcome, XI2_MAJOR_OPCODE, emit_x11_error_with_minor,
+        focus_pointer::{apply_core_input_focus, core_focus_window_error},
+        write_to_client,
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+    xinput::XI2_DEVICE_CHANGED_MASK,
+};
 pub(super) use dispatch::*;
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientId, ResourceId, SequenceNumber},
+};
 
 // ─── XI 1.x request validation (XTS XI scenario, the "Got Success,
 // Expecting <error>" family) ─────────────────────────────────────────

@@ -1,4 +1,6 @@
 use super::*;
+use crate::backend::{CrtcConfigToken, ModeSpec};
+use yserver_protocol::x11::AtomId;
 
 #[test]
 fn active_monitors_matches_outputs_and_order() {

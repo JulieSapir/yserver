@@ -1,4 +1,32 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        fanout::fanout_event_to_clients,
+        key_fanout::replay_frozen_key_to_focus,
+        pointer_fanout::replay_frozen_pointer_event_to_state,
+        process_request::{
+            RequestOutcome, XI2_FIRST_ERROR, XI2_MAJOR_OPCODE, emit_x11_error_with_minor,
+            grabs::{
+                apply_allow_events, apply_xi2_allow_events_for_slave, deactivate_core_pointer_grab,
+                deactivate_passive_pointer_grab_crossings, xi2_allow_mode_to_core,
+            },
+            xi::{
+                XI1_ERROR_BAD_CLASS, XI1_ERROR_BAD_DEVICE, XI1_KEY_MIN, XI1_USE_X_KEYBOARD,
+                dispatch::xi_write_reply, xi1_device_has_buttons, xi1_device_has_keys,
+                xi1_device_valid, xi1_error, xi1_event_class_device, xi1_modifiers_valid,
+                xi1_window_exists,
+            },
+        },
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, ResourceId, SequenceNumber},
+};
 
 // XI2 grab opcodes (51-55). yserver wires these into the
 // existing core X11 grab state (`state.active_pointer_grab`,

@@ -1,4 +1,23 @@
-use super::*;
+use crate::{
+    backend::{Backend, CrtcConfigApply, ModeSpec},
+    core_loop::process_request::{
+        RequestOutcome, emit_x11_error_with_minor,
+        randr_ext::{
+            CrtcConfigCompletion, CrtcConfigReply, RANDR_MAJOR_OPCODE, crtc::start_crtc_config,
+            request_xid,
+        },
+        write_to_client,
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{
+        ClientByteOrder, ClientId, RequestHeader, ResourceId, SequenceNumber, randr as x11randr,
+    },
+};
 
 #[allow(clippy::needless_return)]
 pub(super) fn handle_randr_query_version(

@@ -1,4 +1,5 @@
 use super::*;
+use yserver_protocol::x11::AtomId;
 
 /// Audit #9 (`docs/protocol-audit-2026-05-19.md`): when a client
 /// takes ownership of a selection via core `SetSelectionOwner`, the

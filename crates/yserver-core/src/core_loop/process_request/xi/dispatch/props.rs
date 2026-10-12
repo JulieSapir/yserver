@@ -1,4 +1,21 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{
+        RequestOutcome, XI2_FIRST_ERROR, XI2_MAJOR_OPCODE, emit_x11_error_with_minor,
+        props::{
+            PropertyChangeOutcome, canonicalize_xi_property_data, dispatch_change_property,
+            emit_property_change, emit_property_dispatch_error, is_xtest_marker_property,
+        },
+        xi::dispatch::xi_write_reply,
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{AtomId, ClientByteOrder, ClientId, SequenceNumber},
+};
 
 pub(super) fn handle_xi_list_properties(
     state: &mut ServerState,

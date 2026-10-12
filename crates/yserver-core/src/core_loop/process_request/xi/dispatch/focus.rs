@@ -1,4 +1,21 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::process_request::{
+        RequestOutcome, XI2_MAJOR_OPCODE, emit_x11_error_with_minor,
+        xi::{
+            XI1_ERROR_BAD_DEVICE, dispatch::xi_write_reply, xi1_device_has_keys, xi1_device_valid,
+            xi1_error,
+        },
+    },
+    resources::ROOT_WINDOW,
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, ResourceId, SequenceNumber},
+};
 
 #[allow(clippy::needless_return)]
 pub(super) fn handle_xi_change_cursor(

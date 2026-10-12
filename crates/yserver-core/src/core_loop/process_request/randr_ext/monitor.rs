@@ -1,4 +1,16 @@
-use super::*;
+use crate::{
+    core_loop::process_request::{
+        RequestOutcome, emit_x11_error_with_minor,
+        randr_ext::{RANDR_MAJOR_OPCODE, active_monitors, request_xid, send_root_config_notify},
+        write_to_client,
+    },
+    server::ServerState,
+};
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{AtomId, ClientByteOrder, ClientId, ResourceId, SequenceNumber, randr as x11randr},
+};
 
 #[allow(clippy::needless_return)]
 pub(super) fn handle_randr_get_monitors(

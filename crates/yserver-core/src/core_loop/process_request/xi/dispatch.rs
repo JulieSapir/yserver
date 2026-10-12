@@ -25,14 +25,29 @@ mod focus;
 mod grabs;
 mod props;
 
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::process_request::{
+        RequestOutcome, XINPUT_LAST_REQUEST, emit_x11_error_with_minor,
+        focus_pointer::handle_xi_warp_pointer,
+        write_to_client,
+        xi::{
+            handle_xi_change_hierarchy, handle_xi_set_focus, xi2_request_has_complete_dynamic_tail,
+        },
+    },
+    server::ServerState,
+};
 use control::*;
 use devices::*;
 use events::*;
 use focus::*;
 use grabs::*;
 use props::*;
-use yserver_protocol::x11::ClientByteOrder;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, RequestHeader, SequenceNumber},
+};
 
 pub(in crate::core_loop::process_request) fn handle_xi2_request(
     state: &mut ServerState,

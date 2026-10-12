@@ -21,14 +21,23 @@ mod provider;
 mod screen;
 mod xinerama;
 
-use super::*;
+use crate::{
+    backend::{Backend, CrtcConfigToken},
+    core_loop::process_request::{RANDR_REQUEST_COUNT, RequestOutcome, emit_x11_error_with_minor},
+    server::ServerState,
+};
 pub(crate) use crtc::*;
+use log::debug;
 use monitor::*;
 use output::*;
 use provider::*;
 use screen::*;
+use std::io;
 pub(super) use xinerama::*;
-use yserver_protocol::x11::{ClientByteOrder, randr as x11randr};
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, RequestHeader, SequenceNumber, randr as x11randr},
+};
 
 /// Continuation data needed to finish an asynchronous `RRSetCrtcConfig`
 /// without redispatching the original request.

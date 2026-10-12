@@ -46,6 +46,7 @@ use crate::{
     server::{ClientState, ScreenSaverActive, ServerState},
     xinput::XI2_PROPERTY_EVENT_MASK,
 };
+use yserver_protocol::x11::AtomId;
 
 fn seed_present_clock(state: &mut ServerState, msc: u64, ust: u64) {
     seed_present_domain_clock(state, 0, 0, msc, ust);

@@ -1,4 +1,21 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{
+        RANDR_BAD_OUTPUT, RequestOutcome, emit_x11_error_with_minor,
+        randr_ext::{RANDR_MAJOR_OPCODE, request_xid},
+        write_to_client,
+    },
+    properties,
+    server::ServerState,
+};
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{
+        AtomId, ClientByteOrder, ClientId, RequestHeader, ResourceId, SequenceNumber,
+        randr as x11randr,
+    },
+};
 
 fn output_exists(state: &ServerState, output: u32) -> bool {
     state

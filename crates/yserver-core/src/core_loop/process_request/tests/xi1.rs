@@ -1,4 +1,5 @@
 use super::*;
+use yserver_protocol::x11::AtomId;
 
 #[test]
 fn xi1_device_bell_rejects_feedback_without_bell_proc() {

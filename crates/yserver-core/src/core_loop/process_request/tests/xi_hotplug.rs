@@ -1,4 +1,5 @@
 use super::*;
+use yserver_protocol::x11::AtomId;
 
 // -----------------------------------------------------------------
 // XI 1.x `SelectExtensionEvent` + `DevicePropertyNotify` fan-out.

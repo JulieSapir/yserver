@@ -1,4 +1,11 @@
-use super::*;
+use crate::{
+    core_loop::process_request::{
+        RequestOutcome, emit_x11_error_with_minor, randr_ext::active_monitors, write_to_client,
+    },
+    server::ServerState,
+};
+use std::io;
+use yserver_protocol::x11::{ClientId, RequestHeader, ResourceId, SequenceNumber};
 
 pub(in crate::core_loop::process_request) fn handle_xinerama_request(
     state: &mut ServerState,

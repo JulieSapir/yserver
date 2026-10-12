@@ -88,27 +88,20 @@ mod largest_free_xid_gap_tests;
 #[cfg(test)]
 mod tests;
 
-use std::{collections::HashSet, io, os::fd::OwnedFd};
+use std::{io, os::fd::OwnedFd};
 
 use log::debug;
 use yserver_protocol::{
     x11,
-    x11::{AtomId, ClientId, RequestHeader, ResourceId, SequenceNumber},
+    x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
 };
 
 #[cfg(test)]
 use crate::core_loop::pointer_fanout::pointer_event_fanout_to_state;
 use crate::{
-    backend::{Backend, CrtcConfigApply, CrtcConfigToken, ModeSpec, OriginContext},
-    core_loop::{
-        client_io, client_io::WriteOutcome, fanout::fanout_event_to_clients,
-        key_fanout::replay_frozen_key_to_focus,
-        pointer_fanout::replay_frozen_pointer_event_to_state,
-    },
-    properties,
-    resources::ROOT_WINDOW,
-    server::{ServerState, XI_FIRST_EVENT},
-    xinput::{XI_DEVICE_KEY_PRESS_OFFSET, XI2_DEVICE_CHANGED_MASK},
+    backend::{Backend, OriginContext},
+    core_loop::{client_io, client_io::WriteOutcome},
+    server::ServerState,
 };
 
 /// XI2 major opcode assigned by `extension_metadata("XInputExtension")`.

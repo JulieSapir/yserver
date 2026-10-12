@@ -1,4 +1,27 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        fanout::fanout_event_to_clients,
+        process_request::{
+            RequestOutcome, XI2_FIRST_ERROR, XI2_MAJOR_OPCODE, emit_x11_error_with_minor,
+            xi::{
+                XI1_ERROR_BAD_CLASS, XI1_ERROR_BAD_DEVICE, XI1_ERROR_BAD_MODE,
+                dispatch::xi_write_reply, emit_xi2_device_changed_bootstrap, xi1_device_valid,
+                xi1_error, xi1_event_class_device, xi1_send_extension_event_resolve_targets,
+                xi1_window_exists, xi2_first_invalid_mask_bit,
+            },
+        },
+    },
+    resources::ROOT_WINDOW,
+    server::{ServerState, XI_FIRST_EVENT},
+    xinput::{XI_DEVICE_KEY_PRESS_OFFSET, XI2_DEVICE_CHANGED_MASK},
+};
+use log::debug;
+use std::{collections::HashSet, io};
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, RequestHeader, ResourceId, SequenceNumber},
+};
 
 #[allow(clippy::needless_return)]
 pub(super) fn handle_xi_select_events(

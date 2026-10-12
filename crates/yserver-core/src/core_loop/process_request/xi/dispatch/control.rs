@@ -1,4 +1,30 @@
-use super::*;
+use crate::{
+    backend::{Backend, OriginContext},
+    core_loop::{
+        fanout::fanout_event_to_clients,
+        process_request::{
+            RequestOutcome,
+            input_ctl::{
+                ModmapChangeOutcome, apply_keymap_change, change_modifier_mapping,
+                fetch_merged_keymap, legacy_keyboard_mapping_notify,
+            },
+            motion_history_range,
+            xi::{
+                XI1_ERROR_BAD_DEVICE, XI1_KEY_MAX, XI1_KEY_MIN, dispatch::xi_write_reply,
+                xi1_device_button_count, xi1_device_has_buttons, xi1_device_has_keys,
+                xi1_device_has_valuators, xi1_device_valid, xi1_device_valuator_count, xi1_error,
+                xi1_zero_reply,
+            },
+        },
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, SequenceNumber},
+};
 
 // GetDeviceMotionEvents: { start, stop, deviceid }. Motion
 // history needs valuators; the reply axis count comes from the live

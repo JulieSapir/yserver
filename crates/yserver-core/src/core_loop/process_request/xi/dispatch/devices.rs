@@ -1,4 +1,21 @@
-use super::*;
+use crate::{
+    core_loop::process_request::{
+        RequestOutcome, XI2_FIRST_ERROR, XI2_MAJOR_OPCODE, XI2_SERVER_MAJOR_VERSION,
+        XI2_SERVER_MINOR_VERSION, emit_x11_error_with_minor,
+        xi::{
+            XI1_ERROR_BAD_DEVICE, XI1_KEY_MAX, XI1_KEY_MIN, dispatch::xi_write_reply,
+            record_xi2_client_version, xi1_device_has_keys, xi1_device_has_valuators,
+            xi1_device_is_master, xi1_device_valid, xi1_error, xi1_zero_reply,
+        },
+    },
+    server::{ServerState, XI_FIRST_EVENT},
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, RequestHeader, SequenceNumber},
+};
 
 pub(super) fn handle_xi1_get_extension_version(
     state: &mut ServerState,

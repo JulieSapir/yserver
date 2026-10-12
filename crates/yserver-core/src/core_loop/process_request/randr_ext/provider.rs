@@ -1,4 +1,18 @@
-use super::*;
+use crate::{
+    backend::Backend,
+    core_loop::process_request::{
+        RANDR_BAD_PROVIDER, RequestOutcome, emit_x11_error_with_minor,
+        randr_ext::{RANDR_MAJOR_OPCODE, request_xid, warn_randr_unsupported_once},
+        write_to_client,
+    },
+    properties,
+    server::ServerState,
+};
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, ResourceId, SequenceNumber, randr as x11randr},
+};
 
 fn provider_relationship_protocol_error(
     error: crate::randr::ProviderRelationshipError,

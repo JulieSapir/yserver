@@ -1,4 +1,6 @@
 use super::*;
+use crate::xinput::XI2_DEVICE_CHANGED_MASK;
+use yserver_protocol::x11::AtomId;
 
 #[test]
 fn xi_get_focus_returns_real_focus_window() {

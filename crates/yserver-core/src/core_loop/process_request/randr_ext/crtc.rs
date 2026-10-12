@@ -1,4 +1,21 @@
-use super::*;
+use crate::{
+    backend::{Backend, CrtcConfigApply, ModeSpec},
+    core_loop::process_request::{
+        RANDR_BAD_CRTC, RequestOutcome, emit_x11_error_with_minor,
+        randr_ext::{
+            CrtcConfigCompletion, CrtcConfigReply, PendingCrtcConfig, RANDR_MAJOR_OPCODE,
+            request_xid, screen::x11randr_encode_set_screen_config, warn_randr_unsupported_once,
+        },
+        write_to_client,
+    },
+    server::ServerState,
+};
+use log::debug;
+use std::io;
+use yserver_protocol::{
+    x11,
+    x11::{ClientByteOrder, ClientId, RequestHeader, SequenceNumber, randr as x11randr},
+};
 
 fn crtc_is_leased(_state: &ServerState, _crtc: u32) -> bool {
     false
