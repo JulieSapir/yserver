@@ -145,7 +145,9 @@ def report_target_os(path, text):
             if name == "_":
                 anon.append(full)
                 continue
-            hits = [k for k, l in enumerate(lines) if k not in in_use and re.search(rf"\b{name}\b", l)]
+            if name == "*":
+                continue
+            hits = [k for k, l in enumerate(lines) if k not in in_use and re.search(rf"\b{re.escape(name)}\b", l)]
             if hits and all(k in gated for k in hits):
                 only.append(name)
     print(f"target_os {path}: {sites} sites; gated-only names {only or 0}; `as _` {anon or 0}")
