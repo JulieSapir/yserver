@@ -38,6 +38,15 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   `nix 0.31.3` still requires. Revisit the pin when upstream compatibility
   is restored.
 
+- **2026-10-11 copied PRIME transport (#235):** the copied transport prefers
+  a compatible non-`DEVICE_LOCAL` memory type on the renderer (an iGPU sink
+  cannot read a dGPU's VRAM); same-device exports keep `DEVICE_LOCAL`. Only
+  the transport is padded to a 64-pixel width so RADV GFX9+ can import
+  NVIDIA's 128-byte-aligned linear pitch; the render target, copy regions and
+  digests keep the logical extent. The `*_two_gpu` tests need an NVIDIA + AMD
+  pair. On silence (RX 6800 + i915) the shared route qualifies first, so the
+  copied path is not exercised there.
+
 - **2026-10-07 #100 fix:** submit paint before
   DamageSubtract consumes coalesced damage and before XFixes FetchRegion
   publishes it. The KMS boundary drains render batches, open frames and queued

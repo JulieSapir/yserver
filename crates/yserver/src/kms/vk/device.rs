@@ -309,6 +309,19 @@ impl VkContext {
         )
     }
 
+    /// Build a disposable compositor context for a test-selected Vulkan GPU.
+    /// Production callers use [`Self::new_for_render_device`] instead.
+    #[cfg(test)]
+    pub(crate) fn new_disposable_for_test(
+        selector: VulkanDeviceSelector,
+    ) -> Result<Arc<Self>, VkInitError> {
+        Self::new_with_selection(
+            PhysicalDeviceSelection::Exact(selector),
+            DeviceProfile::Compositor,
+            DropWaitPolicy::disposable_probe(),
+        )
+    }
+
     /// Stable UUID pair for the selected physical device and ICD.
     #[must_use]
     pub(crate) const fn device_selector(&self) -> VulkanDeviceSelector {

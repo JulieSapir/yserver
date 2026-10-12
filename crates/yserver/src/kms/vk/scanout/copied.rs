@@ -1,8 +1,21 @@
 use super::*;
 
+#[cfg(test)]
+mod two_gpu_tests;
+
 /// Exact usage of GPU B's imported alias of A's DMA-BUF transport. Keep this
 /// single value shared by the capability query and actual import.
 pub(super) const COPIED_SINK_IMPORT_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::TRANSFER_SRC;
+
+/// BGRA8 uses four bytes per pixel, so 64 pixels give a 256-byte row pitch,
+/// the strictest known linear import alignment (RADV GFX9+).
+const COPIED_TRANSPORT_WIDTH_ALIGNMENT_PIXELS: u32 = 64;
+
+fn copied_transport_width(logical_width: u32) -> u32 {
+    let alignment = u64::from(COPIED_TRANSPORT_WIDTH_ALIGNMENT_PIXELS);
+    let padded = u64::from(logical_width).div_ceil(alignment) * alignment;
+    u32::try_from(padded).expect("padded copied transport width must fit in a Vulkan extent")
+}
 
 impl CopiedScanoutPlan {
     pub(crate) fn describe(self) -> String {
@@ -22,9 +35,10 @@ impl CopiedRenderSource {
         height: u32,
         plan: CopiedSourcePlan,
     ) -> io::Result<Self> {
+        let transport_width = copied_transport_width(width);
         let transport_on_renderer = allocate_copied_source_exact(
             &render_vk,
-            width,
+            transport_width,
             height,
             vk::Format::B8G8R8A8_UNORM,
             plan,
@@ -35,7 +49,7 @@ impl CopiedRenderSource {
         let imported_on_sink = DrawableImage::from_dmabuf_with_usage(
             Arc::clone(&sink_vk),
             exported.fd,
-            width,
+            transport_width,
             height,
             vk::Format::B8G8R8A8_UNORM,
             exported.modifier,
@@ -1629,4 +1643,27 @@ pub(super) fn color_subresource_layers() -> vk::ImageSubresourceLayers {
     vk::ImageSubresourceLayers::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .layer_count(1)
+}
+
+#[cfg(test)]
+mod copied_transport_width_tests {
+    use super::copied_transport_width;
+
+    #[test]
+    fn copied_transport_width_rounds_to_64_pixels() {
+        for (logical_width, expected) in [
+            (1366, 1408),
+            (1440, 1472),
+            (1680, 1728),
+            (1920, 1920),
+            (1, 64),
+            (64, 64),
+        ] {
+            assert_eq!(
+                copied_transport_width(logical_width),
+                expected,
+                "logical width {logical_width}"
+            );
+        }
+    }
 }

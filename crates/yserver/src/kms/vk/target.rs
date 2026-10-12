@@ -1419,6 +1419,7 @@ pub fn allocate_exportable(
             format,
             &[super::dri3::DRM_FORMAT_MOD_LINEAR],
             EXPORT_IMAGE_USAGE,
+            ExportMemoryPlacement::DeviceLocal,
         )?;
         (TilingStrategy::LinearModifier, img)
     } else if let Some(modifiers) = vk
@@ -1433,6 +1434,7 @@ pub fn allocate_exportable(
             format,
             &modifiers,
             EXPORT_IMAGE_USAGE,
+            ExportMemoryPlacement::DeviceLocal,
         )?;
         (TilingStrategy::Modifier, img)
     } else {
@@ -1513,6 +1515,7 @@ fn allocate_with_strategy(
             format,
             &[super::dri3::DRM_FORMAT_MOD_LINEAR],
             EXPORT_IMAGE_USAGE,
+            ExportMemoryPlacement::DeviceLocal,
         ),
         TilingStrategy::Modifier => {
             if !vk.image_drm_format_modifier {
@@ -1522,7 +1525,15 @@ fn allocate_with_strategy(
             if modifiers.is_empty() {
                 return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED);
             }
-            allocate_exportable_modifier(vk, width, height, format, &modifiers, EXPORT_IMAGE_USAGE)
+            allocate_exportable_modifier(
+                vk,
+                width,
+                height,
+                format,
+                &modifiers,
+                EXPORT_IMAGE_USAGE,
+                ExportMemoryPlacement::DeviceLocal,
+            )
         }
     }
 }
@@ -1546,6 +1557,7 @@ pub(crate) fn allocate_copied_source_exact(
         format,
         &modifiers,
         COPIED_TRANSPORT_IMAGE_USAGE,
+        ExportMemoryPlacement::CrossDevice,
     )?;
     if let Err(error) = validate_copied_source_modifier(requested_modifier, image.modifier) {
         log::warn!(
@@ -1576,6 +1588,7 @@ fn allocate_exportable_modifier(
     format: vk::Format,
     modifiers: &[u64],
     usage: vk::ImageUsageFlags,
+    placement: ExportMemoryPlacement,
 ) -> Result<ExportableImage, vk::Result> {
     let modifier_ext = vk
         .image_drm_format_modifier_ext
@@ -1607,7 +1620,7 @@ fn allocate_exportable_modifier(
 
     let image = unsafe { vk.device.create_image(&image_info, None)? };
 
-    let memory = match bind_exportable_memory(vk, image) {
+    let memory = match bind_exportable_memory(vk, image, placement) {
         Ok(m) => m,
         Err(e) => {
             unsafe { vk.device.destroy_image(image, None) };
@@ -1682,7 +1695,7 @@ fn allocate_exportable_linear(
 
     let image = unsafe { vk.device.create_image(&image_info, None)? };
 
-    let memory = match bind_exportable_memory(vk, image) {
+    let memory = match bind_exportable_memory(vk, image, ExportMemoryPlacement::DeviceLocal) {
         Ok(m) => m,
         Err(e) => {
             unsafe { vk.device.destroy_image(image, None) };
@@ -1710,12 +1723,58 @@ fn allocate_exportable_linear(
     })
 }
 
+/// Where an exported image's memory lives. Same-device exports keep the
+/// renderer's fastest heap; a copied PRIME transport is read by another GPU,
+/// which may have no peer access to the renderer's device-local heaps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExportMemoryPlacement {
+    DeviceLocal,
+    CrossDevice,
+}
+
+/// Choose an image-compatible memory type for an exported image. Cross-device
+/// transport prefers a system-memory type because the receiving GPU may not
+/// have peer access to the renderer's device-local heaps.
+pub(crate) fn pick_export_memory_type(
+    props: &vk::PhysicalDeviceMemoryProperties,
+    type_bits: u32,
+    placement: ExportMemoryPlacement,
+) -> Option<u32> {
+    let device_local_first = || {
+        pick_memory_type(props, type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL).or_else(|| {
+            // Preserve the historical fallback on devices without a
+            // DEVICE_LOCAL-compatible type (e.g. software Vulkan).
+            pick_memory_type(props, type_bits, vk::MemoryPropertyFlags::empty())
+        })
+    };
+
+    match placement {
+        ExportMemoryPlacement::DeviceLocal => device_local_first(),
+        ExportMemoryPlacement::CrossDevice => {
+            first_non_device_local_type(props, type_bits).or_else(device_local_first)
+        }
+    }
+}
+
+fn first_non_device_local_type(
+    props: &vk::PhysicalDeviceMemoryProperties,
+    type_bits: u32,
+) -> Option<u32> {
+    (0..props.memory_type_count).find(|&index| {
+        type_bits & (1 << index) != 0
+            && !props.memory_types[index as usize]
+                .property_flags
+                .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+    })
+}
+
 /// Allocate dma-buf-exportable, dedicated `VkDeviceMemory` for `image`
 /// and bind it. Shared by the modifier and linear exportable paths.
 /// On error the caller still owns `image` and must destroy it.
 fn bind_exportable_memory(
     vk: &Arc<VkContext>,
     image: vk::Image,
+    placement: ExportMemoryPlacement,
 ) -> Result<vk::DeviceMemory, vk::Result> {
     let mem_reqs = unsafe { vk.device.get_image_memory_requirements(image) };
     let mem_props = unsafe {
@@ -1723,21 +1782,19 @@ fn bind_exportable_memory(
             .get_physical_device_memory_properties(vk.physical_device)
     };
 
-    let memory_type_index = pick_memory_type(
-        &mem_props,
-        mem_reqs.memory_type_bits,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
-    )
-    .or_else(|| {
-        // Fallback: any compatible type (e.g. on lavapipe / integrated GPU
-        // all memory is HOST_VISIBLE with no DEVICE_LOCAL-only type).
-        pick_memory_type(
-            &mem_props,
-            mem_reqs.memory_type_bits,
-            vk::MemoryPropertyFlags::empty(),
-        )
-    })
-    .ok_or(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY)?;
+    if placement == ExportMemoryPlacement::CrossDevice
+        && first_non_device_local_type(&mem_props, mem_reqs.memory_type_bits).is_none()
+    {
+        static FALLBACK_LOGGED: std::sync::Once = std::sync::Once::new();
+        FALLBACK_LOGGED.call_once(|| {
+            log::info!(
+                "copied transport has no compatible system-memory type; falling back to the historical device-local preference"
+            );
+        });
+    }
+    let memory_type_index =
+        pick_export_memory_type(&mem_props, mem_reqs.memory_type_bits, placement)
+            .ok_or(vk::Result::ERROR_OUT_OF_DEVICE_MEMORY)?;
 
     let mut export_alloc = vk::ExportMemoryAllocateInfo::default()
         .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
@@ -1803,6 +1860,92 @@ fn _compile_check_from_dmabuf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nvidia_probe_memory_properties() -> vk::PhysicalDeviceMemoryProperties {
+        let types = [
+            (vk::MemoryPropertyFlags::empty(), 1),
+            (vk::MemoryPropertyFlags::DEVICE_LOCAL, 0),
+            (
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                1,
+            ),
+            (
+                vk::MemoryPropertyFlags::HOST_VISIBLE
+                    | vk::MemoryPropertyFlags::HOST_COHERENT
+                    | vk::MemoryPropertyFlags::HOST_CACHED,
+                1,
+            ),
+            (
+                vk::MemoryPropertyFlags::DEVICE_LOCAL
+                    | vk::MemoryPropertyFlags::HOST_VISIBLE
+                    | vk::MemoryPropertyFlags::HOST_COHERENT,
+                2,
+            ),
+        ];
+        let heaps = [
+            (17_103_323_136, vk::MemoryHeapFlags::DEVICE_LOCAL),
+            (23_429_895_168, vk::MemoryHeapFlags::empty()),
+            (257_949_696, vk::MemoryHeapFlags::DEVICE_LOCAL),
+        ];
+
+        let mut properties = vk::PhysicalDeviceMemoryProperties {
+            memory_type_count: types.len() as u32,
+            memory_heap_count: heaps.len() as u32,
+            ..Default::default()
+        };
+        for (index, (flags, heap_index)) in types.into_iter().enumerate() {
+            properties.memory_types[index] = vk::MemoryType::default()
+                .property_flags(flags)
+                .heap_index(heap_index);
+        }
+        for (index, (size, flags)) in heaps.into_iter().enumerate() {
+            properties.memory_heaps[index] = vk::MemoryHeap::default().size(size).flags(flags);
+        }
+        properties
+    }
+
+    #[test]
+    fn cross_device_export_prefers_system_memory() {
+        let properties = nvidia_probe_memory_properties();
+        let device_local = ExportMemoryPlacement::DeviceLocal;
+        let cross_device = ExportMemoryPlacement::CrossDevice;
+        let all_types = 0b1_1111;
+        let without_type_zero = all_types & !(1 << 0);
+        let device_local_types = (1 << 1) | (1 << 4);
+
+        assert_eq!(
+            pick_export_memory_type(&properties, all_types, cross_device),
+            Some(0)
+        );
+        assert_eq!(
+            pick_export_memory_type(&properties, without_type_zero, cross_device),
+            Some(2)
+        );
+        assert_eq!(
+            pick_export_memory_type(&properties, device_local_types, cross_device),
+            Some(1)
+        );
+        for type_bits in [all_types, without_type_zero, device_local_types] {
+            assert_eq!(
+                pick_export_memory_type(&properties, type_bits, device_local),
+                Some(1)
+            );
+        }
+
+        // Put the probe's DEVICE_LOCAL | HOST_VISIBLE type before a compatible
+        // system-memory type so the CrossDevice policy must reject it.
+        let mut local_host_visible_first = properties;
+        local_host_visible_first.memory_types.swap(2, 4);
+        let selected =
+            pick_export_memory_type(&local_host_visible_first, (1 << 2) | (1 << 4), cross_device)
+                .expect("a compatible system-memory type exists");
+        assert_eq!(selected, 4);
+        assert!(
+            !local_host_visible_first.memory_types[selected as usize]
+                .property_flags
+                .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+        );
+    }
 
     #[test]
     fn copied_transport_usage_is_exact_explicit_modifier_destination_contract() {
