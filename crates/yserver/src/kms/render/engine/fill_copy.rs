@@ -903,7 +903,7 @@ impl RenderEngine {
 /// clamped to the storage extent now clamps to the destination handle's
 /// bounds. `clamp_rect(r, extent)` is exactly
 /// `clamp_rect_to(r, {(0, 0), extent})`.
-pub(crate) fn clamp_rect_to(rect: vk::Rect2D, bounds: vk::Rect2D) -> vk::Rect2D {
+pub(super) fn clamp_rect_to(rect: vk::Rect2D, bounds: vk::Rect2D) -> vk::Rect2D {
     let min_x = bounds.offset.x;
     let min_y = bounds.offset.y;
     let max_x = bounds.offset.x.saturating_add_unsigned(bounds.extent.width);

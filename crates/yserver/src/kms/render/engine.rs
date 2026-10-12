@@ -420,7 +420,7 @@ pub(crate) struct SnapshotId(pub(crate) u64);
 /// GC-owned pinned depth-1 mask snapshot. Sampled by masked_copy_area; written
 /// (re-copied from the live clip pixmap) only on the refresh path. Lifetime is
 /// the GC's clip-mask install; survives the source pixmap being freed.
-pub(crate) struct ClipSnapshot {
+struct ClipSnapshot {
     vk: Arc<VkContext>,
     pub(crate) image: vk::Image,
     pub(crate) view: vk::ImageView, // IDENTITY R8
@@ -557,7 +557,7 @@ struct StagingPool {
     reason = "Variants are populated by Stage 3c's render_composite path"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum SamplerConfig {
+enum SamplerConfig {
     /// `Repeat::None` — clamp-to-border at picture edges (or
     /// `REPEAT_PAD` for synthetic 1×1 sources; see render plan §3c).
     Clamp,
@@ -602,7 +602,7 @@ pub(crate) enum SwizzleClass {
     dead_code,
     reason = "Built and consumed by Stage 3c's render_composite path"
 )]
-pub(crate) struct CachedDrawableView {
+struct CachedDrawableView {
     pub(crate) view: vk::ImageView,
 }
 
@@ -1041,7 +1041,7 @@ pub(crate) struct ImageTextStats {
 /// against a gradient picture lazy-builds it.
 /// Note: `GradientPicture` carries raw Vk handles + an `Arc<VkContext>`
 /// and doesn't implement `Debug`, so this enum stays Debug-free.
-pub(crate) enum PicturePaintState {
+enum PicturePaintState {
     /// GPU-side state for a `LinearGradient` / `RadialGradient`
     /// picture record. The wrapped [`GradientPicture`] owns its
     /// image / view / memory; dropping it (via

@@ -486,7 +486,7 @@ impl RenderEngine {
 
     /// Phase A: check whether the platform's SubmitGroup has hit its
     /// cap; if so, drive a `MaxSize` flush.
-    pub(crate) fn maybe_auto_flush_submit_group(
+    pub(super) fn maybe_auto_flush_submit_group(
         &mut self,
         store: &mut DrawableStore,
         platform: &mut PlatformBackend,
@@ -1048,7 +1048,7 @@ impl RenderEngine {
     /// (chronological ordering: pre-frame batches must submit before
     /// the frame's CB), then close the frame. Each non-ported op's
     /// own batch prelude runs afterward against an empty batch state.
-    pub(crate) fn close_open_frame_for_non_ported_op(
+    pub(super) fn close_open_frame_for_non_ported_op(
         &mut self,
         store: &mut DrawableStore,
         platform: &mut PlatformBackend,

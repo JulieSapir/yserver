@@ -86,7 +86,7 @@ impl RenderEngine {
     /// been constructed. Test-only — used to assert the lazy
     /// build trigger.
     #[cfg(test)]
-    pub(crate) fn render_pipelines_built(&self) -> bool {
+    fn render_pipelines_built(&self) -> bool {
         self.inner
             .as_ref()
             .is_some_and(|i| i.render_pipelines.is_some())
@@ -111,7 +111,7 @@ impl RenderEngine {
     /// - `Vk(...)` for any underlying Vk failure during pipeline
     ///   cache / scratch image / readback construction or the
     ///   one-shot white-clear submit.
-    pub(crate) fn ensure_render_assets(
+    pub(super) fn ensure_render_assets(
         &mut self,
         platform: &PlatformBackend,
     ) -> Result<(), RenderError> {
@@ -243,7 +243,7 @@ impl RenderEngine {
     /// image — the cache keys on `DrawableId` only and never re-checks
     /// the `VkImage` handle, so a swap without invalidation would keep
     /// sampling the OLD image).
-    pub(crate) fn invalidate_drawable_views(&mut self, id: DrawableId) {
+    pub(super) fn invalidate_drawable_views(&mut self, id: DrawableId) {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };

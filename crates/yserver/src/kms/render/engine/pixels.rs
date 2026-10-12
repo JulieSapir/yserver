@@ -217,7 +217,7 @@ pub(super) fn pack_from_storage(
 /// an RGBA float-4 suitable for `vkCmdClearAttachments` against a
 /// `B8G8R8A8_UNORM` target.
 #[must_use]
-pub(crate) fn decode_x11_pixel_bgra(pixel: u32) -> [f32; 4] {
+pub(super) fn decode_x11_pixel_bgra(pixel: u32) -> [f32; 4] {
     let b = (pixel & 0xff) as f32 / 255.0;
     let g = ((pixel >> 8) & 0xff) as f32 / 255.0;
     let r = ((pixel >> 16) & 0xff) as f32 / 255.0;
@@ -242,7 +242,7 @@ pub(crate) fn decode_x11_pixel_bgra(pixel: u32) -> [f32; 4] {
 /// (`kms/backend.rs:try_vk_solid_fill`); this helper is v2's
 /// equivalent.
 #[must_use]
-pub(crate) fn decode_x11_pixel_server_alpha(pixel: u32, depth: u8) -> [f32; 4] {
+fn decode_x11_pixel_server_alpha(pixel: u32, depth: u8) -> [f32; 4] {
     let mut c = decode_x11_pixel_bgra(pixel);
     if depth != 32 {
         c[3] = 1.0;
