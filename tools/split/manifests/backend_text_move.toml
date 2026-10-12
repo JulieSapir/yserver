@@ -1,0 +1,30 @@
+# Explicit-imports plan, placement fix: the core text requests
+# (`backend_draw_{poly_text8,poly_text16,image_text8,image_text16}`) move
+# from portable/draw.rs to portable/text.rs, next to the font helpers they
+# call. Names unchanged.
+source = "crates/yserver/src/kms/render/backend.rs"
+module = "kms::render::backend"
+dir = "crates/yserver/src/kms/render/backend"
+root_form = "file"
+table = "backend_text_move.paths"
+modules = []
+
+[[sibling_moves]]
+item = "portable::draw::impl KmsBackend::fn backend_draw_poly_text8"
+from = "portable/draw.rs"
+to = "portable/text.rs"
+
+[[sibling_moves]]
+item = "portable::draw::impl KmsBackend::fn backend_draw_poly_text16"
+from = "portable/draw.rs"
+to = "portable/text.rs"
+
+[[sibling_moves]]
+item = "portable::draw::impl KmsBackend::fn backend_draw_image_text8"
+from = "portable/draw.rs"
+to = "portable/text.rs"
+
+[[sibling_moves]]
+item = "portable::draw::impl KmsBackend::fn backend_draw_image_text16"
+from = "portable/draw.rs"
+to = "portable/text.rs"
