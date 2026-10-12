@@ -1,0 +1,177 @@
+# Phase 2c move for xi/dispatch.rs: the per-minor fns of the extract
+# commit go to xi/dispatch/{devices,control,events,grabs,props,focus}
+# (descendants of core_loop::process_request::xi::dispatch, so log targets
+# keep the old prefix). dispatch.rs keeps the imports, handle_xi2_request
+# and xi_write_reply; it glob-imports each child, whose fns become
+# pub(super) (the old private reach).
+source = "crates/yserver-core/src/core_loop/process_request/xi/dispatch.rs"
+module = "core_loop::process_request::xi::dispatch"
+dir = "crates/yserver-core/src/core_loop/process_request/xi/dispatch"
+root_form = "file"
+table = "xi_2c_move.paths"
+
+[visibility]
+"fn handle_xi1_get_extension_version" = "pub(super)"
+"fn handle_xi1_list_input_devices" = "pub(super)"
+"fn handle_xi1_open_device" = "pub(super)"
+"fn handle_xi1_close_device" = "pub(super)"
+"fn handle_xi1_set_device_mode" = "pub(super)"
+"fn handle_xi1_change_keyboard_device" = "pub(super)"
+"fn handle_xi1_change_pointer_device" = "pub(super)"
+"fn handle_xi_set_client_pointer" = "pub(super)"
+"fn handle_xi_get_client_pointer" = "pub(super)"
+"fn handle_xi_query_version" = "pub(super)"
+"fn handle_xi_query_device" = "pub(super)"
+"fn handle_xi1_get_device_motion_events" = "pub(super)"
+"fn handle_xi1_get_feedback_control" = "pub(super)"
+"fn handle_xi1_change_feedback_control" = "pub(super)"
+"fn handle_xi1_get_device_key_mapping" = "pub(super)"
+"fn handle_xi1_change_device_key_mapping" = "pub(super)"
+"fn handle_xi1_get_device_modifier_mapping" = "pub(super)"
+"fn handle_xi1_set_device_modifier_mapping" = "pub(super)"
+"fn handle_xi1_get_device_button_mapping" = "pub(super)"
+"fn handle_xi1_set_device_button_mapping" = "pub(super)"
+"fn handle_xi1_query_device_state" = "pub(super)"
+"fn handle_xi1_device_bell" = "pub(super)"
+"fn handle_xi1_set_device_valuators" = "pub(super)"
+"fn handle_xi1_get_device_control" = "pub(super)"
+"fn handle_xi1_change_device_control" = "pub(super)"
+"fn handle_xi1_select_extension_event" = "pub(super)"
+"fn handle_xi1_get_selected_extension_events" = "pub(super)"
+"fn handle_xi1_change_device_dont_propagate_list" = "pub(super)"
+"fn handle_xi1_get_device_dont_propagate_list" = "pub(super)"
+"fn handle_xi1_send_extension_event" = "pub(super)"
+"fn handle_xi_select_events" = "pub(super)"
+"fn handle_xi_get_selected_events" = "pub(super)"
+"fn handle_xi1_grab_device" = "pub(super)"
+"fn handle_xi1_ungrab_device" = "pub(super)"
+"fn handle_xi1_grab_device_key" = "pub(super)"
+"fn handle_xi1_ungrab_device_key" = "pub(super)"
+"fn handle_xi1_grab_device_button" = "pub(super)"
+"fn handle_xi1_ungrab_device_button" = "pub(super)"
+"fn handle_xi1_allow_device_events" = "pub(super)"
+"fn handle_xi_grab_device" = "pub(super)"
+"fn handle_xi_ungrab_device" = "pub(super)"
+"fn handle_xi_allow_events" = "pub(super)"
+"fn handle_xi_passive_grab_device" = "pub(super)"
+"fn handle_xi_passive_ungrab_device" = "pub(super)"
+"fn handle_xi1_list_device_properties" = "pub(super)"
+"fn handle_xi1_change_device_property" = "pub(super)"
+"fn handle_xi1_delete_device_property" = "pub(super)"
+"fn handle_xi1_get_device_property" = "pub(super)"
+"fn handle_xi_list_properties" = "pub(super)"
+"fn handle_xi_change_property" = "pub(super)"
+"fn handle_xi_delete_property" = "pub(super)"
+"fn handle_xi_get_property" = "pub(super)"
+"fn handle_xi1_get_device_focus" = "pub(super)"
+"fn handle_xi1_set_device_focus" = "pub(super)"
+"fn handle_xi_query_pointer" = "pub(super)"
+"fn handle_xi_change_cursor" = "pub(super)"
+"fn handle_xi_get_focus" = "pub(super)"
+"fn handle_xi_barrier_release_pointer" = "pub(super)"
+
+[[modules]]
+name = ""
+lines = [
+  "use devices::*;",
+  "use control::*;",
+  "use events::*;",
+  "use grabs::*;",
+  "use props::*;",
+  "use focus::*;",
+]
+items = ["use *", "fn handle_xi2_request", "fn xi_write_reply"]
+
+[[modules]]
+name = "devices"
+lines = ["use super::*;"]
+items = [
+  "fn handle_xi1_get_extension_version",
+  "fn handle_xi1_list_input_devices",
+  "fn handle_xi1_open_device",
+  "fn handle_xi1_close_device",
+  "fn handle_xi1_set_device_mode",
+  "fn handle_xi1_change_keyboard_device",
+  "fn handle_xi1_change_pointer_device",
+  "fn handle_xi_set_client_pointer",
+  "fn handle_xi_get_client_pointer",
+  "fn handle_xi_query_version",
+  "fn handle_xi_query_device",
+]
+
+[[modules]]
+name = "control"
+lines = ["use super::*;"]
+items = [
+  "fn handle_xi1_get_device_motion_events",
+  "fn handle_xi1_get_feedback_control",
+  "fn handle_xi1_change_feedback_control",
+  "fn handle_xi1_get_device_key_mapping",
+  "fn handle_xi1_change_device_key_mapping",
+  "fn handle_xi1_get_device_modifier_mapping",
+  "fn handle_xi1_set_device_modifier_mapping",
+  "fn handle_xi1_get_device_button_mapping",
+  "fn handle_xi1_set_device_button_mapping",
+  "fn handle_xi1_query_device_state",
+  "fn handle_xi1_device_bell",
+  "fn handle_xi1_set_device_valuators",
+  "fn handle_xi1_get_device_control",
+  "fn handle_xi1_change_device_control",
+]
+
+[[modules]]
+name = "events"
+lines = ["use super::*;"]
+items = [
+  "fn handle_xi1_select_extension_event",
+  "fn handle_xi1_get_selected_extension_events",
+  "fn handle_xi1_change_device_dont_propagate_list",
+  "fn handle_xi1_get_device_dont_propagate_list",
+  "fn handle_xi1_send_extension_event",
+  "fn handle_xi_select_events",
+  "fn handle_xi_get_selected_events",
+]
+
+[[modules]]
+name = "grabs"
+lines = ["use super::*;"]
+items = [
+  "fn handle_xi1_grab_device",
+  "fn handle_xi1_ungrab_device",
+  "fn handle_xi1_grab_device_key",
+  "fn handle_xi1_ungrab_device_key",
+  "fn handle_xi1_grab_device_button",
+  "fn handle_xi1_ungrab_device_button",
+  "fn handle_xi1_allow_device_events",
+  "fn handle_xi_grab_device",
+  "fn handle_xi_ungrab_device",
+  "fn handle_xi_allow_events",
+  "fn handle_xi_passive_grab_device",
+  "fn handle_xi_passive_ungrab_device",
+]
+
+[[modules]]
+name = "props"
+lines = ["use super::*;"]
+items = [
+  "fn handle_xi1_list_device_properties",
+  "fn handle_xi1_change_device_property",
+  "fn handle_xi1_delete_device_property",
+  "fn handle_xi1_get_device_property",
+  "fn handle_xi_list_properties",
+  "fn handle_xi_change_property",
+  "fn handle_xi_delete_property",
+  "fn handle_xi_get_property",
+]
+
+[[modules]]
+name = "focus"
+lines = ["use super::*;"]
+items = [
+  "fn handle_xi1_get_device_focus",
+  "fn handle_xi1_set_device_focus",
+  "fn handle_xi_query_pointer",
+  "fn handle_xi_change_cursor",
+  "fn handle_xi_get_focus",
+  "fn handle_xi_barrier_release_pointer",
+]
