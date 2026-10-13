@@ -111,7 +111,7 @@ impl SceneCompositor {
     /// `PipelineInit` on shader / pipeline build failure;
     /// `Vk(...)` on descriptor-pool init.
     pub(crate) fn new(platform: &PlatformBackend) -> Result<Self, SceneError> {
-        let vk = platform.vk().ok_or(SceneError::NoVk)?.clone();
+        let vk = platform.gpu.vk().ok_or(SceneError::NoVk)?.clone();
         let pipeline = CompositorPipeline::new(Arc::clone(&vk), vk::Format::B8G8R8A8_UNORM)
             .map_err(SceneError::PipelineInit)?;
         // Root-overlay XOR pass pipeline cache — built for the same
@@ -361,7 +361,7 @@ impl SceneCompositor {
                                 "render scene drain: output {output_idx} compose fence wait \
                                  failed: {error:?}; retaining resources for quarantine"
                             );
-                            platform.renderer_failed = true;
+                            platform.gpu.renderer_failed = true;
                             false
                         }
                     });
@@ -428,7 +428,7 @@ impl SceneCompositor {
                 },
             );
             if wait_failed || recovery_failed {
-                platform.renderer_failed = true;
+                platform.gpu.renderer_failed = true;
             }
             // Stage 5 Phase D' — global recovery: reset every
             // output's cursor mode to Hidden. The post-recovery

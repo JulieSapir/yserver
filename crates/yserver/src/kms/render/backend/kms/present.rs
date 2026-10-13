@@ -43,7 +43,7 @@ impl KmsBackend {
     /// shutdown block, after PRESENT completions are drained
     /// and before `backend` drops.
     pub fn shutdown_destroy_drawables(&mut self) {
-        self.store.shutdown_destroy_all(&self.platform);
+        self.store.shutdown_destroy_all(&self.platform.gpu);
     }
 
     /// Signal (and release) every wake pin still retained after the last
@@ -60,7 +60,7 @@ impl KmsBackend {
 
     fn fire_pending_present_entry(
         &mut self,
-        entry: crate::kms::render::present_completion::PendingPresentEntry,
+        entry: Box<dyn crate::kms::render::present_batch::PresentCompletionEntry>,
     ) -> yserver_core::backend::CompletedPresentEvent {
         // Do NOT signal here. Retain the pin keyed by present_id so core can
         // release it at the target vblank (frame pacing). PinnedWake::None
@@ -68,8 +68,10 @@ impl KmsBackend {
         // Destructure so `wake_pin` is moved exactly once (PinnedWake is not
         // Copy — a `matches!(entry.wake_pin, ..)` guard would move it first and
         // fail to compile).
-        use crate::kms::render::present_completion::{PendingPresentEntry, PinnedWake};
-        let PendingPresentEntry { wake_pin, event } = entry;
+        use crate::kms::render::present_completion::{
+            PendingPresentEntry, PinnedWake, into_pending_entry,
+        };
+        let PendingPresentEntry { wake_pin, event } = into_pending_entry(entry);
         if !matches!(wake_pin, PinnedWake::None) {
             self.retained_present_wakes
                 .insert(event.present_id, wake_pin);
@@ -86,9 +88,9 @@ impl KmsBackend {
 
     fn register_pending_present_batch(
         &mut self,
-        mut batch: crate::kms::render::present_completion::PendingPresentBatch,
+        mut batch: crate::kms::render::present_batch::PendingPresentBatch,
     ) {
-        use crate::kms::render::present_completion::PresentBatchWait;
+        use crate::kms::render::present_batch::PresentBatchWait;
 
         if batch.events.is_empty() {
             return;
@@ -132,12 +134,12 @@ impl KmsBackend {
     }
 
     fn pending_present_batch_ready(
-        batch: &crate::kms::render::present_completion::PendingPresentBatch,
+        batch: &crate::kms::render::present_batch::PendingPresentBatch,
         vk: Option<&std::sync::Arc<crate::kms::vk::device::VkContext>>,
     ) -> bool {
         use std::os::fd::AsFd;
 
-        use crate::kms::render::present_completion::PresentBatchWait;
+        use crate::kms::render::present_batch::PresentBatchWait;
         use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 
         // B.2-context fix (vkdebug VUID-vkDestroySemaphore-semaphore-05149):
@@ -182,9 +184,9 @@ impl KmsBackend {
 
     fn unregister_present_batch_fd(
         &mut self,
-        batch: &crate::kms::render::present_completion::PendingPresentBatch,
+        batch: &crate::kms::render::present_batch::PendingPresentBatch,
     ) {
-        use crate::kms::render::present_completion::PresentBatchWait;
+        use crate::kms::render::present_batch::PresentBatchWait;
 
         let _keep_export_semaphore_alive_until_batch_drop = batch.signal.as_ref();
         if let PresentBatchWait::Fd(fd) = &batch.wait {
@@ -227,7 +229,7 @@ impl KmsBackend {
             Err(e) => log::warn!("wakeup_eventfd read: {e}"),
         }
 
-        let renderer_failed = self.platform.renderer_failed;
+        let renderer_failed = self.platform.gpu.renderer_failed;
         if renderer_failed && !self.pending_present_batches.is_empty() {
             let pending_events: usize = self
                 .pending_present_batches
@@ -240,7 +242,7 @@ impl KmsBackend {
         // Clone the Arc<VkContext> so the loop body can borrow `self`
         // mutably (for `dri3_*_via_handle`) without a conflict with
         // `self.platform.vk`.
-        let vk = self.platform.vk.as_ref().cloned();
+        let vk = self.platform.gpu.vk.as_ref().cloned();
 
         let mut completed = Vec::new();
         while let Some(front) = self.pending_present_batches.front() {
@@ -1315,8 +1317,9 @@ impl KmsBackend {
     ) {
         use yserver_core::backend::PresentWake;
 
-        use crate::kms::render::present_completion::{
-            PendingPresentBatch, PendingPresentEntry, PinnedWake, PresentBatchWait,
+        use crate::kms::render::{
+            present_batch::{PendingPresentBatch, PresentBatchWait, PresentCompletionEntry},
+            present_completion::{PendingPresentEntry, PinnedWake},
         };
 
         let wake_pin = match &event.wake {
@@ -1337,7 +1340,8 @@ impl KmsBackend {
             _ => PinnedWake::None,
         };
 
-        let mut entry = PendingPresentEntry { wake_pin, event };
+        let mut entry: Box<dyn PresentCompletionEntry> =
+            Box::new(PendingPresentEntry { wake_pin, event });
 
         if let Some(cow_id) = self.cow_id
             && self.store.lookup(dst_host_xid) == Some(cow_id)
@@ -1365,7 +1369,7 @@ impl KmsBackend {
         // Spec § "Phase A — concrete scope" trigger 2 (Codex pass-3 fix).
         if let Err(e) = self.engine.flush_render_batch(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::engine::RenderFlushReason::Present,
         ) {
             log::warn!("render enqueue_present_completion: flush_render_batch failed: {e:?}");
@@ -1384,7 +1388,7 @@ impl KmsBackend {
                 Ok(()) => {
                     if let Err(e) = self.engine.close_open_frame(
                         &mut self.store,
-                        &mut self.platform,
+                        &mut self.platform.gpu,
                         crate::kms::render::frame_builder::CloseReason::PresentCompletionSignal,
                     ) {
                         log::warn!(
@@ -1404,7 +1408,7 @@ impl KmsBackend {
         // builder. Same hazard as Task 6.1 (VUID-VkFenceGetFdInfoKHR-handleType-01457).
         if let Err(e) = self.engine.close_open_frame(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::frame_builder::CloseReason::PresentCompletionSignal,
         ) {
             log::warn!("render enqueue_present_completion: close_open_frame failed: {e:?}");
@@ -1413,7 +1417,7 @@ impl KmsBackend {
         self.drain_frame_builder_telemetry();
         if let Err(e) = self.engine.flush_submit_group(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::submit_group::FlushReason::PresentCompletionSignal,
         ) {
             log::warn!("render enqueue_present_completion: flush_submit_group failed: {e:?}");
@@ -1428,12 +1432,13 @@ impl KmsBackend {
 
         let mut batch_ticket = fallback_ticket;
         let (wait, signal) = match (
-            self.platform.acquire_present_completion_signal(),
-            self.platform.acquire_fence_ticket(),
+            self.platform.gpu.acquire_present_completion_signal(),
+            self.platform.gpu.acquire_fence_ticket(),
         ) {
             (Ok(signal), Ok(ticket)) => {
                 match self
                     .platform
+                    .gpu
                     .submit_present_completion_signal(&signal, ticket.fence())
                 {
                     Ok(()) => {

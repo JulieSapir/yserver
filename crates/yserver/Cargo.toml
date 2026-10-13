@@ -27,7 +27,6 @@ flate2 = "1.1"
 fontconfig = "0.11"
 freetype-rs.workspace = true
 gbm.workspace = true
-gpu-allocator.workspace = true
 input.workspace = true
 libc.workspace = true
 log.workspace = true
@@ -37,6 +36,10 @@ thiserror.workspace = true
 xkbcommon.workspace = true
 yserver-core.workspace = true
 yserver-protocol.workspace = true
+yserver-render.workspace = true
+
+[dev-dependencies]
+yserver-render = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev.workspace = true

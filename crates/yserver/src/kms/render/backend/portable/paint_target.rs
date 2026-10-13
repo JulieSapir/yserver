@@ -7,7 +7,7 @@ use crate::kms::{
             shared_backing_move_pieces,
         },
         engine::decode_x11_pixel_for_storage,
-        platform::PlatformBackend,
+        gpu::GpuCore,
         store::{DrawableId, DrawableKind, Storage},
         target::{Dst, PaintTarget, Src},
     },
@@ -22,7 +22,7 @@ impl KmsBackend {
         }
         let width = self.platform.fb_w.max(1);
         let height = self.platform.fb_h.max(1);
-        let storage = match self.platform.allocate_drawable_storage_as(
+        let storage = match self.platform.gpu.allocate_drawable_storage_as(
             width,
             height,
             32,
@@ -40,7 +40,7 @@ impl KmsBackend {
                         width: u32::from(width),
                         height: u32::from(height),
                     },
-                    PlatformBackend::format_for_depth(32),
+                    GpuCore::format_for_depth(32),
                 )
             }
         };
@@ -60,7 +60,7 @@ impl KmsBackend {
         };
         if let Err(e) = self.engine.fill_rect(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             Dst::server_internal(id),
             rect,
             decode_x11_pixel_for_storage(
@@ -68,9 +68,9 @@ impl KmsBackend {
                     .bg_pixel
                     .unwrap_or(yserver_core::resources::ROOT_DEFAULT_BACKGROUND_PIXEL),
                 24,
-                PlatformBackend::format_for_depth(24),
+                GpuCore::format_for_depth(24),
             ),
-        ) && self.platform.vk.is_some()
+        ) && self.platform.gpu.vk.is_some()
         {
             log::warn!("render init_root_storage: initial root fill failed: {e:?}");
         }
@@ -115,7 +115,7 @@ impl KmsBackend {
             .collect();
         if let Err(e) = self.engine.stamp_opaque_alpha(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             target.dst(),
             &rects16,
         ) {
@@ -603,7 +603,7 @@ impl KmsBackend {
             };
             if let Err(e) = self.engine.copy_area(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 Src::server_internal(backing),
                 Dst::server_internal(backing),
                 src_rect,

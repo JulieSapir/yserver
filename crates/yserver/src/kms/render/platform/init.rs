@@ -5,19 +5,16 @@ use crate::{
             ActiveOutput, OutputKey, PlatformInit, PlatformInitOutput,
             platform_init as core_platform_init,
         },
-        render::{
-            platform::{
-                BoGenerationEntry, CopiedScanoutError, CopyFreeScanoutError, FencePool,
-                InitialScanoutRollbackGuard, KmsCursorState, KmsDevice, PlatformBackend,
-                RenderDevice, RollbackScanoutOutput, SCANOUT_POOL_DEPTH, WAKEUP_EVENTFD_TOKEN,
-                cursor::initialize_cursor_plane_for_device,
-                qualify::{
-                    allocate_copied_scanout_pool, allocate_copy_free_scanout_pool,
-                    route_requires_copy_free_probe,
-                },
-                scanout_bos::check_scanout_liveness,
+        render::platform::{
+            BoGenerationEntry, CopiedScanoutError, CopyFreeScanoutError, FencePool, GpuCore,
+            InitialScanoutRollbackGuard, KmsCursorState, KmsDevice, PlatformBackend, RenderDevice,
+            RollbackScanoutOutput, SCANOUT_POOL_DEPTH, WAKEUP_EVENTFD_TOKEN,
+            cursor::initialize_cursor_plane_for_device,
+            qualify::{
+                allocate_copied_scanout_pool, allocate_copy_free_scanout_pool,
+                route_requires_copy_free_probe,
             },
-            submit_group::SubmitGroup,
+            scanout_bos::check_scanout_liveness,
         },
         scanout_route::{RenderDeviceId, RenderKmsRelationship, ScanoutRoute},
         vk::{
@@ -291,6 +288,9 @@ pub(super) fn validate_render_node_attachment(
 
 impl Drop for PlatformBackend {
     fn drop(&mut self) {
+        // Its command buffer belongs to `gpu.ops_command_pool`: release it
+        // before any field drops, on every path.
+        self.scanout_readback_op = None;
         if !self.initial_scanout_rollback_armed {
             return;
         }
@@ -674,7 +674,6 @@ impl PlatformBackend {
         let scanout_render_completion_epfd =
             crate::kms::render::completion_poller::CompletionPoller::new()?;
 
-        let submit_group = SubmitGroup::new();
         #[cfg(target_os = "linux")]
         let hotplug_monitor = match crate::kms::hotplug::DrmHotplugMonitor::new() {
             Ok(monitor) => monitor,
@@ -737,25 +736,15 @@ impl PlatformBackend {
             scanout_render_completion_epfd,
             pending_scanout_render_completions: std::collections::VecDeque::new(),
             next_scanout_render_job_id: 1,
-            vk: Some(vk),
             scanout_readback_op: None,
-            ops_command_pool: Some(ops_command_pool),
-            fence_pool: Some(fence_pool),
+            gpu: GpuCore::new(vk, ops_command_pool, fence_pool, pixmap_pool),
             scanout_readback: None,
-            pixmap_pool,
             copy_vk_contexts,
             scanout_pools,
             bo_generations,
             next_present_generation: 0,
             first_pageflip_logged,
-            renderer_failed: false,
             shutting_down: false,
-            submit_group,
-            last_flush_outcome: None,
-            force_next_submit_failure: false,
-            next_submit_cause: None,
-            force_next_frame_record_failure: false,
-            queue_submits: 0,
         })
     }
 
@@ -858,25 +847,15 @@ impl PlatformBackend {
             scanout_render_completion_epfd,
             pending_scanout_render_completions: std::collections::VecDeque::new(),
             next_scanout_render_job_id: 1,
-            vk: None,
             scanout_readback_op: None,
-            ops_command_pool: None,
-            fence_pool: None,
+            gpu: GpuCore::for_tests(),
             scanout_readback: None,
-            pixmap_pool: None,
             copy_vk_contexts: HashMap::new(),
             scanout_pools: vec![None],
             bo_generations: vec![Vec::new()],
             next_present_generation: 0,
             first_pageflip_logged: vec![false],
-            renderer_failed: false,
             shutting_down: false,
-            submit_group: SubmitGroup::new(),
-            last_flush_outcome: None,
-            force_next_submit_failure: false,
-            next_submit_cause: None,
-            force_next_frame_record_failure: false,
-            queue_submits: 0,
         }
     }
 
@@ -898,6 +877,6 @@ impl PlatformBackend {
         for (output, route) in self.outputs.iter_mut().zip(routes) {
             output.scanout_route = route;
         }
-        self.vk = Some(vk);
+        self.gpu.vk = Some(vk);
     }
 }

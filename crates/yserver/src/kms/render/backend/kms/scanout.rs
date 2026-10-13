@@ -345,7 +345,7 @@ impl KmsBackend {
         self.drain_engine_present_batches();
         if let Err(e) = self.engine.flush_render_batch(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::engine::RenderFlushReason::Other,
         ) {
             log::warn!("render release_overlay_window: flush_render_batch failed: {e:?}");
@@ -764,7 +764,7 @@ impl KmsBackend {
         self.engine
             .cow_copy_area(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 target.server_backing_dst(),
                 Src::server_internal(source_id),
                 ash::vk::Rect2D {
@@ -785,7 +785,7 @@ impl KmsBackend {
         self.engine
             .flush_render_batch(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::engine::RenderFlushReason::Present,
             )
             .map_err(|error| {
@@ -794,7 +794,7 @@ impl KmsBackend {
         self.engine
             .close_open_frame(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::frame_builder::CloseReason::PresentCompletionSignal,
             )
             .map_err(|error| {
@@ -803,7 +803,7 @@ impl KmsBackend {
         self.engine
             .flush_submit_group(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::submit_group::FlushReason::PresentCompletionSignal,
             )
             .map_err(|error| io::Error::other(format!("scanout M2 lazy COW submit: {error:?}")))?;
@@ -1721,7 +1721,7 @@ impl KmsBackend {
             return;
         }
         for completion in completions {
-            if self.platform.renderer_failed {
+            if self.platform.gpu.renderer_failed {
                 break;
             }
             if !self
@@ -1730,7 +1730,7 @@ impl KmsBackend {
             {
                 self.telemetry.record_missed_pageflip();
             }
-            if self.platform.renderer_failed {
+            if self.platform.gpu.renderer_failed {
                 break;
             }
         }
@@ -1803,7 +1803,7 @@ impl KmsBackend {
         }
         // Sweep retired engine submits + retired drawables now
         // that their fences may have signaled.
-        self.engine.poll_retired(&self.platform);
+        self.engine.poll_retired(&self.platform.gpu);
         self.poll_pending_retire_with_invalidate();
         self.sync_descriptor_pool_telemetry();
         // Phase A T7: pageflip retire is a frame boundary — close
@@ -1816,14 +1816,14 @@ impl KmsBackend {
         // atomically.
         if let Err(e) = self.engine.flush_render_batch(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::engine::RenderFlushReason::Present,
         ) {
             log::warn!("render on_page_flip_ready: flush_render_batch failed: {e:?}");
         }
         if let Err(e) = self.engine.flush_submit_group(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::submit_group::FlushReason::PageflipRetire,
         ) {
             log::warn!("render on_page_flip_ready: flush_submit_group failed: {e:?}");
@@ -1847,11 +1847,11 @@ impl KmsBackend {
         // (project_reclamation_starvation_leak). poll_retired only frees
         // ops whose fence has signaled and is a cheap no-op on an empty
         // queue, so running it every iteration costs nothing at idle.
-        self.engine.poll_retired(&self.platform);
+        self.engine.poll_retired(&self.platform.gpu);
         self.poll_pending_retire_with_invalidate();
         // #196: destroy pixmap-pool entries idle past the eviction age, so
         // a burst drains back down; `next_wakeup` wakes us for it.
-        if let Some(pool) = self.platform.pixmap_pool.as_ref() {
+        if let Some(pool) = self.platform.gpu.pixmap_pool.as_ref() {
             pool.trim_idle(std::time::Instant::now());
         }
         // Diagnostic: drive the 1Hz telemetry emit from here too,
@@ -1872,14 +1872,14 @@ impl KmsBackend {
         // Close all recording paths before publishing their producer fences.
         if let Err(error) = self.engine.flush_render_batch(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::engine::RenderFlushReason::Other,
         ) {
             log::warn!("render damage boundary batch flush failed: {error:?}");
         }
         if let Err(error) = self.engine.close_open_frame(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::frame_builder::CloseReason::DamageBoundary,
         ) {
             log::warn!("render DamageNotify submission boundary failed: {error:?}");
@@ -1888,7 +1888,7 @@ impl KmsBackend {
         // parked in the submit group (including the render batch above).
         if let Err(error) = self.engine.flush_submit_group(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::submit_group::FlushReason::SyncBoundary,
         ) {
             log::warn!("render damage boundary submit flush failed: {error:?}");
@@ -1916,7 +1916,7 @@ impl KmsBackend {
         let needs_present_poll = self.pending_present_batches.iter().any(|batch| {
             matches!(
                 batch.wait,
-                crate::kms::render::present_completion::PresentBatchWait::Poll
+                crate::kms::render::present_batch::PresentBatchWait::Poll
             )
         });
         let needs_source_wait_poll = self.pending_present_source_waits.values().any(|wait| {
@@ -1946,6 +1946,7 @@ impl KmsBackend {
             .chain(self.engine.open_frame_timeout_deadline())
             .chain(
                 self.platform
+                    .gpu
                     .pixmap_pool
                     .as_ref()
                     .and_then(|pool| pool.next_trim_deadline()),
@@ -1974,7 +1975,7 @@ impl KmsBackend {
         // gates below so we exit even while VT-away / DPMS-off. Sends
         // `Message::Shutdown`, which the core loop drains next iteration,
         // so this fires ~once rather than per-frame.
-        if self.platform.renderer_failed {
+        if self.platform.gpu.renderer_failed {
             log::error!(
                 "kms: renderer device lost (GPU reset) — requesting clean shutdown \
                  so the display manager can respawn on a fresh device"
@@ -1994,7 +1995,7 @@ impl KmsBackend {
         // closed it.
         if let Err(e) = self
             .engine
-            .close_open_frame_if_timed_out(&mut self.store, &mut self.platform)
+            .close_open_frame_if_timed_out(&mut self.store, &mut self.platform.gpu)
         {
             log::warn!("render maybe_composite: timeout close failed: {e:?}");
         }
@@ -2094,7 +2095,7 @@ impl KmsBackend {
             self.drain_engine_present_batches();
             if let Err(e) = self.engine.flush_render_batch(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::engine::RenderFlushReason::Present,
             ) {
                 log::warn!("render maybe_composite: flush_render_batch failed: {e:?}");
@@ -2110,7 +2111,7 @@ impl KmsBackend {
             // builder, no frame can be open, so this call is a no-op.
             match self.engine.close_open_frame(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::frame_builder::CloseReason::LegacyScCompose,
             ) {
                 Ok(crate::kms::render::frame_builder::CloseOutcome::Submitted { .. }) => {
@@ -2127,7 +2128,7 @@ impl KmsBackend {
             // parked `pending_group_ops` commit too.
             if let Err(e) = self.engine.flush_submit_group(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::submit_group::FlushReason::SceneCompose,
             ) {
                 log::warn!("render maybe_composite: flush_submit_group failed: {e:?}");
@@ -2234,7 +2235,7 @@ impl KmsBackend {
         }
         let fb_w = self.platform.fb_w.max(1);
         let fb_h = self.platform.fb_h.max(1);
-        let storage = match self.platform.allocate_drawable_storage_as(
+        let storage = match self.platform.gpu.allocate_drawable_storage_as(
             fb_w,
             fb_h,
             24,
@@ -2256,7 +2257,7 @@ impl KmsBackend {
                         width: u32::from(fb_w),
                         height: u32::from(fb_h),
                     },
-                    crate::kms::render::platform::PlatformBackend::format_for_depth(24),
+                    crate::kms::render::gpu::GpuCore::format_for_depth(24),
                 )
             }
         };
@@ -2283,11 +2284,11 @@ impl KmsBackend {
         };
         if let Err(e) = self.engine.fill_rect(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             Dst::server_internal(id),
             rect,
             default_window_init_color(24),
-        ) && self.platform.vk.is_some()
+        ) && self.platform.gpu.vk.is_some()
         {
             log::warn!("render get_overlay_window: initial fill failed: {e:?}");
         }

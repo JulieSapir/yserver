@@ -4,6 +4,7 @@ use crate::kms::{
     vk::scanout::DisposableProbeError,
 };
 use std::{
+    cell::{Cell, RefCell},
     collections::HashSet,
     os::fd::{AsFd as _, AsRawFd as _},
 };
@@ -178,6 +179,40 @@ fn terminal_startup_retains_existing_gpu_owners_without_drop() {
         DropSpy(Rc::clone(&owner_drops)),
     );
     assert_eq!(owner_drops.get(), 0);
+}
+
+/// `Drop` releases `scanout_readback_op`, whose command buffer comes from
+/// `gpu.ops_command_pool`, before that pool. Neither type has a drop hook,
+/// so the order itself is not observable here: this pins that a fully
+/// constructed backend (rollback disarmed, the `Drop` early-return path)
+/// holding the op drops cleanly and releases every `VkContext` reference.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn drop_releases_scanout_readback_op_and_gpu_pools() {
+    let vk = match VkContext::new() {
+        Ok(vk) => vk,
+        Err(e) => {
+            eprintln!("skipping: no Vk: {e:?}");
+            return;
+        }
+    };
+    let mut platform = PlatformBackend::for_tests();
+    assert!(!platform.initial_scanout_rollback_armed);
+    let ops_pool = crate::kms::vk::ops::OpsCommandPool::new(Arc::clone(&vk)).expect("ops pool");
+    let op = crate::kms::vk::ops::ReusableOneShot::new(Arc::clone(&vk), ops_pool.handle())
+        .expect("readback op");
+    platform.gpu.vk = Some(Arc::clone(&vk));
+    platform.gpu.ops_command_pool = Some(ops_pool);
+    platform.scanout_readback_op = Some(op);
+
+    drop(platform);
+
+    assert_eq!(
+        Arc::strong_count(&vk),
+        1,
+        "the platform released every VkContext reference it held"
+    );
+    unsafe { vk.device.device_wait_idle().expect("device still usable") };
 }
 
 fn drm_key(minor: u32) -> crate::platform::drm::DrmDeviceKey {
@@ -1867,7 +1902,7 @@ fn for_tests_constructs() {
     let p = PlatformBackend::for_tests();
     assert_eq!(p.fb_dimensions(), (800, 600));
     assert_eq!(p.outputs.len(), 1);
-    assert!(p.vk.is_none()); // for_tests skips Vk
+    assert!(p.gpu.vk.is_none()); // for_tests skips Vk
     let fds = p.poll_fds();
     // No input_ctx, one DRM fd.
     assert!(fds.iter().any(|(_, k)| matches!(k, BackendFdKind::Drm)));
@@ -1891,20 +1926,6 @@ fn recompute_fb_extent_2d_vertical_stack() {
         (0i32, 1440i32, 2560u16, 1440u16),
     ];
     assert_eq!(super::recompute_fb_extent_from(layouts), (2560, 2880));
-}
-
-/// Fence acquire on a no-Vk fixture returns the
-/// "init failed" error (since fence_pool is None). This
-/// confirms the guard is wired; real fence allocation is
-/// covered by Stage 2c+ Vk-backed tests.
-#[test]
-fn for_tests_fence_acquire_errors_without_vk() {
-    let p = PlatformBackend::for_tests();
-    let result = p.acquire_fence_ticket();
-    assert!(matches!(
-        result,
-        Err(vk::Result::ERROR_INITIALIZATION_FAILED)
-    ));
 }
 
 /// BO acquire on a no-Vk fixture returns None (the single
@@ -2046,38 +2067,12 @@ fn commit_bo_present_is_safe_on_missing_entry() {
     p.commit_bo_present(99, 99, g); // out-of-range — no-op
 }
 
-#[test]
-fn platform_starts_with_empty_closed_submit_group() {
-    let p = PlatformBackend::for_tests();
-    assert!(!p.submit_group_is_open(), "fresh platform has closed group");
-    assert_eq!(p.submit_group_size(), 0);
-}
-
-#[test]
-fn flush_submit_group_empty_is_noop() {
-    let mut p = PlatformBackend::for_tests();
-    // Fixture has no Vk; should NOT attempt queue_submit2.
-    let outcome = p
-        .flush_submit_group(FlushReason::SceneCompose)
-        .expect("empty-group flush is always Ok");
-    assert_eq!(outcome.flushed_entries, 0);
-    assert!(!p.submit_group_is_open());
-}
-
 // ── Task 3 test helpers ──────────────────────────────────────
 
 #[cfg(test)]
 impl PlatformBackend {
-    pub(crate) fn submit_group_max_size_for_tests(&self) -> usize {
-        self.submit_group.max_size()
-    }
-
     pub(crate) fn queue_submit2_count_for_tests(&self) -> u64 {
         crate::kms::vk::call_stats::queue_submit2_count()
-    }
-
-    pub(crate) fn force_next_submit_failure_for_tests(&mut self) {
-        self.force_next_submit_failure = true;
     }
 }
 
@@ -2104,79 +2099,4 @@ fn present_completion_epfd_present_at_init_and_poll_fds() {
         raw1, raw2,
         "the inner epfd is stable across poll_fds() calls"
     );
-}
-
-/// Mirrors `descriptor_pool_ring::tests::vk_or_skip` — needed
-/// because `VkContext::new()` requires a live Vulkan ICD which
-/// isn't always available in CI.
-fn vk_or_skip() -> Option<Arc<VkContext>> {
-    match VkContext::new() {
-        Ok(vk) => Some(vk),
-        Err(e) => {
-            eprintln!("skipping: no Vk: {e:?}");
-            None
-        }
-    }
-}
-
-/// Regression: `KmsBackend`'s field-drop order runs `platform`
-/// (containing `fence_pool`) BEFORE `store` / `engine` / `scene`,
-/// all of which hold `FenceTicket`s. Pre-fix those tickets
-/// dropped after the pool was gone, `FenceTicketInner::drop`
-/// bailed on `Weak::upgrade() == None`, and leaked every VkFence
-/// handle (1471 leaked at SIGTERM on bee/MATE 2026-05-31, all
-/// `VkFence` per the validation layer's first-10 list). Fix
-/// added a strong `Arc<VkContext>` on `FenceTicketInner` so the
-/// fallback `Drop` path destroys the fence directly. This test
-/// simulates the order bug by dropping the pool first and then
-/// the ticket; it verifies the device is still usable after
-/// (which a leaked-handle path would still allow, but a
-/// use-after-free wouldn't). Validation-layer leak verification
-/// is via the smoke recipe with VK_LAYER_KHRONOS_validation.
-#[test]
-#[ignore = "needs live Vulkan ICD"]
-fn fence_ticket_destroys_fence_when_pool_dropped_first() {
-    let Some(vk) = vk_or_skip() else { return };
-    let pool = FencePool::new(Arc::clone(&vk));
-    let ticket = pool.acquire().expect("acquire");
-
-    // Simulate KmsBackend's drop-order bug: pool drops while
-    // ticket is still alive (held by store/engine/scene state).
-    drop(pool);
-
-    // The ticket's strong Arc<VkContext> + ours keep the device
-    // alive. Pre-fix this drop leaked the fence handle; post-fix
-    // it calls destroy_fence directly.
-    drop(ticket);
-
-    // Device still usable — wait_idle returns Ok and we can
-    // create + destroy another fence cleanly.
-    unsafe { vk.device.device_wait_idle().expect("wait_idle") };
-    let f = unsafe {
-        vk.device
-            .create_fence(&vk::FenceCreateInfo::default(), None)
-            .expect("create_fence")
-    };
-    unsafe { vk.device.destroy_fence(f, None) };
-}
-
-/// `for_tests_stub` constructs a `FenceTicket` with no real
-/// device. The fallback `Drop` path must no-op cleanly in that
-/// case (null fence + `vk: None`) and not segfault attempting
-/// to call `destroy_fence` on a null Arc.
-#[test]
-fn for_tests_stub_drops_cleanly_without_vk() {
-    let ticket = FenceTicket::for_tests_stub();
-    // Drop runs at end of scope; no-op expected.
-    drop(ticket);
-}
-
-/// Imported SYNC_FD wait semaphores must attach to the shared ticket
-/// inner, so every clone observes the same submission-lifetime pins.
-#[test]
-fn fence_ticket_retains_imported_wait_semaphores_across_clones() {
-    let ticket = FenceTicket::for_tests_stub();
-    let clone = ticket.clone();
-    ticket.retain_imported_wait_semaphores(vec![vk::Semaphore::null()]);
-    assert_eq!(clone.inner.imported_wait_semaphores.borrow().len(), 1);
 }

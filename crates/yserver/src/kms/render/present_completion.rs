@@ -14,7 +14,7 @@ use std::{
 
 use yserver_core::backend::{CompletedPresentEvent, SyncobjHandle, XshmfenceHandle};
 
-use crate::kms::render::platform::{FenceTicket, PresentCompletionSignal};
+use crate::kms::render::present_batch::PresentCompletionEntry;
 
 static RELEASE_FENCE_PUBLISHED_LOG: Once = Once::new();
 
@@ -31,7 +31,7 @@ pub(crate) struct PendingPresentEntry {
     pub(crate) event: CompletedPresentEvent,
 }
 
-impl PendingPresentEntry {
+impl PresentCompletionEntry for PendingPresentEntry {
     /// Publish this entry's GPU completion fence into a synced Present's
     /// release timeline. Returns `true` when a release point was published,
     /// `false` for legacy/no-wake entries.
@@ -39,7 +39,7 @@ impl PendingPresentEntry {
     /// State changes only after a successful import. On failure the original
     /// `PixmapSynced` wake remains intact, so completion falls back to the
     /// existing host-signal path rather than stranding the client buffer.
-    pub(crate) fn publish_release_fence(&mut self, fence: &OwnedFd) -> std::io::Result<bool> {
+    fn publish_release_fence(&mut self, fence: &OwnedFd) -> std::io::Result<bool> {
         let PinnedWake::PixmapSynced { handle, value } = &self.wake_pin else {
             return Ok(false);
         };
@@ -56,29 +56,18 @@ impl PendingPresentEntry {
     }
 }
 
-/// Readiness primitive for a submitted batch of PRESENT completions.
-pub(crate) enum PresentBatchWait {
-    /// Linux sync_file fd exported from a dedicated completion
-    /// semaphore. This is the hot path.
-    Fd(OwnedFd),
-    /// Export returned `-1`, meaning already signaled.
-    Ready,
-    /// Degraded path if fd export fails. Polls `ticket` through
-    /// `Backend::next_wakeup`, but should not occur on normal Linux
-    /// Vulkan stacks.
-    Poll,
-}
-
-/// Submitted-but-not-yet-emitted PRESENT completion batch.
-pub(crate) struct PendingPresentBatch {
-    pub(crate) wait: PresentBatchWait,
-    /// Optional internal fence for degraded polling only. The hot fd
-    /// path does not need this for readiness.
-    pub(crate) ticket: Option<FenceTicket>,
-    /// Keeps the dedicated export-only semaphore alive until the
-    /// exported sync_file has fired.
-    pub(crate) signal: Option<PresentCompletionSignal>,
-    pub(crate) events: Vec<PendingPresentEntry>,
+/// Recover the concrete entry from the renderer's opaque box.
+///
+/// # Panics
+///
+/// If `entry` is not a [`PendingPresentEntry`]. It is the only implementor,
+/// so a mismatch is a bug, never a payload to drop.
+pub(crate) fn into_pending_entry(entry: Box<dyn PresentCompletionEntry>) -> PendingPresentEntry {
+    let any: Box<dyn std::any::Any> = entry;
+    *any.downcast::<PendingPresentEntry>().expect(
+        "PresentCompletionEntry is implemented only by PendingPresentEntry; \
+         a different type reached the KMS present-completion drain",
+    )
 }
 
 /// Wake-target lifetime pin variants. The drain dispatches signal
@@ -163,6 +152,49 @@ mod tests {
                 completion_mode: yserver_protocol::x11::present::COMPLETE_MODE_COPY,
                 emit_idle: true,
             },
+        }
+    }
+
+    /// A failed attach hands the boxed entry back, and the downcast helper
+    /// recovers the same concrete payload: event fields and wake pin intact.
+    #[test]
+    fn failed_attach_round_trips_entry_through_downcast() {
+        use crate::kms::render::{engine::RenderEngine, store::DrawableId};
+
+        let handle: Arc<dyn SyncobjHandle> = Arc::new(TestSyncobj {
+            imports: Mutex::new(Vec::new()),
+            fail_import: false,
+        });
+        let mut engine = RenderEngine::stub();
+        let entry: Box<dyn PresentCompletionEntry> = Box::new(synced_entry(handle.clone()));
+
+        let returned = engine
+            .attach_present_completion(DrawableId::for_tests(1), entry)
+            .expect_err("a stub engine has no open frame to attach to");
+        let entry = into_pending_entry(returned);
+
+        assert_eq!(entry.event.client_id, ClientId(7));
+        assert_eq!(entry.event.serial, 42);
+        assert_eq!(entry.event.host_xid, 0x100001);
+        assert_eq!(entry.event.dst_host_xid, 0xE00001);
+        assert_eq!(entry.event.present_id, 9);
+        assert!(matches!(
+            entry.event.wake,
+            PresentWake::PixmapSynced {
+                release_syncobj: 0x200001,
+                release_value: 17,
+                ..
+            }
+        ));
+        match entry.wake_pin {
+            PinnedWake::PixmapSynced {
+                handle: pinned,
+                value,
+            } => {
+                assert_eq!(value, 17);
+                assert!(Arc::ptr_eq(&pinned, &handle));
+            }
+            other => panic!("wake pin changed variant: {other:?}"),
         }
     }
 

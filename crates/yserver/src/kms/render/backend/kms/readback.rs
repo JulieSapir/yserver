@@ -99,7 +99,7 @@ impl KmsBackend {
                 };
                 match self.engine.put_image(
                     &mut self.store,
-                    &mut self.platform,
+                    &mut self.platform.gpu,
                     dst_id,
                     dst_pos,
                     piece.read.extent,
@@ -136,14 +136,14 @@ impl KmsBackend {
         {
             if let Err(e) = self.engine.close_open_frame(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::frame_builder::CloseReason::LegacyRootRead,
             ) {
                 log::warn!("render root read: close_open_frame failed: {e:?}");
             }
             if let Err(e) = self.engine.flush_submit_group(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::submit_group::FlushReason::SceneCompose,
             ) {
                 log::warn!("render root read: flush_submit_group failed: {e:?}");
@@ -179,14 +179,14 @@ impl KmsBackend {
         }
         if let Err(e) = self.engine.close_open_frame(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::frame_builder::CloseReason::LegacyRootRead,
         ) {
             log::warn!("render root read: close_open_frame failed: {e:?}");
         }
         if let Err(e) = self.engine.flush_submit_group(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::submit_group::FlushReason::SceneCompose,
         ) {
             log::warn!("render root read: flush_submit_group failed: {e:?}");
@@ -221,7 +221,7 @@ impl KmsBackend {
                     .engine
                     .get_image(
                         &mut self.store,
-                        &mut self.platform,
+                        &mut self.platform.gpu,
                         crate::kms::render::target::Src::server_internal(root_id),
                         rect,
                         32,
@@ -593,7 +593,7 @@ fn read_scanout_region_named(
                 .engine
                 .get_image(
                     &mut backend.store,
-                    &mut backend.platform,
+                    &mut backend.platform.gpu,
                     Src::server_internal(source_id),
                     source,
                     depth,
@@ -639,10 +639,10 @@ fn read_scanout_region_named(
         }
     }
 
-    let Some(vk) = backend.platform.vk.as_ref().cloned() else {
+    let Some(vk) = backend.platform.gpu.vk.as_ref().cloned() else {
         return Err(io::Error::other("no vulkan context"));
     };
-    let Some(pool_handle) = backend.platform.ops_command_pool_handle() else {
+    let Some(pool_handle) = backend.platform.gpu.ops_command_pool_handle() else {
         return Err(io::Error::other("no ops command pool"));
     };
 
@@ -800,7 +800,7 @@ fn read_scanout_region_named(
             // executed work (including an ownership acquire) and is not
             // reused under an uncertain state. DEVICE_LOST is fatal on the
             // shared path too.
-            backend.platform.renderer_failed = true;
+            backend.platform.gpu.renderer_failed = true;
         }
         return Err(io::Error::other(format!("scanout copy submit: {e:?}")));
     }

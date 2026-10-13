@@ -474,6 +474,7 @@ fn window_picture_follows_window_storage_and_clips_away_without_it() {
     // New storage: the same Picture binds to it.
     let storage = b
         .platform
+        .gpu
         .allocate_drawable_storage_as(
             16,
             16,
@@ -706,18 +707,18 @@ fn damage_boundary_submits_render_batches_and_queued_commands() {
         b.engine
             .close_open_frame(
                 &mut b.store,
-                &mut b.platform,
+                &mut b.platform.gpu,
                 crate::kms::render::frame_builder::CloseReason::SyncWait,
             )
             .expect("submit initial clears");
-        b.platform.submit_group_set_max_size_for_tests(16);
+        b.platform.gpu.submit_group_set_max_size_for_tests(16);
         let src_id = b.store.lookup(src.as_raw()).expect("source storage");
         let dst_id = b.store.lookup(dst.as_raw()).expect("destination storage");
         let appended = b
             .engine
             .try_append_render_batch(
                 &mut b.store,
-                &mut b.platform,
+                &mut b.platform.gpu,
                 1, // PictOpSrc
                 ResolvedSource::Drawable(SourceDrawable::whole(src_id)),
                 ResolvedSource::None,
@@ -746,9 +747,9 @@ fn damage_boundary_submits_render_batches_and_queued_commands() {
         assert!(appended.is_some(), "composite takes the batch path");
         if already_queued {
             b.engine
-                .flush_render_batch(&mut b.store, &mut b.platform, RenderFlushReason::Other)
+                .flush_render_batch(&mut b.store, &mut b.platform.gpu, RenderFlushReason::Other)
                 .expect("close batch without submitting");
-            assert!(b.platform.submit_group_size() > 0);
+            assert!(b.platform.gpu.submit_group_size() > 0);
         } else {
             assert!(b.engine.has_pending_batches_for_tests());
         }
@@ -760,7 +761,7 @@ fn damage_boundary_submits_render_batches_and_queued_commands() {
             "damage boundary must close a pending render batch"
         );
         assert_eq!(
-            b.platform.submit_group_size(),
+            b.platform.gpu.submit_group_size(),
             0,
             "damage boundary must submit even without an open frame"
         );
@@ -822,23 +823,23 @@ fn window_remap_at_the_same_size_is_a_pool_hit() {
         b.engine
             .close_open_frame(
                 &mut b.store,
-                &mut b.platform,
+                &mut b.platform.gpu,
                 crate::kms::render::frame_builder::CloseReason::SyncWait,
             )
             .expect("close frame");
         b.engine
             .flush_submit_group(
                 &mut b.store,
-                &mut b.platform,
+                &mut b.platform.gpu,
                 crate::kms::render::submit_group::FlushReason::SyncBoundary,
             )
             .expect("flush");
         b.platform.wait_idle_bounded();
         b.poll_pending_retire_with_invalidate();
     }
-    let vk = std::sync::Arc::clone(b.platform.vk.as_ref().expect("vk"));
+    let vk = std::sync::Arc::clone(b.platform.gpu.vk.as_ref().expect("vk"));
     let pool = std::sync::Arc::new(crate::kms::vk::pixmap_pool::PixmapPool::new(vk));
-    b.platform.pixmap_pool = Some(std::sync::Arc::clone(&pool));
+    b.platform.gpu.pixmap_pool = Some(std::sync::Arc::clone(&pool));
     let memory_of = |b: &KmsBackend, xid: u32| {
         let id = b.store.lookup(xid).expect("leaf");
         b.store.get(id).expect("drawable").storage.memory
@@ -910,14 +911,14 @@ fn pixmap_pool_eviction_and_idle_trim_free_the_memory() {
         b.engine
             .close_open_frame(
                 &mut b.store,
-                &mut b.platform,
+                &mut b.platform.gpu,
                 crate::kms::render::frame_builder::CloseReason::SyncWait,
             )
             .expect("close frame");
         b.engine
             .flush_submit_group(
                 &mut b.store,
-                &mut b.platform,
+                &mut b.platform.gpu,
                 crate::kms::render::submit_group::FlushReason::SyncBoundary,
             )
             .expect("flush");
@@ -934,7 +935,7 @@ fn pixmap_pool_eviction_and_idle_trim_free_the_memory() {
     // Room for about two entries; the third return crosses the budget
     // and evicts down to one.
     let budget = 2 * entry_bytes(107, 73) * 2;
-    let vk = std::sync::Arc::clone(b.platform.vk.as_ref().expect("vk"));
+    let vk = std::sync::Arc::clone(b.platform.gpu.vk.as_ref().expect("vk"));
     let pool = std::sync::Arc::new(PixmapPool::with_limits(
         vk,
         PixmapPoolLimits {
@@ -943,7 +944,7 @@ fn pixmap_pool_eviction_and_idle_trim_free_the_memory() {
             ..PixmapPoolLimits::default()
         },
     ));
-    b.platform.pixmap_pool = Some(std::sync::Arc::clone(&pool));
+    b.platform.gpu.pixmap_pool = Some(std::sync::Arc::clone(&pool));
     let xids: Vec<u32> = sizes
         .iter()
         .map(|&(w, h)| b.create_pixmap(None, 32, w, h).expect("pixmap").as_raw())
@@ -2032,4 +2033,111 @@ fn composite_glyphs_inline_glyphset_change_parsed() {
         "with the change unresolvable, only the first glyph can be found",
     );
     assert_eq!(parsed_ignored.missing, 1, "0x20 is not in gs_a");
+}
+
+/// Two glyphsets — A8 and ARGB32 — and an items stream that
+/// alternates between them via the inline `count == 255`
+/// element. Returns `(glyphsets, initial_gs_xid, items)`.
+///
+/// The stream is deliberately not one-glyph-per-element:
+/// elements of 2, 1, 1 and 2 glyphs, so a run has to span an
+/// element boundary (glyphs 0-1) and two same-format glyphs
+/// inside one element must stay in one run (glyphs 4-5). Source
+/// formats come out as A8, A8, ARGB32, A8, ARGB32, ARGB32 and
+/// the pen advances one pixel per glyph, so `dst_x` doubles as
+/// each glyph's index in request order.
+fn mixed_format_items_fixture() -> (HashMap<u32, crate::kms::core::GlyphSetState>, u32, Vec<u8>) {
+    use crate::kms::core::{GlyphSetFormat, GlyphSetState, StoredGlyph};
+
+    const GS_A8: u32 = 0x4B01;
+    const GS_ARGB32: u32 = 0x4B02;
+
+    let mut glyphsets: HashMap<u32, GlyphSetState> = HashMap::new();
+    for (xid, format, bytes_per_pixel) in [
+        (GS_A8, GlyphSetFormat::A8, 1),
+        (GS_ARGB32, GlyphSetFormat::Argb32, 4),
+    ] {
+        let mut glyphs = HashMap::new();
+        // Ids 1..=6, so every glyph the stream names resolves in
+        // whichever glyphset is active at the time.
+        for glyph_id in 1..=6u32 {
+            glyphs.insert(
+                glyph_id,
+                StoredGlyph {
+                    width: 1,
+                    height: 1,
+                    x: 0,
+                    y: 0,
+                    x_off: 1,
+                    y_off: 0,
+                    pixels: vec![0x80; bytes_per_pixel],
+                    format,
+                },
+            );
+        }
+        glyphsets.insert(xid, GlyphSetState { format, glyphs });
+    }
+
+    // Element layout: count(u8) pad pad pad dx(i16) dy(i16), then
+    // `count` 1-byte ids padded to a 4-byte boundary (minor 23).
+    let mut items: Vec<u8> = Vec::new();
+    let element = |items: &mut Vec<u8>, ids: &[u8]| {
+        items.extend_from_slice(&[u8::try_from(ids.len()).expect("count"), 0, 0, 0, 0, 0, 0, 0]);
+        items.extend_from_slice(ids);
+        while !items.len().is_multiple_of(4) {
+            items.push(0);
+        }
+    };
+    let switch_to = |items: &mut Vec<u8>, xid: u32| {
+        items.extend_from_slice(&[255u8, 0, 0, 0]);
+        items.extend_from_slice(&xid.to_le_bytes());
+    };
+    element(&mut items, &[1, 2]); // glyphs 0,1 — A8 (initial gs)
+    switch_to(&mut items, GS_ARGB32);
+    element(&mut items, &[3]); // glyph 2 — ARGB32
+    switch_to(&mut items, GS_A8);
+    element(&mut items, &[4]); // glyph 3 — A8
+    switch_to(&mut items, GS_ARGB32);
+    element(&mut items, &[5, 6]); // glyphs 4,5 — ARGB32
+
+    (glyphsets, GS_A8, items)
+}
+
+/// The parser half of the mixed-format run split: the fixture parses to
+/// the per-glyph tuples `engine/tests/glyph_runs.rs` starts from
+/// (`MIXED_FORMAT_GLYPHS`), in request order. Each glyph is 1×1 at
+/// origin (0, 0) and every element has dx = dy = 0, so `dst` is the pen,
+/// which the x_off of 1 advances one pixel per glyph.
+#[test]
+fn the_mixed_format_items_fixture_parses_to_the_run_split_tuples() {
+    use crate::kms::render::{
+        backend::parse_composite_glyph_items, glyph_pixels::GlyphSourceFormat,
+    };
+
+    let (glyphsets, initial_gs, items) = mixed_format_items_fixture();
+    let parsed = parse_composite_glyph_items(&glyphsets, 23, initial_gs, 0, 0, &items);
+
+    // (source format, w, h, dst_x, dst_y). If the parse ignored the
+    // `count == 255` element the formats would be all-A8.
+    assert_eq!(
+        parsed
+            .glyphs
+            .iter()
+            .map(|p| (p.source_format, p.w, p.h, p.dst_x, p.dst_y))
+            .collect::<Vec<_>>(),
+        vec![
+            (GlyphSourceFormat::A8, 1, 1, 0, 0),
+            (GlyphSourceFormat::A8, 1, 1, 1, 0),
+            (GlyphSourceFormat::Argb32, 1, 1, 2, 0),
+            (GlyphSourceFormat::A8, 1, 1, 3, 0),
+            (GlyphSourceFormat::Argb32, 1, 1, 4, 0),
+            (GlyphSourceFormat::Argb32, 1, 1, 5, 0),
+        ],
+        "source-format tags must follow the inline glyphset change, and the \
+             pen must advance one pixel per glyph, in request order",
+    );
+    assert_eq!(
+        parsed.missing, 0,
+        "every id resolves in its active glyphset"
+    );
 }

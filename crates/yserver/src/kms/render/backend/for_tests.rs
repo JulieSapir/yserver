@@ -6,6 +6,7 @@ use crate::kms::{
             ScanoutM1ProbeCache, ScanoutM2State, ScenePlacement, TrackedWindows, WarnThrottle,
         },
         engine::{RenderEngine, decode_x11_pixel_for_storage},
+        gpu::GpuCore,
         platform::PlatformBackend,
         scene::SceneCompositor,
         store::DrawableStore,
@@ -72,7 +73,7 @@ impl KmsBackend {
             .engine
             .get_image(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 target.server_backing_src(),
                 rect,
                 depth,
@@ -224,8 +225,7 @@ impl KmsBackend {
         let Some(depth) = self.store.get(target.backing_id()).map(|d| d.depth) else {
             return false;
         };
-        let color =
-            decode_x11_pixel_for_storage(pixel, depth, PlatformBackend::format_for_depth(depth));
+        let color = decode_x11_pixel_for_storage(pixel, depth, GpuCore::format_for_depth(depth));
         let rect = ash::vk::Rect2D {
             offset: ash::vk::Offset2D { x, y },
             extent: ash::vk::Extent2D { width, height },
@@ -233,7 +233,7 @@ impl KmsBackend {
         self.engine
             .fill_rect(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 target.server_backing_dst(),
                 rect,
                 color,
@@ -283,13 +283,13 @@ impl KmsBackend {
         })?;
         let fence_pool = crate::kms::render::platform::FencePool::new(Arc::clone(&vk));
         base.platform.attach_test_vk_context(vk);
-        base.platform.ops_command_pool = Some(ops_pool);
-        base.platform.fence_pool = Some(fence_pool);
+        base.platform.gpu.ops_command_pool = Some(ops_pool);
+        base.platform.gpu.fence_pool = Some(fence_pool);
         // Replace the stub engine with a live one now that Vk
         // is attached. Scene compositor stays stubbed (no
         // scanout pool on the test fixture).
         base.engine =
-            crate::kms::render::engine::RenderEngine::new(&base.platform).map_err(|e| {
+            crate::kms::render::engine::RenderEngine::new(&base.platform.gpu).map_err(|e| {
                 io::Error::other(format!("render for_tests_with_vk: RenderEngine: {e:?}"))
             })?;
         base.init_root_storage();
@@ -352,12 +352,12 @@ impl KmsBackend {
                 n
             ]);
         }
-        base.platform.ops_command_pool = Some(ops_pool);
-        base.platform.fence_pool = Some(fence_pool);
+        base.platform.gpu.ops_command_pool = Some(ops_pool);
+        base.platform.gpu.fence_pool = Some(fence_pool);
         base.platform.scanout_pools = scanout_pools;
         base.platform.bo_generations = bo_generations;
         base.engine =
-            crate::kms::render::engine::RenderEngine::new(&base.platform).map_err(|e| {
+            crate::kms::render::engine::RenderEngine::new(&base.platform.gpu).map_err(|e| {
                 io::Error::other(format!(
                     "render for_tests_with_vk_live_scene: RenderEngine: {e:?}"
                 ))
@@ -435,7 +435,7 @@ impl KmsBackend {
     /// (re-import + staging copy) against the same device.
     #[doc(hidden)]
     pub fn test_vk_arc(&self) -> Option<std::sync::Arc<crate::kms::vk::device::VkContext>> {
-        self.platform.vk.as_ref().map(std::sync::Arc::clone)
+        self.platform.gpu.vk.as_ref().map(std::sync::Arc::clone)
     }
 
     /// GLX-TFP (Task 1.2) test shim: promote a server-owned pixmap onto
@@ -452,10 +452,11 @@ impl KmsBackend {
             .lookup(xid)
             .ok_or_else(|| io::Error::other(format!("promote: unknown xid {xid:#x}")))?;
         self.engine
-            .promote_drawable_exportable(&mut self.platform, &mut self.store, id)
+            .promote_drawable_exportable(&mut self.platform.gpu, &mut self.store, id)
             .map_err(|e| io::Error::other(format!("promote_drawable_exportable: {e:?}")))?;
         let vk = self
             .platform
+            .gpu
             .vk
             .as_ref()
             .ok_or_else(|| io::Error::other("promote: no VkContext"))?;
@@ -679,7 +680,7 @@ impl KmsBackend {
     /// delta counters land in `self.telemetry`.
     #[doc(hidden)]
     pub fn for_tests_poll_retired(&mut self) {
-        self.engine.poll_retired(&self.platform);
+        self.engine.poll_retired(&self.platform.gpu);
         self.poll_pending_retire_with_invalidate();
         self.sync_descriptor_pool_telemetry();
     }
@@ -709,7 +710,7 @@ impl KmsBackend {
     /// test.
     #[doc(hidden)]
     pub fn set_renderer_failed_for_tests(&mut self, v: bool) {
-        self.platform.renderer_failed = v;
+        self.platform.gpu.renderer_failed = v;
     }
 
     /// Phase A T6: flush the engine's SubmitGroup with a
@@ -719,7 +720,7 @@ impl KmsBackend {
         self.engine
             .flush_submit_group(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::submit_group::FlushReason::SyncBoundary,
             )
             .map(|_| ())
@@ -817,7 +818,7 @@ impl KmsBackend {
         self.engine
             .masked_copy_area_with_snapshot_for_tests(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 src,
                 dst,
                 crate::kms::render::engine::SnapshotId(snapshot_id),
@@ -860,7 +861,7 @@ impl KmsBackend {
         self.engine
             .refresh_clip_snapshot(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::engine::SnapshotId(snapshot_id),
                 live,
                 version,
@@ -884,6 +885,7 @@ impl KmsBackend {
         let xid = self.core.next_host_xid();
         let storage = self
             .platform
+            .gpu
             .allocate_drawable_storage(width, height, 32)
             .ok()?;
         self.store_alloc(
@@ -928,7 +930,7 @@ impl KmsBackend {
         self.engine
             .render_composite(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 OP_SRC,
                 crate::kms::render::engine::ResolvedSource::Solid([0.0, 0.0, 0.0, 1.0]),
                 crate::kms::render::engine::ResolvedSource::None,
@@ -984,7 +986,7 @@ impl KmsBackend {
         self.engine
             .render_composite(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 OP_SRC,
                 crate::kms::render::engine::ResolvedSource::Solid(color),
                 crate::kms::render::engine::ResolvedSource::None,
@@ -1030,7 +1032,7 @@ impl KmsBackend {
         self.engine
             .render_fill_rectangles(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 op,
                 color,
                 Dst::server_internal(dst_id),
@@ -1119,7 +1121,7 @@ impl KmsBackend {
     /// Returns `Err` if the platform's fence pool or Vk context is
     /// missing (test fixture built without Vk).
     pub fn engine_open_frame_for_paint_for_tests(&mut self) -> Result<(), ash::vk::Result> {
-        let ticket = self.platform.submit_group_ticket_or_open()?;
+        let ticket = self.platform.gpu.submit_group_ticket_or_open()?;
         self.engine.open_frame_for_paint_for_tests(ticket);
         Ok(())
     }
@@ -1170,6 +1172,7 @@ impl KmsBackend {
     ) -> Result<ash::vk::DescriptorSetLayout, ash::vk::Result> {
         let vk = self
             .platform
+            .gpu
             .vk
             .as_ref()
             .ok_or(ash::vk::Result::ERROR_INITIALIZATION_FAILED)?;
@@ -1191,7 +1194,7 @@ impl KmsBackend {
         &self,
         layout: ash::vk::DescriptorSetLayout,
     ) {
-        let Some(vk) = self.platform.vk.as_ref() else {
+        let Some(vk) = self.platform.gpu.vk.as_ref() else {
             return;
         };
         // SAFETY: layout was created by the corresponding
@@ -1222,7 +1225,7 @@ impl KmsBackend {
     /// failure or Vk submit error).
     pub fn engine_close_open_frame_for_timeout_for_tests(&mut self) -> Result<(), ash::vk::Result> {
         self.engine
-            .close_open_frame_for_timeout_for_tests(&mut self.store, &mut self.platform)
+            .close_open_frame_for_timeout_for_tests(&mut self.store, &mut self.platform.gpu)
             .map_err(|e| match e {
                 crate::kms::render::engine::RenderError::Vk(r) => r,
                 _ => ash::vk::Result::ERROR_UNKNOWN,
@@ -1232,12 +1235,13 @@ impl KmsBackend {
     /// #214: real `vkQueueSubmit2` calls made by this backend's platform
     /// for paint groups and Present signals (per instance: parallel-safe).
     pub fn platform_queue_submit_count_for_tests(&self) -> u64 {
-        self.platform.queue_submit_count()
+        self.platform.gpu.queue_submit_count()
     }
 
     /// #214: arm a recording failure in the next frame close.
     pub fn force_next_frame_record_failure_for_tests(&mut self) {
         self.platform
+            .gpu
             .force_next_frame_record_failure_for_integration_tests();
     }
 
@@ -1245,20 +1249,20 @@ impl KmsBackend {
     /// buffered and not yet submitted to the Vulkan queue).
     /// Exposed for acceptance regression tests.
     pub fn platform_submit_group_size_for_tests(&self) -> usize {
-        self.platform.submit_group_size()
+        self.platform.gpu.submit_group_size()
     }
 
     /// Phase A T6: true while the SubmitGroup is open (has at least
     /// one CB buffered). Exposed for acceptance regression tests.
     pub fn platform_submit_group_is_open_for_tests(&self) -> bool {
-        self.platform.submit_group_is_open()
+        self.platform.gpu.submit_group_is_open()
     }
 
     /// Phase A T8: override the SubmitGroup max-size cap so regression
     /// tests can exercise the auto-flush boundary at a specific count
     /// without depending on the production default.
     pub fn platform_submit_group_set_max_size_for_tests(&mut self, n: usize) {
-        self.platform.submit_group_set_max_size_for_tests(n);
+        self.platform.gpu.submit_group_set_max_size_for_tests(n);
     }
 
     /// Phase B.1 Task 10: read back the SubmitGroup max_size as
@@ -1266,7 +1270,7 @@ impl KmsBackend {
     /// `#[cfg(test)]`) so the external `acceptance` integration-test
     /// crate can assert Invariant M1 directly.
     pub fn platform_submit_group_max_size_for_tests(&self) -> usize {
-        self.platform.submit_group_max_size()
+        self.platform.gpu.submit_group_max_size()
     }
 
     /// Phase A T10: inject a `queue_submit2` failure on the next
@@ -1275,6 +1279,7 @@ impl KmsBackend {
     /// the external `acceptance` integration-test crate.
     pub fn platform_force_next_submit_failure_for_tests(&mut self) {
         self.platform
+            .gpu
             .force_next_submit_failure_for_integration_tests();
     }
 
@@ -1282,7 +1287,7 @@ impl KmsBackend {
     /// `pub` so the `acceptance` integration test can assert the
     /// fatal-failure invariant without direct field access.
     pub fn platform_renderer_failed_for_tests(&self) -> bool {
-        self.platform.renderer_failed
+        self.platform.gpu.renderer_failed
     }
 
     /// Phase A T10: count of in-flight submits awaiting retirement.
@@ -1310,7 +1315,7 @@ impl KmsBackend {
         matches!(
             self.engine.fill_rect(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 target.server_backing_dst(),
                 rect,
                 [1.0_f32, 0.0, 0.0, 1.0],
@@ -1350,7 +1355,7 @@ impl KmsBackend {
     pub fn simulate_page_flip_complete_for_tests(&mut self) -> Result<(), ash::vk::Result> {
         if let Err(e) = self.engine.flush_render_batch(
             &mut self.store,
-            &mut self.platform,
+            &mut self.platform.gpu,
             crate::kms::render::engine::RenderFlushReason::Other,
         ) {
             log::warn!("simulate_page_flip_complete_for_tests: flush_render_batch failed: {e:?}");
@@ -1358,7 +1363,7 @@ impl KmsBackend {
         self.engine
             .flush_submit_group(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 crate::kms::render::submit_group::FlushReason::PageflipRetire,
             )
             .map(|_| ())
@@ -1383,7 +1388,7 @@ impl KmsBackend {
                 retired += 1;
             }
         }
-        self.engine.poll_retired(&self.platform);
+        self.engine.poll_retired(&self.platform.gpu);
         self.poll_pending_retire_with_invalidate();
         Ok(retired)
     }
@@ -1500,7 +1505,7 @@ impl KmsBackend {
         self.engine
             .copy_area(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 Src::server_internal(src_id),
                 Dst::server_internal(dst_id),
                 src_rect,
@@ -1533,7 +1538,7 @@ impl KmsBackend {
         self.engine
             .cow_copy_area(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 Dst::server_internal(cow_id),
                 Src::server_internal(src_id),
                 src_rect,
@@ -1566,7 +1571,7 @@ impl KmsBackend {
         self.engine
             .put_image(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 Dst::server_internal(dst_id),
                 dst_pos,
                 src_extent,
@@ -1597,7 +1602,7 @@ impl KmsBackend {
         self.engine
             .fill_rect_batch(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 Dst::server_internal(dst_id),
                 color,
                 rects,
@@ -1633,7 +1638,7 @@ impl KmsBackend {
         self.engine
             .logic_fill(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 Dst::server_internal(dst_id),
                 function,
                 opaque_alpha,
@@ -1688,7 +1693,7 @@ impl KmsBackend {
         self.engine
             .image_text(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 Dst::server_internal(dst_id),
                 font_xid,
                 foreground_rgba,
@@ -1721,7 +1726,7 @@ impl KmsBackend {
         let Some(dst_id) = self.store.lookup(dst_xid) else {
             return false;
         };
-        let entry = PendingPresentEntry {
+        let entry = Box::new(PendingPresentEntry {
             wake_pin: PinnedWake::None,
             event: CompletedPresentEvent {
                 client_id: ClientId(0),
@@ -1739,7 +1744,7 @@ impl KmsBackend {
                 completion_mode: yserver_protocol::x11::present::COMPLETE_MODE_COPY,
                 emit_idle: true,
             },
-        };
+        });
         self.engine.attach_present_completion(dst_id, entry).is_ok()
     }
 
@@ -1771,7 +1776,7 @@ impl KmsBackend {
         self.engine
             .render_traps_or_tris(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 1, // PictOp_Src
                 crate::kms::render::engine::ResolvedSource::Solid(color),
                 Dst::server_internal(dst_id),
@@ -1804,7 +1809,7 @@ impl KmsBackend {
         use crate::kms::vk::gradient::Stop;
         self.engine
             .build_and_insert_linear_gradient(
-                &mut self.platform,
+                &mut self.platform.gpu,
                 grad_xid,
                 (0, 0),
                 (64 << 16, 0),
@@ -1863,7 +1868,7 @@ impl KmsBackend {
         self.engine
             .render_traps_or_tris(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 1, // PictOp_Src
                 crate::kms::render::engine::ResolvedSource::Gradient(grad_xid),
                 Dst::server_internal(dst_id),
@@ -1937,7 +1942,7 @@ impl KmsBackend {
             Some(id) => id,
             None => return false,
         };
-        let entry = PendingPresentEntry {
+        let entry = Box::new(PendingPresentEntry {
             wake_pin: PinnedWake::None,
             event: CompletedPresentEvent {
                 client_id: ClientId(0),
@@ -1955,7 +1960,7 @@ impl KmsBackend {
                 completion_mode: yserver_protocol::x11::present::COMPLETE_MODE_COPY,
                 emit_idle: true,
             },
-        };
+        });
         self.engine.attach_present_completion(cow_id, entry).is_ok()
     }
 
@@ -1964,7 +1969,7 @@ impl KmsBackend {
     /// Used after force-closing a frame to age out the fence ticket
     /// before asserting on `drain_completed_present_events_for_tests`.
     pub fn engine_drain_all_for_tests(&mut self) {
-        self.engine.drain_all(&mut self.platform);
+        self.engine.drain_all(&mut self.platform.gpu);
     }
 
     /// Task 8 — test-only: resolve three drawable xids, build a
@@ -2023,7 +2028,7 @@ impl KmsBackend {
         self.engine
             .masked_copy_area(
                 &mut self.store,
-                &mut self.platform,
+                &mut self.platform.gpu,
                 Src::server_internal(src),
                 Dst::server_internal(dst),
                 vk::Offset2D {
