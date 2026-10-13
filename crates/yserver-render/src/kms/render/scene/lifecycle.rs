@@ -2,13 +2,14 @@ use crate::kms::{
     render::{
         composite_pool_ring::CompositePoolRing,
         cursor_save::CursorSaves,
-        platform::{FenceTicket, PlatformBackend},
+        gpu::FenceTicket,
         scanout_damage::ScanoutDamage,
         scene::{
-            BufferAgeRing, DeferredSceneRelease, FailedSubmitBo, OutputCursorMode,
-            OutputSceneState, SceneCompositor, SceneCompositorInner, SceneError,
+            BufferAgeRing, DeferredSceneRelease, FailedSubmitBo, OutputCursorMode, OutputLayout,
+            OutputSceneState, OutputSink, SceneCompositor, SceneCompositorInner, SceneError,
             cursor::{reset_cursor_mode_for_lifecycle, reset_cursor_retry_for_lifecycle},
             damage_audit::build_output_damage_audit,
+            output_transform,
             transform::{ensure_intermediates, release_intermediate},
         },
         store::RegionSet,
@@ -110,8 +111,8 @@ impl SceneCompositor {
     ///
     /// `PipelineInit` on shader / pipeline build failure;
     /// `Vk(...)` on descriptor-pool init.
-    pub(crate) fn new(platform: &PlatformBackend) -> Result<Self, SceneError> {
-        let vk = platform.gpu.vk().ok_or(SceneError::NoVk)?.clone();
+    pub fn new(sink: &dyn OutputSink, layouts: &[OutputLayout]) -> Result<Self, SceneError> {
+        let vk = sink.gpu().vk().ok_or(SceneError::NoVk)?.clone();
         let pipeline = CompositorPipeline::new(Arc::clone(&vk), vk::Format::B8G8R8A8_UNORM)
             .map_err(SceneError::PipelineInit)?;
         // Root-overlay XOR pass pipeline cache — built for the same
@@ -123,9 +124,9 @@ impl SceneCompositor {
             Arc::clone(&vk),
             vk::Format::B8G8R8A8_UNORM,
         )?;
-        let mut outputs = Vec::with_capacity(platform.outputs.len());
-        for i in 0..platform.outputs.len() {
-            outputs.push(Self::build_output_state(&vk, platform, i)?);
+        let mut outputs = Vec::with_capacity(layouts.len());
+        for i in 0..layouts.len() {
+            outputs.push(Self::build_output_state(&vk, sink, layouts, i)?);
         }
         let mut inner = SceneCompositorInner {
             vk,
@@ -138,34 +139,31 @@ impl SceneCompositor {
             cursor: None,
             root_readbacks: Vec::new(),
         };
-        ensure_intermediates(&mut inner, platform)?;
+        ensure_intermediates(&mut inner, layouts)?;
         Ok(Self {
             inner: Some(inner),
             root_overlay: crate::kms::render::root_overlay::RootOverlay::default(),
             scene_structure_dirty: true,
             structure_generation: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_flip_in_flight_override: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_prime_descriptor_sets: None,
         })
     }
 
     fn build_output_state(
         vk: &Arc<crate::kms::vk::device::VkContext>,
-        platform: &PlatformBackend,
+        sink: &dyn OutputSink,
+        layouts: &[OutputLayout],
         i: usize,
     ) -> Result<OutputSceneState, SceneError> {
-        let layout = &platform.outputs[i];
+        let layout = &layouts[i];
         // What the scene walk covers: the footprint of a transformed output.
-        let (root_x, root_y, root_w, root_h) = platform.output_root_rect(i);
+        let (root_x, root_y, root_w, root_h) = layout.root_rect;
         let ring = CompositePoolRing::new(Arc::clone(vk), MAX_DESCRIPTOR_SETS_PER_FRAME)
             .map_err(SceneError::Vk)?;
-        let bo_depth = platform
-            .scanout_pools
-            .get(i)
-            .and_then(|p| p.as_ref().map(|pool| pool.display_pool().bos.len()))
-            .unwrap_or(3);
+        let bo_depth = sink.slot_count(i).unwrap_or(3);
         Ok(OutputSceneState {
             output_idx: i,
             damage_audit: build_output_damage_audit(
@@ -204,14 +202,14 @@ impl SceneCompositor {
             last_pieces: std::collections::HashSet::new(),
             presented_epochs: std::collections::HashMap::new(),
             intermediate: None,
-            transform: platform.output_transform(i).cloned(),
+            transform: layout.transform.clone(),
             cursor_saves: CursorSaves::default(),
             // Per scanout BO, so in mode (BO) pixels even when transformed.
             damage: ScanoutDamage::new(
                 bo_depth,
                 vk::Extent2D {
-                    width: u32::from(layout.width),
-                    height: u32::from(layout.height),
+                    width: u32::from(layout.mode.0),
+                    height: u32::from(layout.mode.1),
                 },
             ),
         })
@@ -226,7 +224,7 @@ impl SceneCompositor {
     /// (which reallocates root/COW storage but deliberately avoids
     /// `drain_all` + `rebuild_outputs`) and the return from direct scanout
     /// (during which the composed BOs are not painted at all).
-    pub(crate) fn invalidate_all_scanout_damage(&mut self) {
+    pub fn invalidate_all_scanout_damage(&mut self) {
         if let Some(inner) = self.inner.as_mut() {
             for o in &mut inner.outputs {
                 o.damage.invalidate();
@@ -234,14 +232,18 @@ impl SceneCompositor {
         }
     }
 
-    pub(crate) fn rebuild_outputs(&mut self, platform: &PlatformBackend) -> Result<(), SceneError> {
+    pub fn rebuild_outputs(
+        &mut self,
+        sink: &dyn OutputSink,
+        layouts: &[OutputLayout],
+    ) -> Result<(), SceneError> {
         let Some(inner) = self.inner.as_mut() else {
             return Ok(());
         };
         let vk = inner.vk.clone();
-        let mut outputs = Vec::with_capacity(platform.outputs.len());
-        for i in 0..platform.outputs.len() {
-            outputs.push(Self::build_output_state(&vk, platform, i)?);
+        let mut outputs = Vec::with_capacity(layouts.len());
+        for i in 0..layouts.len() {
+            outputs.push(Self::build_output_state(&vk, sink, layouts, i)?);
         }
         for old in &mut inner.outputs {
             release_intermediate(old, &vk);
@@ -258,22 +260,19 @@ impl SceneCompositor {
         Ok(())
     }
 
-    /// Follow the RANDR transforms in `platform` without a topology rebuild:
+    /// Follow the RANDR transforms in `layouts` without a topology rebuild:
     /// an output whose root rect changed gets its scene extent, BO damage and
     /// intermediate redone, one whose matrix alone changed its BO damage; an
     /// identity output keeps today's state untouched.
-    pub(crate) fn sync_output_layouts(
-        &mut self,
-        platform: &PlatformBackend,
-    ) -> Result<(), SceneError> {
+    pub fn sync_output_layouts(&mut self, layouts: &[OutputLayout]) -> Result<(), SceneError> {
         let Some(inner) = self.inner.as_mut() else {
             return Ok(());
         };
         let mut changed = false;
         for (i, o) in inner.outputs.iter_mut().enumerate() {
-            let (x, y, width, height) = platform.output_root_rect(i);
+            let (x, y, width, height) = layouts[i].root_rect;
             let extent = vk::Extent2D { width, height };
-            let transform = platform.output_transform(i);
+            let transform = output_transform(layouts, i);
             let wanted = transform.map(|_| extent);
             let held = o.intermediate.as_ref().map(|im| im.extent);
             let same_layout = o.output_origin == (x, y) && o.output_extent == extent;
@@ -295,7 +294,7 @@ impl SceneCompositor {
             o.prev_presented.clear();
             o.last_pieces.clear();
         }
-        ensure_intermediates(inner, platform)?;
+        ensure_intermediates(inner, layouts)?;
         if changed {
             self.note_structure_change();
         }
@@ -305,22 +304,22 @@ impl SceneCompositor {
     /// Test fixture / Stage-1b-era stub. Construct via
     /// `SceneCompositor::stub()` so the `KmsBackend::for_tests`
     /// path doesn't need Vk.
-    pub(crate) fn stub() -> Self {
+    pub fn stub() -> Self {
         Self {
             inner: None,
             root_overlay: crate::kms::render::root_overlay::RootOverlay::default(),
             scene_structure_dirty: false,
             structure_generation: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_flip_in_flight_override: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             test_prime_descriptor_sets: None,
         }
     }
 
     /// Whether the scene has a live blit pipeline. Tests use
     /// this to skip Vk-only assertions.
-    pub(crate) fn is_live(&self) -> bool {
+    pub fn is_live(&self) -> bool {
         self.inner.is_some()
     }
 
@@ -328,7 +327,7 @@ impl SceneCompositor {
     /// — `device_wait_idle` is the safe fallback the platform
     /// uses anyway. Releases descriptor-pool slots so the
     /// pool-ring's Drop doesn't fire while slots are still in use.
-    pub(crate) fn drain_all(&mut self, platform: &mut PlatformBackend) {
+    pub fn drain_all(&mut self, sink: &mut dyn OutputSink) {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };
@@ -337,7 +336,7 @@ impl SceneCompositor {
         // fence ticket below still proves A's submitted command buffer is done
         // before descriptor slots are reset, and the platform subsequently
         // drains both devices before any copied pool is reset or dropped.
-        platform.clear_scanout_render_completions();
+        sink.clear_render_completions();
         let vk = inner.vk.clone();
         for (output_idx, o) in inner.outputs.iter_mut().enumerate() {
             // B.2-context fix (codex audit followup): wait for any
@@ -361,7 +360,7 @@ impl SceneCompositor {
                                 "render scene drain: output {output_idx} compose fence wait \
                                  failed: {error:?}; retaining resources for quarantine"
                             );
-                            platform.gpu.renderer_failed = true;
+                            sink.gpu_mut().renderer_failed = true;
                             false
                         }
                     });
@@ -410,7 +409,7 @@ impl SceneCompositor {
                         true
                     }
                     DeferredSceneRelease::FailedSubmit { bo_idx, pool_slot } => {
-                        match platform.recycle_failed_submit_bo(output_idx, bo_idx) {
+                        match sink.recycle_failed_slot(output_idx, bo_idx) {
                             Ok(()) => {
                                 pool_ring.release(pool_slot);
                                 true
@@ -428,7 +427,7 @@ impl SceneCompositor {
                 },
             );
             if wait_failed || recovery_failed {
-                platform.gpu.renderer_failed = true;
+                sink.gpu_mut().renderer_failed = true;
             }
             // Stage 5 Phase D' — global recovery: reset every
             // output's cursor mode to Hidden. The post-recovery
@@ -443,6 +442,6 @@ impl SceneCompositor {
         }
         // Hide the plane everywhere + invalidate uploaded_version.
         // Best-effort; the platform hook logs per-CRTC failures.
-        let _ = platform.cursor_plane_hide_all();
+        let _ = sink.cursor_plane_mut().hide_all();
     }
 }

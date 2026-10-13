@@ -1,10 +1,9 @@
 use crate::kms::render::{
     cursor_save::CursorSaveTarget,
-    platform::PlatformBackend,
     scene::{
         CursorAssignment, CursorEntry, CursorPlaneMode, CursorRetireResolution, CursorTransition,
-        CursorTransitionResult, OutputCursorMode, OutputSceneState, SceneBuild, SceneCompositor,
-        SceneCompositorInner,
+        CursorTransitionResult, OutputCursorMode, OutputLayout, OutputSceneState, OutputSink,
+        SceneBuild, SceneCompositor, SceneCompositorInner,
     },
     store::RegionSet,
 };
@@ -74,12 +73,7 @@ impl SceneBuild {
 impl SceneCompositor {
     /// Put the pixels a software cursor covers back into `bytes`, a tight
     /// BGRA8 read of `read` from compose image `image` (`cursor_save`).
-    pub(crate) fn restore_under_cursor(
-        &self,
-        image: vk::Image,
-        read: vk::Rect2D,
-        bytes: &mut [u8],
-    ) {
+    pub fn restore_under_cursor(&self, image: vk::Image, read: vk::Rect2D, bytes: &mut [u8]) {
         if let Some(inner) = self.inner.as_ref() {
             for o in &inner.outputs {
                 o.cursor_saves.restore(image, read, bytes);
@@ -91,7 +85,7 @@ impl SceneCompositor {
     /// backend has uploaded its pixel data. Idempotent — a later
     /// `define_cursor` flow (Stage 4) can swap the entry. Drops to
     /// a no-op on the stub fixture.
-    pub(crate) fn register_cursor(&mut self, entry: CursorEntry) {
+    pub fn register_cursor(&mut self, entry: CursorEntry) {
         if let Some(inner) = self.inner.as_mut() {
             inner.cursor = Some(entry);
             self.note_structure_change();
@@ -102,7 +96,7 @@ impl SceneCompositor {
     /// assigns `CursorAssignment::Hidden` on every output, so the next
     /// tick erases a SW sprite and detaches a bound HW plane on retire.
     /// `register_cursor` restores it.
-    pub(crate) fn clear_cursor(&mut self) {
+    pub fn clear_cursor(&mut self) {
         if let Some(inner) = self.inner.as_mut()
             && inner.cursor.take().is_some()
         {
@@ -117,7 +111,7 @@ impl SceneCompositor {
     /// (transition pending on any output, or a heterogeneous
     /// mix) returns `Mixed`; the fast path falls back to scene
     /// wake until the plane is fully consistent.
-    pub(crate) fn cursor_mode(&self) -> CursorPlaneMode {
+    pub fn cursor_mode(&self) -> CursorPlaneMode {
         let Some(inner) = self.inner.as_ref() else {
             return CursorPlaneMode::Sw;
         };
@@ -143,22 +137,7 @@ impl SceneCompositor {
     /// synchronously from the backend's `refresh_effective_cursor`.
     /// Marks each output that already has (or is retiring into) a HW
     /// binding for an output-local upload + full ShowOnRetire retry.
-    ///
-    /// `bytes` MUST be `width * height * 4` (BGRA8). `Arc` so the
-    /// deferred slot can hold the bytes without re-cloning the
-    /// `Vec<u8>` from `CursorRecord` per upload.
-    pub(crate) fn queue_steady_state_cursor_upload(
-        &mut self,
-        _platform: &mut PlatformBackend,
-        version: u64,
-        _width: u16,
-        _height: u16,
-        _bgra_bytes: std::sync::Arc<Vec<u8>>,
-        _hot_x: u16,
-        _hot_y: u16,
-        _cursor_x: i32,
-        _cursor_y: i32,
-    ) -> bool {
+    pub fn queue_steady_state_cursor_upload(&mut self, version: u64) -> bool {
         let Some(inner) = self.inner.as_mut() else {
             return false;
         };
@@ -449,7 +428,7 @@ pub(super) fn resolve_cursor_hide_on_retire(
 pub(super) fn apply_cursor_transition_on_retire(
     inner: &mut SceneCompositorInner,
     output_idx: usize,
-    platform: &mut PlatformBackend,
+    sink: &mut dyn OutputSink,
     transition: Option<CursorTransition>,
 ) -> CursorTransitionResult {
     let Some(t) = transition else {
@@ -463,7 +442,7 @@ pub(super) fn apply_cursor_transition_on_retire(
             x,
             y,
         } => {
-            let prior_visible = platform.cursor_plane_visible_for_output(output_idx);
+            let prior_visible = sink.cursor_plane().visible(output_idx);
             // Upload if version doesn't match. `upload_image` is
             // already idempotent-deduplicated by value inside
             // `CursorPlane`, but skipping the FFI when we know the
@@ -472,14 +451,14 @@ pub(super) fn apply_cursor_transition_on_retire(
             // when its version matches the transition's. A mismatch never
             // binds stale pixels: the old binding must be hidden successfully
             // or remain authoritative with a version-qualified Show retry.
-            let upload_ready = if platform.cursor_plane_uploaded_version_for_output(output_idx)
+            let upload_ready = if sink.cursor_plane().uploaded_version(output_idx)
                 != Some(upload_version)
             {
                 if let Some(entry) = inner.cursor.as_ref()
                     && entry.record_version == upload_version
                     && let Some(bytes) = entry.bgra_bytes.as_ref()
                 {
-                    match platform.cursor_plane_upload_image_for_output(
+                    match sink.cursor_plane_mut().upload(
                         output_idx,
                         upload_version,
                         entry.extent.width,
@@ -511,13 +490,13 @@ pub(super) fn apply_cursor_transition_on_retire(
                 // never-bound output has nothing to detach and resolves
                 // directly to Hidden without probing hide.
                 resolve_failed_cursor_upload(output_idx, prior_visible, || {
-                    platform.cursor_plane_hide_on_crtc(output_idx)
+                    sink.cursor_plane_mut().hide(output_idx)
                 })
             } else {
-                match platform.cursor_plane_show_on_crtc(output_idx, hot_x, hot_y, x, y) {
+                match sink.cursor_plane_mut().show(output_idx, hot_x, hot_y, x, y) {
                     Ok(()) => CursorTransitionResult::Applied,
                     Err(error) => {
-                        let actual = if error.remains_visible() {
+                        let actual = if error.remains_visible {
                             CursorTransitionResult::VisibleNeedsShowRetry
                         } else {
                             CursorTransitionResult::Hidden
@@ -531,9 +510,9 @@ pub(super) fn apply_cursor_transition_on_retire(
             }
         }
         CursorTransition::HideOnRetire { reveal_sw_after } => {
-            let currently_visible = platform.cursor_plane_visible_for_output(output_idx);
+            let currently_visible = sink.cursor_plane().visible(output_idx);
             resolve_cursor_hide_on_retire(output_idx, reveal_sw_after, currently_visible, || {
-                platform.cursor_plane_hide_on_crtc(output_idx)
+                sink.cursor_plane_mut().hide(output_idx)
             })
         }
     }
@@ -549,8 +528,8 @@ pub(super) fn apply_cursor_transition_on_retire(
 /// Xorg refuses the HW cursor while any CRTC is transformed
 /// (xf86Cursors.c:569): software on every output, so it scales with the
 /// content and never vanishes crossing to an identity output (spec D5).
-pub(super) fn hw_cursor_allowed(platform: &PlatformBackend) -> bool {
-    !platform.any_output_transformed()
+pub(super) fn hw_cursor_allowed(outputs: &[OutputLayout]) -> bool {
+    !outputs.iter().any(|output| output.transform.is_some())
 }
 
 pub(super) fn cursor_damage_for_frame(

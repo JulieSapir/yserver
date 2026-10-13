@@ -28,7 +28,9 @@ impl WalkStats {
     }
 }
 
-pub(super) fn children_index(windows: &crate::kms::render::backend::WindowsMap) -> ChildrenIndex {
+pub(super) fn children_index(
+    windows: &crate::kms::render::window_geometry::WindowsMap,
+) -> ChildrenIndex {
     let mut by_parent: HashMap<u32, Vec<(u32, u64)>> = HashMap::new();
     for (xid, g) in windows {
         if let Some(parent) = g.parent {
@@ -140,7 +142,7 @@ fn inner_place_rects(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decide_node(
     host_xid: u32,
-    geom: &crate::kms::render::backend::WindowGeometry,
+    geom: &crate::kms::render::window_geometry::WindowGeometry,
     parent_content_abs_x: i32,
     parent_content_abs_y: i32,
     store: &DrawableStore,
@@ -550,7 +552,7 @@ pub(super) fn visit_window_subtree(
     parent_content_abs_x: i32,
     parent_content_abs_y: i32,
     store: &mut DrawableStore,
-    windows: &crate::kms::render::backend::WindowsMap,
+    windows: &crate::kms::render::window_geometry::WindowsMap,
     children: &ChildrenIndex,
     // Per-window SHAPE bounding regions (`KmsCore::shape_bounding`).
     // When a host xid has an entry the window's scene draw is
@@ -610,7 +612,7 @@ pub(super) fn visit_window_subtree(
 ) {
     let debug_focus = scene_walk_debug_enabled_for(host_xid);
     // Stage 4 diagnostic: trace-level scene-walk decision per window.
-    // Enable with `RUST_LOG=yserver::kms::render::scene=trace`. The
+    // Enable with `RUST_LOG=yserver_render::kms::render::scene=trace`. The
     // top-level and descendant paths share this function so the
     // single trace site covers both. Format is greppable —
     // `render scene_walk xid=...: ...` — for `grep "render scene_walk"`

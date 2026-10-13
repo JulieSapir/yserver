@@ -17,7 +17,9 @@
 //! - `damage_audit`: the reference-compose damage audit.
 //! - `repaint`: partial-compose planning (`RepaintPlan`, scissor culling).
 //! - `build`, `walk`: scene list assembly; per-window visibility decisions.
-//! - `compose`: `ComposeRenderTarget` for scanout targets, record and submit.
+//! - `compose`: record and submit into a `ComposeRenderTarget`.
+//! - `sink`: `OutputSink` and `CursorPlaneSink`, what the scene asks of the
+//!   outputs it draws.
 //! - `transform`: transform intermediates and the scale pass.
 //! - `root_readback`: root-window reads (composes into a private image).
 //! - `for_tests`: `*_for_tests` entry points; `tests`: unit tests.
@@ -37,11 +39,12 @@ mod for_tests;
 mod lifecycle;
 mod repaint;
 mod root_readback;
+mod sink;
 mod tick;
 mod transform;
 mod walk;
 
-pub(crate) use build::*;
+pub use build::*;
 #[cfg(test)]
 use compose::*;
 #[cfg(test)]
@@ -56,6 +59,7 @@ use flip::*;
 use lifecycle::drain_deferred_scene_resources;
 #[cfg(test)]
 use repaint::*;
+pub use sink::*;
 #[cfg(test)]
 use tick::*;
 #[cfg(test)]
@@ -66,7 +70,6 @@ mod tests;
 
 use std::{
     collections::{HashMap, VecDeque},
-    io,
     panic::Location,
     sync::Arc,
 };
@@ -75,7 +78,7 @@ use ash::vk;
 
 use super::{
     cursor_save::CursorSaves,
-    platform::FenceTicket,
+    gpu::FenceTicket,
     region::Region,
     scanout_damage::ScanoutDamage,
     scene_diff::{PresenceSignature, ScenePresence},
@@ -89,9 +92,47 @@ use crate::kms::{
         damage_audit_compare::DamageAuditComparePipeline,
         pipeline::CompositorPipeline,
         scale_pipeline::{ScalePassPipeline, ScalePushConsts},
-        scanout::CopiedTransportPreparation,
     },
 };
+
+// ────────────────────────────────────────────────────────────────
+// Per-call input
+// ────────────────────────────────────────────────────────────────
+
+/// The geometry the scene reads of one live output, in platform order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputLayout {
+    /// The root rectangle the output shows: its mode at the CRTC origin, or
+    /// the transformed footprint there (spec D3).
+    pub root_rect: (i32, i32, u32, u32),
+    /// The CRTC mode, i.e. the scanout BO extent.
+    pub mode: (u16, u16),
+    /// The current CRTC transform, `None` at identity.
+    pub transform: Option<yserver_protocol::x11::randr::transform::CrtcTransform>,
+}
+
+/// The core state and output geometry one scene call reads, borrowed from
+/// the backend for the duration of the call.
+pub struct SceneInput<'a> {
+    pub window_id: u32,
+    pub top_level_order: &'a [u32],
+    pub shape_bounding: &'a HashMap<u32, Vec<yserver_protocol::x11::xfixes::RegionRect>>,
+    pub shape_clip: &'a HashMap<u32, Vec<yserver_protocol::x11::xfixes::RegionRect>>,
+    pub cursor_x: f32,
+    pub cursor_y: f32,
+    pub windows: &'a crate::kms::render::window_geometry::WindowsMap,
+    pub outputs: &'a [OutputLayout],
+    /// The logical screen size.
+    pub fb_size: (u16, u16),
+}
+
+/// The transform of output `idx`, `None` at identity or past the end.
+fn output_transform(
+    outputs: &[OutputLayout],
+    idx: usize,
+) -> Option<&yserver_protocol::x11::randr::transform::CrtcTransform> {
+    outputs.get(idx)?.transform.as_ref()
+}
 
 // ────────────────────────────────────────────────────────────────
 // Per-output state
@@ -103,11 +144,6 @@ use crate::kms::{
 enum InFlightStage {
     WaitingForRenderCompletion { job_id: u64 },
     KmsFlipPending,
-}
-
-enum CopiedRenderSubmitError {
-    RendererAcquire(io::Error),
-    Present(PresentError),
 }
 
 struct PendingAck {
@@ -167,7 +203,7 @@ struct PendingAck {
 /// decision in `build_scene`. The compositor outer caller consumes
 /// this to drive Phase D's `PendingAck` transition state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CursorAssignment {
+pub enum CursorAssignment {
     /// HW plane should display the sprite at this position. The
     /// SW cursor draw is omitted from `scene.draws`. Damage is
     /// decided later in `tick_one_output` from the transactional
@@ -236,7 +272,7 @@ enum OutputCursorMode {
 /// transition to HW; mixed-state outputs return `Mixed`, which
 /// suppresses the fast path until every flip retires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CursorPlaneMode {
+pub enum CursorPlaneMode {
     /// Every active output is in HW mode + no transitions pending
     /// — pointer fast path may issue `cursor_plane_move` directly.
     Hw,
@@ -309,7 +345,7 @@ struct OutputSceneState {
     output_extent: vk::Extent2D,
     /// Layout origin of this output in root/screen coordinates, cached for the
     /// same reason as the extent: the damage-marking entry points are on
-    /// `SceneCompositor` and have no `PlatformBackend` in scope, so without this
+    /// `SceneCompositor` and have no `OutputLayout` in scope, so without this
     /// they cannot translate a screen-absolute rect into output-local space.
     output_origin: (i32, i32),
     /// Backoff after atomic-commit failures. Without this, a failed
@@ -388,7 +424,7 @@ struct OutputSceneState {
     intermediate: Option<TransformIntermediate>,
     /// The transform the scanout BOs were laid out for: a same-footprint
     /// rotation or reflection change keeps every extent but not the pixels.
-    transform: Option<yserver_core::randr::CrtcTransform>,
+    transform: Option<yserver_protocol::x11::randr::transform::CrtcTransform>,
     /// The pixels under the software cursor in each compose image, for root
     /// reads. Empty while the cursor is on the HW plane.
     cursor_saves: CursorSaves,
@@ -491,7 +527,7 @@ enum TickSkipReason {
     RetryDeadline,
     /// `output_damage` is empty and this is not the first frame.
     EmptyDamage,
-    /// `platform.acquire_scanout_bo` returned None — BO pool exhausted.
+    /// `sink.acquire_slot` returned None — BO pool exhausted.
     NoBO,
     /// `pool_ring.acquire` returned None — descriptor-pool ring exhausted.
     NoPool,
@@ -511,19 +547,19 @@ enum TickOutcome {
 // SceneCompositor
 // ────────────────────────────────────────────────────────────────
 
-pub(crate) struct SceneCompositor {
+pub struct SceneCompositor {
     inner: Option<SceneCompositorInner>,
     /// Retained front-buffer overlay for legacy root-window
     /// `IncludeInferiors` XOR/invert drawing (import rubber-band, WM
     /// wireframes). Mutated only via the `root_overlay_*` helpers below,
     /// which also inject the scene-structure damage needed to force a
     /// compose.
-    pub(crate) root_overlay: crate::kms::render::root_overlay::RootOverlay,
+    pub root_overlay: crate::kms::render::root_overlay::RootOverlay,
     /// Stage 2d's coarse scene-structure dirty bit. Set by any
     /// map/unmap/configure/restack/redirect-state/cursor-pos
     /// change. Cleared at tick end. Stage 2e narrows to a
     /// per-region scene_structure_damage `RegionSet`.
-    pub(crate) scene_structure_dirty: bool,
+    pub scene_structure_dirty: bool,
     /// Counts the changes that set `scene_structure_dirty`: with the
     /// store's [`DrawableStore::scene_damage_generation`], what a root
     /// readback was composed at ([`Self::root_readback`]).
@@ -533,12 +569,12 @@ pub(crate) struct SceneCompositor {
     /// so there is no live `PendingAck` queue to populate; this lets
     /// capability-surface tests (`present_flip_in_flight`) exercise both
     /// states without a live Vulkan device.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     test_flip_in_flight_override: Option<bool>,
     /// Test-only: the most draws a priming compose reports recorded, standing
     /// in for an exhausted descriptor pool.
-    #[cfg(test)]
-    pub(crate) test_prime_descriptor_sets: Option<usize>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub test_prime_descriptor_sets: Option<usize>,
 }
 
 struct SceneCompositorInner {
@@ -589,20 +625,20 @@ struct RootReadback {
 /// xid) so its lifetime + Vk-handle destruction flow through the
 /// same paths as any other drawable.
 #[derive(Debug, Clone)]
-pub(crate) struct CursorEntry {
-    pub(crate) id: crate::kms::render::store::DrawableId,
-    pub(crate) extent: vk::Extent2D,
-    pub(crate) hot_x: i16,
-    pub(crate) hot_y: i16,
+pub struct CursorEntry {
+    pub id: crate::kms::render::store::DrawableId,
+    pub extent: vk::Extent2D,
+    pub hot_x: i16,
+    pub hot_y: i16,
     /// Stage 5 Phase B — `Arc<CursorRecord>.version`. Compared by
     /// value in the Phase D upload-dedup path. Zero in unit-test
     /// constructions that pre-date Phase A.
-    pub(crate) record_version: u64,
+    pub record_version: u64,
     /// Stage 5 Phase D — straight-alpha BGRA8 bytes shared with
     /// the `CursorRecord` on the backend. `Arc` lets every output's
     /// retire-time upload reference the same allocation without copying.
     /// `None` in unit-test constructions that pre-date Phase A.
-    pub(crate) bgra_bytes: Option<std::sync::Arc<Vec<u8>>>,
+    pub bgra_bytes: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 /// Whether the scene walk clips each node to what nothing above it covers.
@@ -809,7 +845,7 @@ struct SceneBuild {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum SceneError {
+pub enum SceneError {
     #[error("vk pipeline init: {0}")]
     PipelineInit(crate::kms::vk::pipeline::PipelineError),
     #[error("vk: {0:?}")]
@@ -937,7 +973,7 @@ enum Repaint {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ComposeSubmit {
+pub struct ComposeSubmit {
     descriptor_count: usize,
 }
 
@@ -1123,7 +1159,7 @@ struct ScalePass {
     into_target: bool,
 }
 
-trait ComposeRenderTarget {
+pub trait ComposeRenderTarget {
     fn image(&self) -> vk::Image;
     fn image_view(&self) -> vk::ImageView;
     fn command_buffer(&self) -> vk::CommandBuffer;
@@ -1136,12 +1172,15 @@ trait ComposeRenderTarget {
     fn timestamps_written(&self) -> bool;
     fn mark_timestamps_written(&mut self);
     fn set_last_gpu_render_ns(&mut self, value: Option<u64>);
-    fn post_compose_preparation(&self) -> Result<PostComposePreparation, PresentError>;
+    /// Validate (and, for copied targets, store) the post-compose transport
+    /// state. Runs before the command buffer begins recording.
+    fn prepare_post_compose(&mut self) -> Result<(), PresentError>;
+    /// Record the post-compose barrier or transport copy prepared by
+    /// `prepare_post_compose` in the same compose.
     fn record_post_compose(
-        &self,
+        &mut self,
         vk: &crate::kms::vk::device::VkContext,
         command_buffer: vk::CommandBuffer,
-        preparation: PostComposePreparation,
     );
 
     fn renderer_wait_semaphore(&self) -> Option<vk::Semaphore> {
@@ -1149,10 +1188,4 @@ trait ComposeRenderTarget {
     }
 
     fn note_submit_succeeded(&mut self) {}
-}
-
-#[derive(Clone, Copy)]
-enum PostComposePreparation {
-    Shared,
-    Copied(CopiedTransportPreparation),
 }

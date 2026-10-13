@@ -1,8 +1,9 @@
 use super::*;
-use crate::kms::{
-    core::KmsCore,
-    render::{gpu::GpuCore, platform::PlatformBackend, store::DrawableStore},
-};
+use crate::kms::render::{gpu::GpuCore, store::DrawableStore};
+
+/// `yserver_core::resources::COMPOSITE_OVERLAY_WINDOW`; the scene sees it
+/// only as the `cow_host_xid` the backend passes in.
+const COMPOSITE_OVERLAY_WINDOW: u32 = 0x103;
 
 /// Stage 3f.6 — `build_scene` walks top-level → mapped
 /// descendants and produces draw entries in absolute coords.
@@ -10,10 +11,10 @@ use crate::kms::{
 /// emits at output coords (60, 80).
 #[test]
 fn build_scene_recurses_into_mapped_children() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // Top-level @ (50, 60), 200×100.
     alloc_stub_window(
@@ -43,11 +44,10 @@ fn build_scene_recurses_into_mapped_children() {
     );
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -83,10 +83,10 @@ fn build_scene_recurses_into_mapped_children() {
 /// scene drew the child at full size (air/silence HW 2026-07-02).
 #[test]
 fn build_scene_clips_child_to_parent_bounds() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // Small parent @ (100, 100), 10×10 (the holding window).
     alloc_stub_window(
@@ -117,11 +117,10 @@ fn build_scene_clips_child_to_parent_bounds() {
     );
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -171,10 +170,10 @@ fn build_scene_clips_child_to_parent_bounds() {
 #[test]
 fn build_scene_clips_window_to_shape_bounding() {
     use yserver_protocol::x11::xfixes::RegionRect;
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // Top-level @ (50, 60), 200×100.
     alloc_stub_window(
@@ -204,11 +203,10 @@ fn build_scene_clips_window_to_shape_bounding() {
     );
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -259,10 +257,10 @@ fn build_scene_clips_window_to_shape_bounding() {
 /// region wrongly rendered as a full window.
 #[test]
 fn build_scene_empty_bounding_emits_no_draw() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     alloc_stub_window(
         &mut store,
@@ -280,11 +278,10 @@ fn build_scene_empty_bounding_emits_no_draw() {
     core.shape_bounding.insert(0x100, Vec::new());
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -301,10 +298,10 @@ fn build_scene_empty_bounding_emits_no_draw() {
 
 #[test]
 fn build_scene_absent_bounding_emits_full_window() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     alloc_stub_window(
         &mut store,
@@ -321,11 +318,10 @@ fn build_scene_absent_bounding_emits_full_window() {
     // No shape_bounding entry at all (absent) → full-window draw.
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -353,10 +349,10 @@ fn build_scene_absent_bounding_emits_full_window() {
 /// unmapped.
 #[test]
 fn build_scene_unmapped_parent_hides_subtree() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     alloc_stub_window(
         &mut store,
@@ -383,11 +379,10 @@ fn build_scene_unmapped_parent_hides_subtree() {
     );
 
     let scene = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -410,10 +405,10 @@ fn build_scene_unmapped_parent_hides_subtree() {
 /// blends.
 #[test]
 fn build_scene_appends_cursor_draw_at_top_of_z() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // One mapped top-level so we can verify "cursor is on top".
     alloc_stub_window(&mut store, &mut windows, 0x100, 0, 0, 400, 300, None, true);
@@ -446,11 +441,10 @@ fn build_scene_appends_cursor_draw_at_top_of_z() {
     };
 
     let scene = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         Some(cursor),
         None,
         None,
@@ -486,10 +480,10 @@ fn build_scene_appends_cursor_draw_at_top_of_z() {
 /// task 4c.5 self-review — the assertion shape already matches.
 #[test]
 fn build_scene_automatic_redirect_keeps_window_via_backing_storage() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // Window W @ (50, 60), 200×100 — emits at output coords
     // (50, 60) since the test output layout origin is (0, 0).
@@ -554,11 +548,10 @@ fn build_scene_automatic_redirect_keeps_window_via_backing_storage() {
     store.set_redirected_target(w_id, Some(b_id));
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -590,7 +583,7 @@ fn build_scene_automatic_redirect_keeps_window_via_backing_storage() {
     // so this also implicitly verifies the scene-α fix is
     // binding the sample-side view (no separate handle to
     // distinguish in the stub world — production builds them
-    // distinct via `PlatformBackend::build_sample_view`).
+    // distinct via `GpuCore::build_sample_view`).
     assert_eq!(
         w_draw.image_view, b_view,
         "redirected W must sample FROM B's view, not W's"
@@ -625,10 +618,10 @@ fn build_scene_automatic_redirect_keeps_window_via_backing_storage() {
 /// emit one draw (W1) and zero entries for W2.
 #[test]
 fn build_scene_skips_manual_redirected_window() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // W1 @ (10, 20), 50×40 — Automatic / unredirected
     // (scene_participating=true via `alloc_stub_window`'s
@@ -669,11 +662,10 @@ fn build_scene_skips_manual_redirected_window() {
     );
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -733,10 +725,10 @@ fn build_scene_skips_manual_redirected_window() {
 /// scene.draws"; the bystander stands in as a positive control.
 #[test]
 fn build_scene_prunes_descendants_of_manual_redirected_ancestor() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // Frame W @ (100, 200), 200×150 — the manually-redirected
     // ancestor (CC's marco-decorated frame in production).
@@ -813,11 +805,10 @@ fn build_scene_prunes_descendants_of_manual_redirected_ancestor() {
     );
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -895,10 +886,10 @@ fn build_scene_prunes_descendants_of_manual_redirected_ancestor() {
 /// is dropped from the expectation set.
 #[test]
 fn build_scene_emits_automatic_descendant_under_manual_ancestor() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // Frame F at (100, 200), 200×150 — Manual-redirected
     // (scene_participating=false) with its own backing F_B.
@@ -962,11 +953,10 @@ fn build_scene_emits_automatic_descendant_under_manual_ancestor() {
     );
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -1014,10 +1004,10 @@ fn build_scene_emits_automatic_descendant_under_manual_ancestor() {
 /// gets its own dedicated test.
 #[test]
 fn build_scene_cow_none_emits_top_levels() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // Two mapped top-levels.
     alloc_stub_window(&mut store, &mut windows, 0x100, 0, 0, 100, 80, None, true);
@@ -1036,11 +1026,10 @@ fn build_scene_cow_none_emits_top_levels() {
     core.top_level_order.push(0x101);
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None, // no cursor in this fixture
         None,
         None, // cow_host_xid — Phase 2.6 (None = no compositor active)
@@ -1101,10 +1090,10 @@ fn build_scene_cow_none_emits_top_levels() {
 /// stripped, COW below cursor) gets its own dedicated test.
 #[test]
 fn build_scene_cow_none_cursor_at_top() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // One mapped top-level so the scene has anchor content.
     alloc_stub_window(&mut store, &mut windows, 0x100, 0, 0, 400, 300, None, true);
@@ -1133,11 +1122,10 @@ fn build_scene_cow_none_cursor_at_top() {
     };
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         Some(cursor),
         None,
         None, // cow_host_xid — Phase 2.6 (None = no compositor active)
@@ -1175,17 +1163,17 @@ fn build_scene_cow_none_cursor_at_top() {
 /// emit with `alpha_passthrough = false`.
 #[test]
 fn cow_subtree_draws_inherit_alpha_passthrough_true() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // Non-COW top-level W @ (0, 0), 200×200.
     alloc_stub_window(&mut store, &mut windows, 0xA1, 0, 0, 200, 200, None, true);
     core.top_level_order.push(0xA1);
 
-    // COW host xid @ (0, 0), 800×600 — matches PlatformBackend::for_tests output.
-    let cow_xid: u32 = yserver_core::resources::COMPOSITE_OVERLAY_WINDOW.0;
+    // COW host xid @ (0, 0), 800×600 — matches `default_outputs`.
+    let cow_xid: u32 = COMPOSITE_OVERLAY_WINDOW;
     alloc_stub_window(
         &mut store,
         &mut windows,
@@ -1213,11 +1201,10 @@ fn cow_subtree_draws_inherit_alpha_passthrough_true() {
     );
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         Some(cow_xid),
@@ -1264,12 +1251,12 @@ fn cow_subtree_draws_inherit_alpha_passthrough_true() {
 /// not two.
 #[test]
 fn build_scene_does_not_append_cow_after_top_level_walk() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
-    let cow_xid: u32 = yserver_core::resources::COMPOSITE_OVERLAY_WINDOW.0;
+    let cow_xid: u32 = COMPOSITE_OVERLAY_WINDOW;
     alloc_stub_window(
         &mut store,
         &mut windows,
@@ -1284,11 +1271,10 @@ fn build_scene_does_not_append_cow_after_top_level_walk() {
     core.top_level_order.push(cow_xid);
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         Some(cow_xid),
@@ -1324,10 +1310,10 @@ fn build_scene_does_not_append_cow_after_top_level_walk() {
 #[test]
 fn manual_redirected_top_level_skips_emit_unconditional() {
     for cow_host_xid in [None, Some(0x103_u32)] {
-        let mut core = KmsCore::for_tests();
+        let mut core = TestCore::for_tests();
         let mut store = DrawableStore::new();
-        let platform = PlatformBackend::for_tests();
-        let mut windows = crate::kms::render::backend::WindowsMap::new();
+        let sink = TestSink::new();
+        let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
         // W with a redirected backing (Manual mode:
         // scene_participating=false). Unique sentinel handle so
@@ -1365,11 +1351,10 @@ fn manual_redirected_top_level_skips_emit_unconditional() {
         }
 
         let built = build_scene(
-            &core,
+            &core.input(&windows, &default_outputs()),
             &mut store,
-            &windows,
             0,
-            &platform,
+            &sink,
             None,
             None,
             cow_host_xid,
@@ -1404,10 +1389,10 @@ fn manual_redirected_top_level_skips_emit_unconditional() {
 /// while their audio kept playing.
 #[test]
 fn offscreen_helper_above_fullscreen_still_suppresses_cow() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // The unredirected fullscreen window: covers the 800x600 output,
     // opaque (depth != 32), scene-participating (drawn by us).
@@ -1438,11 +1423,10 @@ fn offscreen_helper_above_fullscreen_still_suppresses_cow() {
     core.top_level_order.push(cow);
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         Some(cow),
@@ -1472,10 +1456,10 @@ fn offscreen_helper_above_fullscreen_still_suppresses_cow() {
 /// redirected window the compositor draws, i.e. the whole desktop.
 #[test]
 fn on_output_non_covering_window_above_fullscreen_keeps_cow() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     let fs: u32 = 0x00F5;
     alloc_stub_window(&mut store, &mut windows, fs, 0, 0, 800, 600, None, true);
@@ -1503,11 +1487,10 @@ fn on_output_non_covering_window_above_fullscreen_keeps_cow() {
     core.top_level_order.push(cow);
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         Some(cow),
@@ -1530,10 +1513,10 @@ fn on_output_non_covering_window_above_fullscreen_keeps_cow() {
 /// closes) is unconditionally skipped.
 #[test]
 fn automatic_redirected_top_level_still_emits() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     let w: u32 = 0xA2;
     alloc_stub_window(&mut store, &mut windows, w, 100, 100, 50, 50, None, true);
@@ -1553,11 +1536,10 @@ fn automatic_redirected_top_level_still_emits() {
     core.top_level_order.push(w);
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         None,
@@ -1604,10 +1586,10 @@ fn automatic_redirected_top_level_still_emits() {
 ///   - stage (COW child):           640×480
 #[test]
 fn compositor_stage_under_cow_emits_via_recursion_and_manual_siblings_skip() {
-    let mut core = KmsCore::for_tests();
+    let mut core = TestCore::for_tests();
     let mut store = DrawableStore::new();
-    let platform = PlatformBackend::for_tests();
-    let mut windows = crate::kms::render::backend::WindowsMap::new();
+    let sink = TestSink::new();
+    let mut windows = crate::kms::render::window_geometry::WindowsMap::new();
 
     // (1) An earlier, ordinary non-COW top-level W @ (0,0), 200×200.
     // Establishes a "before" position to anchor ordering.
@@ -1635,10 +1617,10 @@ fn compositor_stage_under_cow_emits_via_recursion_and_manual_siblings_skip() {
     core.top_level_order.push(s);
 
     // (3) The materialized COW host @ (0,0), 800×600 (matches the
-    // PlatformBackend::for_tests output extent). This stands in for
+    // `default_outputs` extent). This stands in for
     // GetOverlayWindow having created the windows entry +
     // top_level_order slot (Task 2.2).
-    let cow_xid: u32 = yserver_core::resources::COMPOSITE_OVERLAY_WINDOW.0;
+    let cow_xid: u32 = COMPOSITE_OVERLAY_WINDOW;
     alloc_stub_window(
         &mut store,
         &mut windows,
@@ -1668,11 +1650,10 @@ fn compositor_stage_under_cow_emits_via_recursion_and_manual_siblings_skip() {
     );
 
     let built = build_scene(
-        &core,
+        &core.input(&windows, &default_outputs()),
         &mut store,
-        &windows,
         0,
-        &platform,
+        &sink,
         None,
         None,
         Some(cow_xid),

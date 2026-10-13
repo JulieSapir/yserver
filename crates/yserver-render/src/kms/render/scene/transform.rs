@@ -1,13 +1,11 @@
 use crate::kms::{
-    core::KmsCore,
     render::{
-        platform::PlatformBackend,
         scene::{
-            ComposeRenderTarget, IntermediatePrimeTarget, OutputSceneState, PostComposePreparation,
-            Repaint, ScalePass, SceneCompositor, SceneCompositorInner, SceneError, Visibility,
-            build::build_scene, compose::record_and_submit_render,
+            ComposeRenderTarget, IntermediatePrimeTarget, OutputLayout, OutputSceneState,
+            OutputSink, Repaint, ScalePass, SceneCompositor, SceneCompositorInner, SceneError,
+            SceneInput, Visibility, build::build_scene, compose::record_and_submit_render,
             damage::clip_rect_to_output_extent, damage_audit::create_audit_descriptor_pool,
-            repaint::draw_dst_rect_inward,
+            output_transform, repaint::draw_dst_rect_inward,
         },
         store::DrawableStore,
         transform_intermediate::TransformIntermediate,
@@ -20,10 +18,7 @@ use std::sync::Arc;
 impl SceneCompositor {
     /// The intermediate of transformed output `output_idx`, once a compose has
     /// filled it: `(image, footprint extent)`, in `GENERAL`.
-    pub(crate) fn transform_intermediate(
-        &self,
-        output_idx: usize,
-    ) -> Option<(vk::Image, vk::Extent2D)> {
+    pub fn transform_intermediate(&self, output_idx: usize) -> Option<(vk::Image, vk::Extent2D)> {
         let im = self
             .inner
             .as_ref()?
@@ -37,10 +32,10 @@ impl SceneCompositor {
 
 pub(super) fn ensure_intermediates(
     inner: &mut SceneCompositorInner,
-    platform: &PlatformBackend,
+    outputs: &[OutputLayout],
 ) -> Result<(), SceneError> {
     for (i, o) in inner.outputs.iter_mut().enumerate() {
-        if platform.output_transform(i).is_none() {
+        if output_transform(outputs, i).is_none() {
             continue;
         }
         if o.intermediate.as_ref().map(|im| im.extent) == Some(o.output_extent) {
@@ -170,28 +165,27 @@ impl ComposeRenderTarget for IntermediatePrimeTarget {
 
     fn set_last_gpu_render_ns(&mut self, _value: Option<u64>) {}
 
-    fn post_compose_preparation(&self) -> Result<PostComposePreparation, PresentError> {
-        Ok(PostComposePreparation::Shared)
+    fn prepare_post_compose(&mut self) -> Result<(), PresentError> {
+        Ok(())
     }
 
     /// The scale pass step already left the intermediate in `GENERAL`.
     fn record_post_compose(
-        &self,
+        &mut self,
         _vk: &crate::kms::vk::device::VkContext,
         _command_buffer: vk::CommandBuffer,
-        _preparation: PostComposePreparation,
     ) {
     }
 }
 
 impl SceneCompositor {
     /// Whether a transformed output's intermediate is missing or uncomposed.
-    pub(crate) fn has_unprimed_transform_intermediate(&self, platform: &PlatformBackend) -> bool {
+    pub fn has_unprimed_transform_intermediate(&self, outputs: &[OutputLayout]) -> bool {
         let Some(inner) = self.inner.as_ref() else {
             return false;
         };
         inner.outputs.iter().enumerate().any(|(i, o)| {
-            platform.output_transform(i).is_some()
+            output_transform(outputs, i).is_some()
                 && o.intermediate.as_ref().is_none_or(|im| !im.has_content)
         })
     }
@@ -199,24 +193,23 @@ impl SceneCompositor {
     /// Compose every transformed output whose intermediate has never been
     /// composed, and wait, so a root read never sees an undefined one (D6).
     /// The caller has flushed pending paint, as before a scene tick.
-    pub(crate) fn prime_transform_intermediates(
+    pub fn prime_transform_intermediates(
         &mut self,
-        core: &KmsCore,
+        input: &SceneInput,
         store: &mut DrawableStore,
-        windows: &crate::kms::render::backend::WindowsMap,
-        platform: &PlatformBackend,
+        sink: &dyn OutputSink,
         cow_host_xid: Option<u32>,
     ) -> Result<(), SceneError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let descriptor_limit = self.test_prime_descriptor_sets;
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let descriptor_limit: Option<usize> = None;
         let Some(inner) = self.inner.as_mut() else {
             return Ok(());
         };
-        ensure_intermediates(inner, platform)?;
+        ensure_intermediates(inner, input.outputs)?;
         for output_idx in 0..inner.outputs.len() {
-            let Some(transform) = platform.output_transform(output_idx) else {
+            let Some(transform) = output_transform(input.outputs, output_idx) else {
                 continue;
             };
             let state = &inner.outputs[output_idx];
@@ -227,11 +220,10 @@ impl SceneCompositor {
                 continue;
             }
             let built = build_scene(
-                core,
+                input,
                 store,
-                windows,
                 output_idx,
-                platform,
+                sink,
                 inner.cursor.clone(),
                 None,
                 cow_host_xid,
@@ -245,8 +237,8 @@ impl SceneCompositor {
                     .as_ref()
                     .expect("an intermediate implies the pipeline"),
                 transform,
-                platform.output_root_rect(output_idx),
-                (u32::from(platform.fb_w), u32::from(platform.fb_h)),
+                input.outputs[output_idx].root_rect,
+                (u32::from(input.fb_size.0), u32::from(input.fb_size.1)),
             );
             scale.into_target = false;
             let extent = intermediate.extent;
@@ -262,10 +254,7 @@ impl SceneCompositor {
             let cursor_save = state.cursor_saves.prepare(&vk, scale.image, cursor_rect);
             let draws = built.scene.draws.len();
             let pool = create_audit_descriptor_pool(&vk, draws)?;
-            let ticket = platform
-                .gpu
-                .acquire_fence_ticket()
-                .map_err(SceneError::Vk)?;
+            let ticket = sink.gpu().acquire_fence_ticket().map_err(SceneError::Vk)?;
             let mut submitted = false;
             let result = record_and_submit_render(
                 &vk,
@@ -325,7 +314,7 @@ impl ScalePass {
     pub(super) fn new(
         intermediate: &TransformIntermediate,
         pipeline: &ScalePassPipeline,
-        transform: &yserver_core::randr::CrtcTransform,
+        transform: &yserver_protocol::x11::randr::transform::CrtcTransform,
         footprint: (i32, i32, u32, u32),
         root: (u32, u32),
     ) -> Self {

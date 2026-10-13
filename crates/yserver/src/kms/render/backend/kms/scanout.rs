@@ -1708,7 +1708,8 @@ impl KmsBackend {
         &mut self,
         _state: &mut ServerState,
     ) {
-        let completions = self.platform.drain_scanout_render_completions();
+        let completions =
+            crate::kms::render::scene::OutputSink::drain_render_completions(&mut self.platform);
         if !self.scanout_allowed() {
             // Draining avoids a readable aggregator spinning the core loop.
             // The suspend/topology lifecycle subsequently waits A, cancels
@@ -2138,11 +2139,17 @@ impl KmsBackend {
             Ok(())
         } else {
             let cow_host_xid = self.cow_host_xid();
-            match self.scene.tick(
+            let outputs = self.platform.scene_output_layouts();
+            let input = crate::kms::render::backend::scene_input(
                 &self.core,
+                &self.windows,
+                &outputs,
+                self.platform.fb_dimensions(),
+            );
+            match self.scene.tick(
+                &input,
                 &mut self.store,
                 &mut self.platform,
-                &self.windows,
                 &mut self.telemetry,
                 cow_host_xid,
             ) {

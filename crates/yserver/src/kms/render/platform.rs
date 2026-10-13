@@ -3,8 +3,8 @@
 //! It owns the DRM devices and KMS outputs, libinput and the per-output
 //! scanout BO pools, plus `gpu`: the [`GpuCore`] holding the Vulkan device,
 //! the ops command pool, the recyclable fence pool and the submit group.
-//! Sync is two objects: [`FenceTicket`] for CPU-side resource lifetime
-//! (I6a) and each `ScanoutBo`'s long-lived export semaphore for the KMS
+//! Sync is two objects: [`FenceTicket`](crate::kms::render::gpu::FenceTicket)
+//! for CPU-side resource lifetime (I6a) and each `ScanoutBo`'s long-lived export semaphore for the KMS
 //! `IN_FENCE_FD` wait. This file holds the imports, every type and const
 //! (private fields stay visible to all children); the code lives in:
 //!
@@ -14,6 +14,7 @@
 //! - `cursor`: cursor-plane failure policy and `KmsCursorState`.
 //! - `flip_events`: DRM events, page flips, render completions.
 //! - `scanout_bos`: scanout BO lifecycle and copied submits.
+//! - `scene_sink`: the scene's `OutputSink` and `CursorPlaneSink`.
 //! - `connectors`: probe, enable/disable/remove, snapshot, layout.
 //! - `power`: bounded idle wait, `disable_output`, DPMS.
 //! - `tests`: unit tests.
@@ -31,6 +32,7 @@ mod init;
 mod power;
 mod qualify;
 mod scanout_bos;
+mod scene_sink;
 
 #[cfg(test)]
 use connectors::*;
@@ -66,12 +68,12 @@ use crate::{
 };
 
 pub(crate) use crate::kms::{
-    render::gpu::{FencePool, FenceTicket, GpuCore},
+    render::gpu::{FencePool, GpuCore},
     scanout_route::RenderDeviceId,
 };
 
 // ────────────────────────────────────────────────────────────────
-// BoGenerationEntry / ScanoutBoToken / PageFlipRetirement —
+// BoGenerationEntry —
 // I6b retirement signal infra augmenting ScanoutBoPool's BoState.
 // ────────────────────────────────────────────────────────────────
 
@@ -89,30 +91,6 @@ pub(crate) struct BoGenerationEntry {
     /// contents became indeterminate. Cleared on next
     /// successful present.
     pub(crate) content_invalidated: bool,
-}
-
-/// Handle returned by `acquire_scanout_bo`. Carries the
-/// information the SceneCompositor needs to drive the
-/// buffer-age algorithm without poking at `ScanoutBoPool`
-/// internals.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ScanoutBoToken {
-    pub(crate) output_idx: usize,
-    pub(crate) bo_idx: usize,
-    pub(crate) extent: vk::Extent2D,
-    pub(crate) last_present_generation: Option<u64>,
-    pub(crate) content_invalidated: bool,
-}
-
-/// Returned by `on_page_flip_complete`. Identifies the BO that
-/// just retired (releasable for reuse on next acquire) and the
-/// BO that just went on-screen (caller advances its
-/// `last_present_generation`).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PageFlipRetirement {
-    pub(crate) retired_bo_idx: Option<usize>,
-    pub(crate) presented_bo_idx: usize,
-    pub(crate) generation: u64,
 }
 
 // ────────────────────────────────────────────────────────────────
