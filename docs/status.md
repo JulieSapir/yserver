@@ -33,6 +33,12 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-13 server-reset test race:** `an_old_setup_completion_cannot_create_a_client_in_the_new_generation`
+  wrote its GetInputFocus after sending the stale completion; when the core
+  had already discarded it (dropping the socket) the write failed with EPIPE.
+  The request is now queued first. Reproduced with a 100 ms delay after the
+  send; a disabled generation filter still fails the test.
+
 - **2026-10-13 FreeBSD setup documentation:** replace GhostBSD development
   packages with FreeBSD's base-system bzip2/zlib, list graphics/input build
   dependencies explicitly, and document the separate Vulkan/kernel drivers.

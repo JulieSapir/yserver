@@ -478,6 +478,10 @@ fn an_old_setup_completion_cannot_create_a_client_in_the_new_generation() {
     });
 
     let (core_side, mut phantom) = UnixStream::pair().expect("socketpair");
+    // Queue the request before the completion: a rejected completion
+    // drops `core_side`, and a write after that fails with EPIPE.
+    // Accepted, its reader would find this request and answer it.
+    phantom.write_all(&[43, 0, 1, 0]).expect("GetInputFocus");
     stale
         .send(Message::ClientSetupComplete {
             id: doomed,
@@ -492,9 +496,6 @@ fn an_old_setup_completion_cannot_create_a_client_in_the_new_generation() {
         })
         .expect("send the stale completion");
 
-    // Accepted, this would insert a `ClientState` and spawn a reader,
-    // and the request below would come back answered.
-    phantom.write_all(&[43, 0, 1, 0]).expect("GetInputFocus");
     assert!(
         stays_quiet(&mut phantom),
         "a client authorized in the destroyed session must not be served by the new one"
