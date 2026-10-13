@@ -456,41 +456,51 @@ fn x_resource_query_client_ids_reports_xid_and_pid_identities() {
         None,
     )
     .expect("QueryClientIds PID-only");
-    // A PID-only spec suppresses the XID identity and yields one
+    // On Linux, a PID-only spec suppresses the XID identity and yields one
     // LocalClientPID entry per client. Sizes derived from Xorg's encoder
     // (Xext/xres.c `ConstructClientIdValue`): a pid entry is the 12-byte
     // header plus one value word, `rep.length = 4` counted in BYTES, and
     // `num_ids` counts ENTRIES. Two clients => 2*16 = 32 body bytes, so
     // reply length = 32/4 = 8 and the whole reply is 64 bytes.
     let pids = read_all_available(&mut peer);
-    assert_eq!(pids.len(), 64);
-    assert_eq!(u32::from_le_bytes(pids[4..8].try_into().unwrap()), 8);
-    assert_eq!(u32::from_le_bytes(pids[8..12].try_into().unwrap()), 2);
-    // Both test clients are socketpairs owned by this process, so
-    // SO_PEERCRED reports our own pid for each.
-    let self_pid = std::process::id();
-    for (i, base) in [0x0040_0000u32, 0x0080_0000].into_iter().enumerate() {
-        let at = 32 + i * 16;
-        assert_eq!(
-            u32::from_le_bytes(pids[at..at + 4].try_into().unwrap()),
-            base,
-            "entry {i} client",
-        );
-        assert_eq!(
-            u32::from_le_bytes(pids[at + 4..at + 8].try_into().unwrap()),
-            x11xres::LOCAL_CLIENT_PID_MASK,
-            "entry {i} mask",
-        );
-        assert_eq!(
-            u32::from_le_bytes(pids[at + 8..at + 12].try_into().unwrap()),
-            4,
-            "entry {i} length is in bytes",
-        );
-        assert_eq!(
-            u32::from_le_bytes(pids[at + 12..at + 16].try_into().unwrap()),
-            self_pid,
-            "entry {i} pid",
-        );
+    #[cfg(not(target_os = "linux"))]
+    {
+        // The current non-Linux implementation omits PID identities.
+        assert_eq!(pids.len(), 32);
+        assert_eq!(u32::from_le_bytes(pids[4..8].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(pids[8..12].try_into().unwrap()), 0);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(pids.len(), 64);
+        assert_eq!(u32::from_le_bytes(pids[4..8].try_into().unwrap()), 8);
+        assert_eq!(u32::from_le_bytes(pids[8..12].try_into().unwrap()), 2);
+        // Both test clients are socketpairs owned by this process, so
+        // SO_PEERCRED reports our own pid for each.
+        let self_pid = std::process::id();
+        for (i, base) in [0x0040_0000u32, 0x0080_0000].into_iter().enumerate() {
+            let at = 32 + i * 16;
+            assert_eq!(
+                u32::from_le_bytes(pids[at..at + 4].try_into().unwrap()),
+                base,
+                "entry {i} client",
+            );
+            assert_eq!(
+                u32::from_le_bytes(pids[at + 4..at + 8].try_into().unwrap()),
+                x11xres::LOCAL_CLIENT_PID_MASK,
+                "entry {i} mask",
+            );
+            assert_eq!(
+                u32::from_le_bytes(pids[at + 8..at + 12].try_into().unwrap()),
+                4,
+                "entry {i} length is in bytes",
+            );
+            assert_eq!(
+                u32::from_le_bytes(pids[at + 12..at + 16].try_into().unwrap()),
+                self_pid,
+                "entry {i} pid",
+            );
+        }
     }
 }
 

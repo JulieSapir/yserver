@@ -10,7 +10,8 @@ use crate::{
 #[test]
 fn get_image_of_a_redirected_window_off_the_screen_reads_its_backing() {
     let mut state = ServerState::new();
-    let mut peer = install_client(&mut state, 1);
+    // The image reply can exceed a Unix socket's buffer before this test reads it.
+    let mut peer = install_capture_client(&mut state, 1);
     let mut backend = RecordingBackend::new();
     let window = ResourceId(0x1100);
     state.resources.create_window(

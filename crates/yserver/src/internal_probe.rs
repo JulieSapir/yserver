@@ -1409,7 +1409,7 @@ mod tests {
     #[test]
     fn supervisor_classifies_post_spawn_exchange_failure_as_uncertain() {
         let supervisor = ProbeHelperSupervisor {
-            executable: PathBuf::from("/bin/true"),
+            executable: PathBuf::from("/usr/bin/true"),
             watchdog: Duration::from_secs(1),
         };
         let kms = File::open("/dev/null").expect("open inert KMS fixture");
@@ -1417,10 +1417,10 @@ mod tests {
             .run(kms.as_fd(), request(22, true))
             .expect_err("non-helper child must fail its protocol exchange");
 
-        assert!(matches!(
-            &error,
-            ProbeHelperRunError::ChildStartedUncertain(_)
-        ));
+        assert!(
+            matches!(&error, ProbeHelperRunError::ChildStartedUncertain(_)),
+            "expected post-spawn exchange failure, got {error:?}"
+        );
         assert!(matches!(
             error.kind(),
             io::ErrorKind::BrokenPipe
@@ -1433,7 +1433,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     #[test]
     fn pdeathsig_parent_race_check_rejects_a_stale_parent() {
-        let mut command = Command::new("/bin/true");
+        let mut command = Command::new("/usr/bin/true");
         // SAFETY: the production helper performs only the documented prctl and
         // getppid syscalls; -1 cannot equal a real parent PID.
         unsafe {

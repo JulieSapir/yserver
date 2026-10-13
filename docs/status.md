@@ -33,6 +33,19 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-13 X-Resource test portability:** retain the Linux PID identity
+  assertions and check an empty PID identity reply on non-Linux targets,
+  matching the current implementation. XID identities remain tested everywhere.
+
+- **2026-10-13 FreeBSD GetImage test hang:** use the capture transport for
+  the redirected off-screen window test. Its 120 KB reply could fill the
+  blocking Unix socket before the test began reading it.
+
+- **2026-10-13 FreeBSD probe test portability:** use `/usr/bin/true` in
+  supervisor fixtures; `/bin/true` is absent on FreeBSD and caused the
+  post-spawn exchange test to fail before spawning. Assertion failures now
+  include the actual supervisor error.
+
 - **2026-10-12 explicit imports (branch `refactor/explicit-imports`):** the
   121 non-test `use super::*` globs from the phase-1/2 splits and the
   dispatcher roots' private downward globs are explicit `crate::` imports;
