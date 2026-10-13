@@ -33,6 +33,10 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-13 FreeBSD setup documentation:** replace GhostBSD development
+  packages with FreeBSD's base-system bzip2/zlib, list graphics/input build
+  dependencies explicitly, and document the separate Vulkan/kernel drivers.
+
 - **2026-10-13 X-Resource test portability:** retain the Linux PID identity
   assertions and check an empty PID identity reply on non-Linux targets,
   matching the current implementation. XID identities remain tested everywhere.

@@ -51,9 +51,22 @@ apk add gcc musl-dev fontconfig-dev freetype-dev libxshmfence-dev libxkbcommon-d
 
 ### FreeBSD
 
+Run as root:
+
 ```sh
-doas pkg install -y shaderc fontconfig libudev-devd scdoc GhostBSD-bzip2-dev GhostBSD-zlib-dev
+pkg install just pkgconf shaderc fontconfig freetype2 libudev-devd libinput \
+  libxkbcommon libxshmfence libdrm mesa-libs vulkan-loader scdoc
 ```
+
+Install a recent stable Rust toolchain too (`pkg install rust` provides the
+FreeBSD-packaged toolchain).
+
+For Intel or AMD GPUs, install `mesa-dri` for the Vulkan driver and
+`drm-kmod` for the kernel driver, then configure the appropriate kernel
+module as described in the
+[FreeBSD graphics guide](https://docs.freebsd.org/en/books/handbook/x11/).
+`mesa-libs` alone does not provide the Vulkan GPU driver. Use the appropriate
+NVIDIA driver packages for NVIDIA hardware instead.
 
 Then build and install:
 
