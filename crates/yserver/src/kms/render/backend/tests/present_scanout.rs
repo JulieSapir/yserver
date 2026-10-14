@@ -2763,7 +2763,8 @@ fn cursor_einval_rolls_back_and_hide_recovery_is_motion_driven_and_bounded() {
     assert_atomic_cursor_quiescent(&recovered_backend);
 
     // Three failed motion-led retries permanently disable the cursor. Later
-    // motion must not issue a fourth legacy hide or restore an atomic field.
+    // motion must not issue a fifth legacy hide or restore an atomic field, but
+    // an explicit hide must still detach the plane those failures left bound.
     let Some(mut disabled_backend) = atomic_cursor_scanout_backend() else {
         return;
     };
@@ -2786,6 +2787,7 @@ fn cursor_einval_rolls_back_and_hide_recovery_is_motion_driven_and_bounded() {
         super::TestCursorHideResult::Error(libc::EIO),
         super::TestCursorHideResult::Error(libc::EIO),
         super::TestCursorHideResult::Error(libc::EIO),
+        super::TestCursorHideResult::Ok,
     ]);
     super::install_recording_cursor_hide_executor(&mut disabled_backend, 0, hide.clone());
     recorder.script_result(Err(io::Error::from_raw_os_error(libc::EINVAL)));
@@ -2837,6 +2839,12 @@ fn cursor_einval_rolls_back_and_hide_recovery_is_motion_driven_and_bounded() {
             .platform
             .for_tests_atomic_cursor_commit_is_in_flight(position.device_key, position.crtc)
     );
+    disabled_backend
+        .platform
+        .cursor_plane_hide_on_crtc(0)
+        .expect("hide the plane the failed retries left bound");
+    assert_eq!(hide.calls(), vec![position.crtc; 5]);
+    assert!(!disabled_backend.platform.cursor_plane_visible_for_output(0));
 }
 
 #[test]

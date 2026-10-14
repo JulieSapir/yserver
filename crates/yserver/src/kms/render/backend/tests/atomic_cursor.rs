@@ -840,3 +840,54 @@ fn direct_scanout_probe_tests_the_request_it_commits() {
     assert_eq!(records[0].properties, records[1].properties);
     assert_cursor_properties(&records[0], position);
 }
+
+#[test]
+// Mutation: return Ok from a hide on a permanently disabled device without
+// issuing it. The scene would then draw the SW cursor beside a stuck HW one.
+fn permanently_disabled_cursor_still_hides_a_plane_left_visible() {
+    let mut backend = KmsBackend::for_tests();
+    let position = seed_cursor_position(&mut backend);
+    let hide = Rc::new(super::RecordingCursorHideExecutor::default());
+    hide.script([
+        super::TestCursorHideResult::Error(libc::EIO),
+        super::TestCursorHideResult::Error(libc::EIO),
+        super::TestCursorHideResult::Error(libc::EIO),
+        super::TestCursorHideResult::Error(libc::EIO),
+        super::TestCursorHideResult::Error(libc::EIO),
+        super::TestCursorHideResult::Ok,
+    ]);
+    super::install_recording_cursor_hide_executor(&mut backend, 0, hide.clone());
+    backend
+        .platform
+        .reject_atomic_cursor_commit(&[position], "Invalid argument");
+    for x in [101, 102, 103] {
+        backend
+            .platform
+            .cursor_plane_move(x, 100, 0, 0)
+            .expect("motion-led hide retry");
+    }
+    assert!(
+        backend
+            .platform
+            .for_tests_cursor_permanently_disabled(position.device_key)
+    );
+    assert_eq!(hide.calls(), vec![position.crtc; 4]);
+    assert!(backend.platform.cursor_plane_visible_for_output(0));
+
+    assert!(backend.platform.cursor_plane_hide_on_crtc(0).is_err());
+    assert_eq!(hide.calls(), vec![position.crtc; 5]);
+    assert!(backend.platform.cursor_plane_visible_for_output(0));
+
+    backend
+        .platform
+        .cursor_plane_hide_all()
+        .expect("global hide");
+    assert_eq!(hide.calls(), vec![position.crtc; 6]);
+    assert!(!backend.platform.cursor_plane_visible_for_output(0));
+
+    backend
+        .platform
+        .cursor_plane_hide_on_crtc(0)
+        .expect("nothing left to detach");
+    assert_eq!(hide.calls(), vec![position.crtc; 6]);
+}

@@ -1294,7 +1294,10 @@ impl PlatformBackend {
     /// unavailable; `set_cursor2` ioctl failure otherwise.
     pub(crate) fn cursor_plane_hide_on_crtc(&mut self, output_idx: usize) -> io::Result<()> {
         let (device_idx, crtc, _, _) = self.cursor_output_route(output_idx)?;
-        if self.devices[device_idx].cursor.permanently_disabled {
+        // A disabled device still owns a plane its failed hides left bound.
+        if self.devices[device_idx].cursor.permanently_disabled
+            && !self.cursor_plane_visible_for_output(output_idx)
+        {
             return Ok(());
         }
         let result = {
@@ -1489,10 +1492,6 @@ impl PlatformBackend {
                 continue;
             };
             found = true;
-            if permanently_disabled {
-                plane.invalidate_uploaded_version();
-                continue;
-            }
             let mut crtcs: Vec<_> = outputs
                 .iter()
                 .filter(|(key, _)| *key == device.key)
@@ -1502,6 +1501,9 @@ impl PlatformBackend {
                 if !crtcs.contains(&crtc) {
                     crtcs.push(crtc);
                 }
+            }
+            if permanently_disabled {
+                crtcs.retain(|crtc| plane.is_visible_on(*crtc));
             }
             for crtc in crtcs {
                 if let Err(error) = plane.hide(crtc) {
