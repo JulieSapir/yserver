@@ -196,14 +196,13 @@ pub struct CursorPlane {
     /// init / VT-leave / full modeset (forces the next show to
     /// re-upload).
     uploaded_version: Option<u64>,
-    /// Compatibility masks for explicitly exposed universal cursor planes.
-    /// `None` means the driver exposed no cursor planes, so the legacy cursor
-    /// ioctls remain an optimistic runtime probe. When present, every active
-    /// CRTC needs a distinct compatible plane: a single universal plane cannot
-    /// simultaneously display a cursor on two CRTCs.
-    explicit_plane_crtcs: Option<Vec<HashSet<crtc::Handle>>>,
-    /// Atomic position property discovery, keyed by the compatible CRTC.
-    /// This is topology discovery data and must survive `retain_crtcs`.
+    /// CRTC to cursor-plane assignment over the device's explicitly exposed
+    /// universal cursor planes; no plane serves two CRTCs. `None` means the
+    /// driver exposed no cursor planes, so the legacy cursor ioctls remain an
+    /// optimistic runtime probe. A CRTC without an entry has no cursor plane.
+    explicit_plane_assignment: Option<HashMap<crtc::Handle, plane::Handle>>,
+    /// Atomic position properties of each CRTC's assigned plane. This is
+    /// topology discovery data and must survive `retain_crtcs`.
     atomic_positions: HashMap<crtc::Handle, (plane::Handle, property::Handle, property::Handle)>,
     /// In-memory storage for the ioctl-free test factory. Production cursor
     /// planes own an mmap through `dumb`; tests need a safe buffer to exercise
@@ -212,51 +211,67 @@ pub struct CursorPlane {
     _test_backing: Option<Box<[u8]>>,
 }
 
-/// Whether distinct cursor planes can be assigned to every required CRTC.
-/// Union coverage is insufficient because one plane object can only be active
-/// on one CRTC at a time even if its `possible_crtcs` mask names several.
-fn cursor_planes_cover_crtcs(
-    required_crtcs: &[crtc::Handle],
-    plane_crtcs: &[HashSet<crtc::Handle>],
-) -> bool {
-    let mut required = required_crtcs.to_vec();
-    required.sort_by_key(|handle| u32::from(*handle));
-    required.dedup();
-    required.sort_by_key(|handle| {
-        plane_crtcs
-            .iter()
-            .filter(|possible| possible.contains(handle))
-            .count()
-    });
-
-    fn assign(
-        required: &[crtc::Handle],
-        plane_crtcs: &[HashSet<crtc::Handle>],
-        used: &mut [bool],
-        index: usize,
-    ) -> bool {
-        if index == required.len() {
-            return true;
+/// Assign each CRTC at most one cursor plane and each plane to at most one
+/// CRTC, like wlroots: a plane whose `possible_crtcs` is exactly one CRTC goes
+/// to that CRTC (the kernel's legacy cursor plane on per-CRTC-cursor drivers),
+/// then remaining shared planes go greedily to unassigned CRTCs in device order.
+fn assign_cursor_planes(
+    crtcs: &[crtc::Handle],
+    planes: &[DiscoveredCursorPlane],
+) -> HashMap<crtc::Handle, usize> {
+    let mut assignment = HashMap::new();
+    let mut used = vec![false; planes.len()];
+    for (index, plane) in planes.iter().enumerate() {
+        if plane.crtcs.len() == 1
+            && let Some(crtc) = plane.crtcs.iter().next()
+            && crtcs.contains(crtc)
+            && !assignment.contains_key(crtc)
+        {
+            assignment.insert(*crtc, index);
+            used[index] = true;
         }
-        for (plane_index, possible) in plane_crtcs.iter().enumerate() {
-            if used[plane_index] || !possible.contains(&required[index]) {
-                continue;
-            }
-            used[plane_index] = true;
-            if assign(required, plane_crtcs, used, index + 1) {
-                return true;
-            }
-            used[plane_index] = false;
-        }
-        false
     }
+    for crtc in crtcs {
+        if assignment.contains_key(crtc) {
+            continue;
+        }
+        if let Some(index) =
+            (0..planes.len()).find(|&index| !used[index] && planes[index].crtcs.contains(crtc))
+        {
+            assignment.insert(*crtc, index);
+            used[index] = true;
+        }
+    }
+    assignment
+}
 
-    assign(
-        &required,
-        plane_crtcs,
-        &mut vec![false; plane_crtcs.len()],
-        0,
-    )
+/// Explicit plane assignment and the atomic position properties of each
+/// assigned plane. Drivers exposing no cursor planes get no assignment.
+type CursorPlaneTopology = (
+    Option<HashMap<crtc::Handle, plane::Handle>>,
+    HashMap<crtc::Handle, (plane::Handle, property::Handle, property::Handle)>,
+);
+
+fn cursor_plane_topology(
+    crtcs: &[crtc::Handle],
+    planes: &[DiscoveredCursorPlane],
+) -> CursorPlaneTopology {
+    if planes.is_empty() {
+        return (None, HashMap::new());
+    }
+    let assignment = assign_cursor_planes(crtcs, planes);
+    let atomic_positions = assignment
+        .iter()
+        .filter_map(|(crtc, index)| {
+            let plane = &planes[*index];
+            Some((*crtc, (plane.handle, plane.crtc_x?, plane.crtc_y?)))
+        })
+        .collect();
+    let assignment = assignment
+        .into_iter()
+        .map(|(crtc, index)| (crtc, planes[index].handle))
+        .collect();
+    (Some(assignment), atomic_positions)
 }
 
 struct DiscoveredCursorPlane {
@@ -266,7 +281,9 @@ struct DiscoveredCursorPlane {
     crtc_y: Option<property::Handle>,
 }
 
-fn discover_cursor_plane_crtcs(device: &Device) -> io::Result<Vec<DiscoveredCursorPlane>> {
+fn discover_cursor_plane_crtcs(
+    device: &Device,
+) -> io::Result<(Vec<crtc::Handle>, Vec<DiscoveredCursorPlane>)> {
     let resources = device.resource_handles()?;
     let mut cursor_planes = Vec::new();
     for handle in device.plane_handles()? {
@@ -294,7 +311,7 @@ fn discover_cursor_plane_crtcs(device: &Device) -> io::Result<Vec<DiscoveredCurs
             crtc_y: map.get("CRTC_Y").map(|property| property.handle()),
         });
     }
-    Ok(cursor_planes)
+    Ok((resources.crtcs().to_vec(), cursor_planes))
 }
 
 impl CursorPlane {
@@ -306,31 +323,14 @@ impl CursorPlane {
     /// Cursor-plane topology discovery, `create_dumb_buffer`, or
     /// `map_dumb_buffer` ioctl failures.
     pub fn new(device: Rc<Device>, crtcs: &[crtc::Handle]) -> io::Result<Self> {
-        let cursor_planes = discover_cursor_plane_crtcs(&device)?;
-        let explicit_plane_crtcs = if cursor_planes.is_empty() {
+        let (device_crtcs, cursor_planes) = discover_cursor_plane_crtcs(&device)?;
+        if cursor_planes.is_empty() {
             log::debug!(
                 "cursor: no universal cursor planes exposed; assuming legacy cursor ioctl support"
             );
-            None
-        } else {
-            Some(
-                cursor_planes
-                    .iter()
-                    .map(|plane| plane.crtcs.clone())
-                    .collect(),
-            )
-        };
-        let mut atomic_positions = HashMap::new();
-        for cursor_plane in &cursor_planes {
-            let (Some(crtc_x), Some(crtc_y)) = (cursor_plane.crtc_x, cursor_plane.crtc_y) else {
-                continue;
-            };
-            for crtc in &cursor_plane.crtcs {
-                atomic_positions
-                    .entry(*crtc)
-                    .or_insert((cursor_plane.handle, crtc_x, crtc_y));
-            }
         }
+        let (explicit_plane_assignment, atomic_positions) =
+            cursor_plane_topology(&device_crtcs, &cursor_planes);
         // Query the driver's preferred cursor dimensions. amdgpu commonly
         // reports 128×128 or 256×256; i915 typically 64×64. We MUST use
         // the reported size — see [`HW_CURSOR_FALLBACK_W`] for the
@@ -370,14 +370,14 @@ impl CursorPlane {
             height,
             visible: HashMap::new(),
             uploaded_version: None,
-            explicit_plane_crtcs,
+            explicit_plane_assignment,
             atomic_positions,
             #[cfg(test)]
             _test_backing: None,
         };
         if !plane.supports_crtcs(crtcs) {
             log::warn!(
-                "cursor: explicitly exposed planes cannot simultaneously cover all {} active CRTCs",
+                "cursor: no distinct cursor plane is assigned to every one of the {} active CRTCs",
                 crtcs.len()
             );
         }
@@ -407,7 +407,7 @@ impl CursorPlane {
             height,
             visible: HashMap::new(),
             uploaded_version: None,
-            explicit_plane_crtcs: None,
+            explicit_plane_assignment: None,
             atomic_positions: HashMap::new(),
             _test_backing: Some(test_backing),
         }
@@ -437,18 +437,18 @@ impl CursorPlane {
         self.hide_executor = executor;
     }
 
-    /// Whether this device's explicitly exposed cursor planes can cover all
-    /// requested CRTCs simultaneously. Drivers exposing no universal cursor
-    /// planes return true and are probed through legacy ioctls at bind time.
+    /// Whether every requested CRTC has its own assigned cursor plane. Drivers
+    /// exposing no universal cursor planes return true and are probed through
+    /// legacy ioctls at bind time.
     #[must_use]
     pub fn supports_crtcs(&self, crtcs: &[crtc::Handle]) -> bool {
-        self.explicit_plane_crtcs
+        self.explicit_plane_assignment
             .as_ref()
-            .is_none_or(|planes| cursor_planes_cover_crtcs(crtcs, planes))
+            .is_none_or(|assignment| crtcs.iter().all(|crtc| assignment.contains_key(crtc)))
     }
 
-    /// Atomic plane and position properties discovered for `crtc`, if a
-    /// compatible cursor plane exposes both `CRTC_X` and `CRTC_Y`.
+    /// Atomic plane and position properties for `crtc`, if its assigned
+    /// cursor plane exposes both `CRTC_X` and `CRTC_Y`.
     #[allow(dead_code)] // consumed by the scene commit path in Task 2
     #[must_use]
     pub(crate) fn atomic_position_properties(
@@ -732,34 +732,69 @@ mod tests {
         ::drm::control::from_u32(raw).unwrap()
     }
 
-    #[test]
-    fn cursor_plane_coverage_requires_every_crtc() {
-        let a = test_crtc(11);
-        let b = test_crtc(12);
-        let planes = vec![HashSet::from([a])];
+    fn discovered(handle: u32, crtcs: &[crtc::Handle], atomic: bool) -> DiscoveredCursorPlane {
+        DiscoveredCursorPlane {
+            handle: ::drm::control::from_u32(handle).unwrap(),
+            crtcs: crtcs.iter().copied().collect(),
+            crtc_x: atomic.then(|| ::drm::control::from_u32(handle * 10 + 1).unwrap()),
+            crtc_y: atomic.then(|| ::drm::control::from_u32(handle * 10 + 2).unwrap()),
+        }
+    }
 
-        assert!(cursor_planes_cover_crtcs(&[a], &planes));
-        assert!(!cursor_planes_cover_crtcs(&[a, b], &planes));
+    fn assigned_plane(topology: &CursorPlaneTopology, crtc: crtc::Handle) -> Option<plane::Handle> {
+        topology.0.as_ref().and_then(|map| map.get(&crtc).copied())
     }
 
     #[test]
-    fn cursor_plane_coverage_requires_distinct_simultaneous_planes() {
+    // Mutation: pick the first compatible plane per CRTC independently. The
+    // shared plane 21 would then serve both CRTCs, and CRTC a would not use
+    // its own exclusive plane 22 (the kernel's legacy cursor plane for a).
+    fn cursor_planes_prefer_exclusive_and_never_serve_two_crtcs() {
         let a = test_crtc(11);
         let b = test_crtc(12);
-        let shared_only = vec![HashSet::from([a, b])];
-        let independently_drivable = vec![HashSet::from([a, b]), HashSet::from([a, b])];
+        let planes = [discovered(21, &[a, b], true), discovered(22, &[a], true)];
+        let topology = cursor_plane_topology(&[a, b], &planes);
 
-        assert!(!cursor_planes_cover_crtcs(&[a, b], &shared_only));
-        assert!(cursor_planes_cover_crtcs(&[a, b], &independently_drivable));
+        assert_eq!(assigned_plane(&topology, a), Some(planes[1].handle));
+        assert_eq!(assigned_plane(&topology, b), Some(planes[0].handle));
+        assert_eq!(topology.1[&a].0, planes[1].handle);
+        assert_eq!(topology.1[&b].0, planes[0].handle);
     }
 
     #[test]
-    fn cursor_plane_coverage_finds_non_greedy_matching() {
+    fn cursor_plane_atomic_positions_come_only_from_the_assigned_plane() {
         let a = test_crtc(11);
         let b = test_crtc(12);
-        let planes = vec![HashSet::from([a, b]), HashSet::from([a])];
+        let planes = [discovered(21, &[a], false), discovered(22, &[a, b], true)];
+        let topology = cursor_plane_topology(&[a, b], &planes);
 
-        assert!(cursor_planes_cover_crtcs(&[a, b], &planes));
+        assert_eq!(assigned_plane(&topology, a), Some(planes[0].handle));
+        assert!(!topology.1.contains_key(&a));
+        assert_eq!(topology.1[&b].0, planes[1].handle);
+    }
+
+    #[test]
+    fn cursor_plane_assignment_leaves_an_uncovered_crtc_unassigned() {
+        let a = test_crtc(11);
+        let b = test_crtc(12);
+        let device = Rc::new(crate::drm::Device::for_tests().expect("test DRM device"));
+        let mut plane = CursorPlane::for_tests_stub(device, 64, 64);
+        let shared_only = [discovered(21, &[a, b], true)];
+        let (assignment, atomic_positions) = cursor_plane_topology(&[a, b], &shared_only);
+        plane.explicit_plane_assignment = assignment;
+        plane.atomic_positions = atomic_positions;
+
+        assert!(plane.supports_crtcs(&[a]));
+        assert!(!plane.supports_crtcs(&[b]));
+        assert!(!plane.supports_crtcs(&[a, b]));
+        assert!(plane.supports_atomic_positions(&[a]));
+        assert!(!plane.supports_atomic_positions(&[b]));
+
+        let independently_drivable = [discovered(21, &[a, b], true), discovered(22, &[a, b], true)];
+        let topology = cursor_plane_topology(&[a, b], &independently_drivable);
+        assert_ne!(assigned_plane(&topology, a), assigned_plane(&topology, b));
+        assert!(assigned_plane(&topology, b).is_some());
+        assert_eq!(cursor_plane_topology(&[a, b], &[]).0, None);
     }
 
     #[test]
