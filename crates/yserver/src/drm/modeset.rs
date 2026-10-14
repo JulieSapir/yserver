@@ -1480,7 +1480,9 @@ pub(crate) fn probe_direct_scanout_test_only(
     modifier: u64,
     offset: u64,
     pitch: u32,
+    atomic_commit_sink: &AtomicCommitSink,
     planes: &[DirectScanoutPlaneState<'_>],
+    cursor_positions: &[CursorPlanePosition],
 ) -> io::Result<DirectScanoutTestResult> {
     if planes.is_empty() {
         return Err(io::Error::other("scanout M1: empty plane transaction"));
@@ -1543,42 +1545,7 @@ pub(crate) fn probe_direct_scanout_test_only(
         }
     };
 
-    let mut request = AtomicModeReq::new();
-    for state in planes {
-        let output = state.output;
-        let src_x = u64::from(state.src_x) << 16;
-        let src_y = u64::from(state.src_y) << 16;
-        let src_w = u64::from(state.src_w) << 16;
-        let src_h = u64::from(state.src_h) << 16;
-        request.add_raw_property(
-            output.plane.into(),
-            output.plane_fb_id_prop,
-            u64::from(u32::from(fb)),
-        );
-        request.add_raw_property(
-            output.plane.into(),
-            output.plane_crtc_id_prop,
-            u64::from(u32::from(output.crtc)),
-        );
-        request.add_raw_property(output.plane.into(), output.plane_src_x_prop, src_x);
-        request.add_raw_property(output.plane.into(), output.plane_src_y_prop, src_y);
-        request.add_raw_property(output.plane.into(), output.plane_src_w_prop, src_w);
-        request.add_raw_property(output.plane.into(), output.plane_src_h_prop, src_h);
-        request.add_raw_property(output.plane.into(), output.plane_crtc_x_prop, 0);
-        request.add_raw_property(output.plane.into(), output.plane_crtc_y_prop, 0);
-        request.add_raw_property(
-            output.plane.into(),
-            output.plane_crtc_w_prop,
-            u64::from(state.src_w),
-        );
-        request.add_raw_property(
-            output.plane.into(),
-            output.plane_crtc_h_prop,
-            u64::from(state.src_h),
-        );
-    }
-
-    match device.atomic_commit(AtomicCommitFlags::TEST_ONLY, request) {
+    match test_direct_scanout(&device, atomic_commit_sink, fb, planes, cursor_positions) {
         Ok(()) => Ok(DirectScanoutTestResult::Accepted(
             DirectScanoutProbeFramebuffer {
                 fb,
@@ -1610,6 +1577,55 @@ pub(crate) fn submit_direct_scanout(
     if planes.is_empty() {
         return Err(io::Error::other("scanout M2: empty plane transaction"));
     }
+    let request = direct_scanout_request(fb, planes, cursor_positions);
+    let events: Vec<_> = planes
+        .iter()
+        .map(|state| AtomicCommitEvent {
+            crtc: state.output.crtc,
+            motion_timestamp: cursor_positions
+                .iter()
+                .find(|position| position.crtc == state.output.crtc)
+                .and_then(|position| position.motion_timestamp),
+        })
+        .collect();
+    atomic_commit_sink.submit(
+        device,
+        AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
+        cursor_commit_kind(cursor_positions),
+        request,
+        &events,
+    )
+}
+
+/// `TEST_ONLY` the exact request `submit_direct_scanout` would commit, cursor
+/// fields included.
+pub(crate) fn test_direct_scanout(
+    device: &Device,
+    atomic_commit_sink: &AtomicCommitSink,
+    fb: framebuffer::Handle,
+    planes: &[DirectScanoutPlaneState<'_>],
+    cursor_positions: &[CursorPlanePosition],
+) -> io::Result<()> {
+    atomic_commit_sink.test_only(
+        device,
+        cursor_commit_kind(cursor_positions),
+        direct_scanout_request(fb, planes, cursor_positions),
+    )
+}
+
+fn cursor_commit_kind(cursor_positions: &[CursorPlanePosition]) -> AtomicCommitKind {
+    if cursor_positions.is_empty() {
+        AtomicCommitKind::Scene
+    } else {
+        AtomicCommitKind::SceneWithCursor
+    }
+}
+
+fn direct_scanout_request(
+    fb: framebuffer::Handle,
+    planes: &[DirectScanoutPlaneState<'_>],
+    cursor_positions: &[CursorPlanePosition],
+) -> AtomicCommitRequest {
     let mut request = AtomicCommitRequest::new();
     for state in planes {
         let output = state.output;
@@ -1659,28 +1675,7 @@ pub(crate) fn submit_direct_scanout(
     for position in cursor_positions {
         request.add_cursor_position(*position);
     }
-    let events: Vec<_> = planes
-        .iter()
-        .map(|state| AtomicCommitEvent {
-            crtc: state.output.crtc,
-            motion_timestamp: cursor_positions
-                .iter()
-                .find(|position| position.crtc == state.output.crtc)
-                .and_then(|position| position.motion_timestamp),
-        })
-        .collect();
-    let kind = if cursor_positions.is_empty() {
-        AtomicCommitKind::Scene
-    } else {
-        AtomicCommitKind::SceneWithCursor
-    };
-    atomic_commit_sink.submit(
-        device,
-        AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
-        kind,
-        request,
-        &events,
-    )
+    request
 }
 
 /// Replace every primary plane in a direct-scanout output set atomically.

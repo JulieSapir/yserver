@@ -95,6 +95,7 @@ impl AtomicPropertyUpdate {
 pub(crate) struct AtomicCommitRequest {
     request: AtomicModeReq,
     properties: Vec<AtomicPropertyUpdate>,
+    cursor_properties: Vec<(RawResourceHandle, property::Handle)>,
 }
 
 #[allow(dead_code)] // request assembly starts in Task 2
@@ -103,6 +104,7 @@ impl AtomicCommitRequest {
         Self {
             request: AtomicModeReq::new(),
             properties: Vec::new(),
+            cursor_properties: Vec::new(),
         }
     }
 
@@ -122,6 +124,10 @@ impl AtomicCommitRequest {
 
     pub(crate) fn add_cursor_position(&mut self, position: CursorPlanePosition) {
         position.add_to(&mut self.request);
+        for property in [position.crtc_x, position.crtc_y] {
+            self.cursor_properties
+                .push((position.plane.into(), property));
+        }
         self.record_property(AtomicPropertyUpdate::new(
             position.plane,
             position.crtc_x,
@@ -146,6 +152,36 @@ impl AtomicCommitRequest {
 
     fn into_request(self) -> AtomicModeReq {
         self.request
+    }
+
+    fn attribution_snapshot(&self) -> CommitAttributionSnapshot {
+        CommitAttributionSnapshot {
+            properties: self.properties.clone(),
+            cursor_properties: self.cursor_properties.clone(),
+        }
+    }
+}
+
+/// Flattened copy of a cursor-carrying scene request, kept so a rejection can
+/// be re-tested with and without the cursor fields.
+struct CommitAttributionSnapshot {
+    properties: Vec<AtomicPropertyUpdate>,
+    cursor_properties: Vec<(RawResourceHandle, property::Handle)>,
+}
+
+impl CommitAttributionSnapshot {
+    fn request(&self, with_cursor: bool) -> AtomicCommitRequest {
+        let mut request = AtomicCommitRequest::new();
+        for update in &self.properties {
+            if with_cursor
+                || !self
+                    .cursor_properties
+                    .contains(&(update.object, update.property))
+            {
+                request.add_raw_property(update.object, update.property, update.value);
+            }
+        }
+        request
     }
 }
 
@@ -189,7 +225,7 @@ impl AtomicCommitExecutor for DrmAtomicCommitExecutor {
 pub(crate) struct AtomicCommitSink {
     executor: Rc<dyn AtomicCommitExecutor>,
     metrics: RefCell<CommitWindow>,
-    last_rejection_carried_cursor: Cell<bool>,
+    last_rejection_was_cursor: Cell<bool>,
 }
 
 impl AtomicCommitSink {
@@ -199,7 +235,7 @@ impl AtomicCommitSink {
         Self {
             executor,
             metrics: RefCell::new(CommitWindow::new(Instant::now())),
-            last_rejection_carried_cursor: Cell::new(false),
+            last_rejection_was_cursor: Cell::new(false),
         }
     }
 
@@ -213,13 +249,19 @@ impl AtomicCommitSink {
         request: AtomicCommitRequest,
         events: &[AtomicCommitEvent],
     ) -> io::Result<()> {
+        let attribution =
+            (kind == AtomicCommitKind::SceneWithCursor).then(|| request.attribution_snapshot());
         let started = Instant::now();
         let result = self
             .executor
             .atomic_commit(device, flags, kind, request, events);
-        self.last_rejection_carried_cursor
-            .set(result.is_err() && kind != AtomicCommitKind::Scene);
         let finished = Instant::now();
+        let cursor_rejected = match (&result, attribution) {
+            (Ok(()), _) => false,
+            (Err(_), None) => kind == AtomicCommitKind::CursorOnly,
+            (Err(error), Some(snapshot)) => self.cursor_caused_rejection(device, error, &snapshot),
+        };
+        self.last_rejection_was_cursor.set(cursor_rejected);
         let elapsed = finished.saturating_duration_since(started);
         self.metrics.borrow_mut().record_commit(
             kind,
@@ -252,6 +294,47 @@ impl AtomicCommitSink {
         }
         self.emit_telemetry_if_due();
         result
+    }
+
+    /// Validate a request with `TEST_ONLY`; nothing is committed, no event is
+    /// requested, and the commit telemetry is untouched.
+    pub(crate) fn test_only(
+        &self,
+        device: &Device,
+        kind: AtomicCommitKind,
+        request: AtomicCommitRequest,
+    ) -> io::Result<()> {
+        self.executor
+            .atomic_commit(device, AtomicCommitFlags::TEST_ONLY, kind, request, &[])
+    }
+
+    /// A failed scene request carrying cursor fields is the cursor's fault only
+    /// if `TEST_ONLY` rejects it as sent and accepts it without those fields.
+    /// EBUSY, or a failure `TEST_ONLY` does not reproduce, is a commit-phase
+    /// error of the scene producer.
+    fn cursor_caused_rejection(
+        &self,
+        device: &Device,
+        error: &io::Error,
+        snapshot: &CommitAttributionSnapshot,
+    ) -> bool {
+        let cursor_rejected = error.raw_os_error() != Some(libc::EBUSY)
+            && self
+                .test_only(
+                    device,
+                    AtomicCommitKind::SceneWithCursor,
+                    snapshot.request(true),
+                )
+                .is_err()
+            && self
+                .test_only(device, AtomicCommitKind::Scene, snapshot.request(false))
+                .is_ok();
+        log::debug!(
+            target: "yserver::kms::render::backend::kms",
+            "atomic scene-with-cursor commit failed ({error}); attributed to {}",
+            if cursor_rejected { "the cursor" } else { "the scene" },
+        );
+        cursor_rejected
     }
 
     /// Record the legacy path's motion-to-return latency. Both telemetry
@@ -307,11 +390,11 @@ impl AtomicCommitSink {
         );
     }
 
-    /// Whether the most recent rejected ioctl belonged to a request carrying
-    /// cursor fields. Callers use this to distinguish an atomic rejection
-    /// from failures while assembling fences or rendering the scene.
+    /// Whether the most recent rejected ioctl was caused by its cursor fields:
+    /// any cursor-only failure, or a scene failure `cursor_caused_rejection`
+    /// pins on the cursor. Other failures leave the cursor state untouched.
     pub(crate) fn take_last_cursor_rejection(&self) -> bool {
-        self.last_rejection_carried_cursor.replace(false)
+        self.last_rejection_was_cursor.replace(false)
     }
 
     #[cfg(test)]

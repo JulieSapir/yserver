@@ -718,3 +718,125 @@ fn cursor_only_ebusy_waits_for_the_next_flip_before_retrying() {
     retire_test_flip(&mut backend, &mut state, 2);
     assert_no_cursor_work(&backend, device_key);
 }
+
+fn has_cursor_property(
+    record: &AtomicCommitRecord,
+    position: crate::drm::atomic::CursorPlanePosition,
+) -> bool {
+    record
+        .properties
+        .iter()
+        .any(|update| update.object == position.plane.into())
+}
+
+#[test]
+// Mutation: blame every failed scene-with-cursor commit on the cursor. A
+// buffer, bandwidth or EBUSY failure must not hide the cursor; only a request
+// TEST_ONLY rejects as sent and accepts without the cursor fields is the cursor's.
+fn scene_commit_failure_blames_the_cursor_only_when_its_fields_cause_it() {
+    use ::drm::control::AtomicCommitFlags;
+
+    let einval = || Err(io::Error::from_raw_os_error(libc::EINVAL));
+    let cases: [(&str, Vec<io::Result<()>>, bool, usize); 4] = [
+        (
+            "cursor fields rejected",
+            vec![einval(), einval(), Ok(())],
+            true,
+            3,
+        ),
+        (
+            "scene rejected",
+            vec![einval(), einval(), einval()],
+            false,
+            3,
+        ),
+        (
+            "commit-phase failure",
+            vec![Err(io::Error::from_raw_os_error(libc::ENOMEM)), Ok(())],
+            false,
+            2,
+        ),
+        (
+            "pending commit",
+            vec![Err(io::Error::from_raw_os_error(libc::EBUSY))],
+            false,
+            1,
+        ),
+    ];
+    for (name, results, cursor_blamed, record_count) in cases {
+        let mut backend = KmsBackend::for_tests();
+        let recorder = recording_sink(&mut backend, 0);
+        let position = seed_cursor_position(&mut backend);
+        for result in results {
+            recorder.script_result(result);
+        }
+        set_scene_fence_properties(&mut backend.platform.outputs[0].output);
+        let mut out_fence = -1;
+        let result = crate::drm::page_flip::submit_scene_flip_with_fences(
+            &backend.platform.devices[0].device,
+            &backend.platform.devices[0].atomic_commit_sink,
+            &backend.platform.outputs[0].output,
+            raw(71),
+            -1,
+            &mut out_fence,
+            &[position],
+        );
+        assert!(result.is_err(), "{name}: the scene commit itself failed");
+        assert_eq!(
+            backend.platform.devices[0]
+                .atomic_commit_sink
+                .take_last_cursor_rejection(),
+            cursor_blamed,
+            "{name}",
+        );
+        let records = recorder.records();
+        assert_eq!(records.len(), record_count, "{name}");
+        assert_eq!(records[0].kind, AtomicCommitKind::SceneWithCursor);
+        if let Some(full) = records.get(1) {
+            assert_eq!(full.flags, AtomicCommitFlags::TEST_ONLY, "{name}");
+            assert_eq!(full.properties, records[0].properties, "{name}");
+        }
+        if let Some(stripped) = records.get(2) {
+            assert_eq!(stripped.flags, AtomicCommitFlags::TEST_ONLY, "{name}");
+            assert!(!has_cursor_property(stripped, position), "{name}");
+            assert_eq!(
+                stripped.properties.len() + 2,
+                records[0].properties.len(),
+                "{name}: only the cursor fields are dropped",
+            );
+        }
+    }
+}
+
+#[test]
+// Mutation: build the M1 TEST_ONLY request without the cursor fields the live
+// direct commit carries. The probe must test exactly what is committed.
+fn direct_scanout_probe_tests_the_request_it_commits() {
+    let mut backend = KmsBackend::for_tests();
+    let recorder = recording_sink(&mut backend, 0);
+    let position = seed_cursor_position(&mut backend);
+    let platform = &backend.platform;
+    let planes = [crate::drm::modeset::DirectScanoutPlaneState {
+        output: &platform.outputs[0].output,
+        src_x: 0,
+        src_y: 0,
+        src_w: u32::from(platform.outputs[0].width),
+        src_h: u32::from(platform.outputs[0].height),
+    }];
+    let device = &platform.devices[0].device;
+    let sink = &platform.devices[0].atomic_commit_sink;
+    crate::drm::modeset::test_direct_scanout(device, sink, raw(91), &planes, &[position])
+        .expect("record M1 probe");
+    crate::drm::modeset::submit_direct_scanout(device, sink, raw(91), &planes, &[position])
+        .expect("record live direct commit");
+
+    let records = recorder.records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records[0].flags,
+        ::drm::control::AtomicCommitFlags::TEST_ONLY
+    );
+    assert_eq!(records[0].kind, records[1].kind);
+    assert_eq!(records[0].properties, records[1].properties);
+    assert_cursor_properties(&records[0], position);
+}

@@ -1256,6 +1256,10 @@ impl KmsBackend {
             self.scanout_m0.m1_probe_reject = self.scanout_m0.m1_probe_reject.saturating_add(1);
             return;
         };
+        let output_indices: Vec<_> = (0..self.platform.outputs.len()).collect();
+        let cursor_positions = self
+            .platform
+            .cursor_plane_atomic_positions_for_outputs(&output_indices);
         let result = crate::drm::modeset::probe_direct_scanout_test_only(
             Rc::clone(&primary.device),
             fd.as_fd(),
@@ -1265,7 +1269,9 @@ impl KmsBackend {
             modifier,
             offset,
             pitch,
+            primary.atomic_commit_sink.as_ref(),
             &plane_states,
+            &cursor_positions,
         );
         match result {
             Ok(crate::drm::modeset::DirectScanoutTestResult::Accepted(framebuffer)) => {
