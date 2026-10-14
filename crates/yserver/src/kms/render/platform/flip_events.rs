@@ -17,6 +17,129 @@ use std::{
 };
 use yserver_core::backend::{BackendFdKind, PresentClockSample, PresentClockSource};
 
+pub(crate) type KernelPageFlip = (::drm::control::crtc::Handle, u32, std::time::Duration);
+pub(crate) type KernelCrtcSequence = (u64, i64, u64);
+
+pub(crate) trait PageFlipEventSource {
+    fn drain_events(
+        &self,
+        device: &crate::drm::Device,
+    ) -> io::Result<(Vec<KernelPageFlip>, Vec<KernelCrtcSequence>)>;
+
+    /// Drain only when the source has ready events. The production source
+    /// performs a zero-time poll first; a recording source reports queued
+    /// test events directly so old-event discard remains deterministic.
+    fn drain_ready_events(
+        &self,
+        device: &crate::drm::Device,
+    ) -> io::Result<Option<(Vec<KernelPageFlip>, Vec<KernelCrtcSequence>)>>;
+}
+
+pub(crate) struct DrmPageFlipEventSource;
+
+impl PageFlipEventSource for DrmPageFlipEventSource {
+    fn drain_events(
+        &self,
+        device: &crate::drm::Device,
+    ) -> io::Result<(Vec<KernelPageFlip>, Vec<KernelCrtcSequence>)> {
+        let mut flips = Vec::new();
+        let mut sequences = Vec::new();
+        crate::drm::page_flip::drain_events(
+            device,
+            |crtc, frame, duration| flips.push((crtc, frame, duration)),
+            |user_data, time_ns, sequence| sequences.push((user_data, time_ns, sequence)),
+        )?;
+        Ok((flips, sequences))
+    }
+
+    fn drain_ready_events(
+        &self,
+        device: &crate::drm::Device,
+    ) -> io::Result<Option<(Vec<KernelPageFlip>, Vec<KernelCrtcSequence>)>> {
+        let mut poll_fd = libc::pollfd {
+            fd: device.as_fd().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `poll_fd` is one initialized record for the duration of
+        // this zero-time readiness check.
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, 0) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        let error_events = libc::POLLERR | libc::POLLHUP | libc::POLLNVAL;
+        if poll_fd.revents & error_events != 0 {
+            return Err(io::Error::other(format!(
+                "DRM fd {} reported poll error flags 0x{:x} while draining old events",
+                poll_fd.fd, poll_fd.revents
+            )));
+        }
+        if ready == 0 || poll_fd.revents & libc::POLLIN == 0 {
+            return Ok(None);
+        }
+        self.drain_events(device).map(Some)
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RecordingPageFlipEventSource {
+    flips: std::cell::RefCell<std::collections::VecDeque<KernelPageFlip>>,
+    sequences: std::cell::RefCell<std::collections::VecDeque<KernelCrtcSequence>>,
+    delayed_ready_checks: std::cell::Cell<usize>,
+}
+
+#[cfg(test)]
+impl RecordingPageFlipEventSource {
+    pub(crate) fn queue_flip(&self, crtc: ::drm::control::crtc::Handle, frame: u32) {
+        self.flips
+            .borrow_mut()
+            .push_back((crtc, frame, std::time::Duration::ZERO));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delay_next_ready_checks(&self, count: usize) {
+        self.delayed_ready_checks.set(count);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued_flip_count(&self) -> usize {
+        self.flips.borrow().len()
+    }
+}
+
+#[cfg(test)]
+impl PageFlipEventSource for RecordingPageFlipEventSource {
+    fn drain_events(
+        &self,
+        _device: &crate::drm::Device,
+    ) -> io::Result<(Vec<KernelPageFlip>, Vec<KernelCrtcSequence>)> {
+        Ok((
+            self.flips.borrow_mut().drain(..).collect(),
+            self.sequences.borrow_mut().drain(..).collect(),
+        ))
+    }
+
+    fn drain_ready_events(
+        &self,
+        device: &crate::drm::Device,
+    ) -> io::Result<Option<(Vec<KernelPageFlip>, Vec<KernelCrtcSequence>)>> {
+        let delay = self.delayed_ready_checks.get();
+        if delay > 0 {
+            self.delayed_ready_checks.set(delay - 1);
+            return Ok(None);
+        }
+        if self.flips.borrow().is_empty() && self.sequences.borrow().is_empty() {
+            return Ok(None);
+        }
+        self.drain_events(device).map(Some)
+    }
+}
+
 impl PlatformBackend {
     pub(super) fn prune_present_clocks_to_live_outputs(&mut self) {
         let live: HashSet<CrtcKey> = self.outputs.iter().map(CrtcKey::for_output).collect();
@@ -176,6 +299,22 @@ impl PlatformBackend {
         let deadline = std::time::Instant::now() + timeout;
 
         loop {
+            let mut drained_any_event = false;
+            for device in &self.devices {
+                let Some((flips, sequences)) = device
+                    .page_flip_event_source
+                    .drain_ready_events(&device.device)?
+                else {
+                    continue;
+                };
+                drained_any_event |= !flips.is_empty() || !sequences.is_empty();
+                for (crtc, _, _) in flips {
+                    expected.remove(&CrtcKey::new(device.key, crtc));
+                }
+            }
+            if expected.is_empty() && !drained_any_event {
+                return Ok(());
+            }
             let wait_ms = if expected.is_empty() {
                 0
             } else {
@@ -241,13 +380,11 @@ impl PlatformBackend {
                     continue;
                 }
                 let device_key = device.key;
-                crate::drm::page_flip::drain_events(
-                    &device.device,
-                    |crtc, _frame, _duration| {
-                        expected.remove(&CrtcKey::new(device_key, crtc));
-                    },
-                    |_user_data, _time_ns, _sequence| {},
-                )?;
+                let (flips, _sequences) =
+                    device.page_flip_event_source.drain_events(&device.device)?;
+                for (crtc, _, _) in flips {
+                    expected.remove(&CrtcKey::new(device_key, crtc));
+                }
             }
         }
     }
@@ -256,8 +393,6 @@ impl PlatformBackend {
         &mut self,
         drm_fd: RawFd,
     ) -> io::Result<DrainedPageFlipEvents> {
-        use ::drm::control::crtc;
-
         let device_index = self.drm_device_index_for_fd(drm_fd).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -266,28 +401,22 @@ impl PlatformBackend {
         })?;
         let device_key = self.devices[device_index].key;
         let device = Rc::clone(&self.devices[device_index].device);
+        let event_source = Rc::clone(&self.devices[device_index].page_flip_event_source);
 
         // Capture the kernel vblank (msc=frame, ust=duration) alongside the
         // CRTC so Present pacing can complete NotifyMSC with real values.
-        let mut flipped: Vec<(crtc::Handle, u32, std::time::Duration)> = Vec::new();
-        let mut sequenced: Vec<SequenceCompletion> = Vec::new();
-        crate::drm::page_flip::drain_events(
-            &device,
-            |c, frame, dur| {
-                flipped.push((c, frame, dur));
-            },
-            |user_data, time_ns, sequence| {
-                // Raw kernel values; validation (time_ns sign, crtc_id
-                // resolution) and tag decode happen in
-                // `on_crtc_sequence_event`.
-                sequenced.push(SequenceCompletion {
-                    device_key,
-                    user_data,
-                    time_ns,
-                    sequence,
-                });
-            },
-        )?;
+        let (flipped, raw_sequences) = event_source.drain_events(&device)?;
+        // Raw kernel values; validation (time_ns sign, crtc_id resolution)
+        // and tag decode happen in `on_crtc_sequence_event`.
+        let sequenced: Vec<SequenceCompletion> = raw_sequences
+            .into_iter()
+            .map(|(user_data, time_ns, sequence)| SequenceCompletion {
+                device_key,
+                user_data,
+                time_ns,
+                sequence,
+            })
+            .collect();
 
         let mut completions = Vec::with_capacity(flipped.len());
         for (crtc, frame, dur) in flipped {

@@ -348,6 +348,37 @@ fn stub_scene_is_not_live_and_declines_tick() {
 }
 
 #[test]
+// Mutation: make `output_commit_in_flight` always false in the scene gates.
+fn scene_submit_gate_waits_for_external_output_commit() {
+    let mut sink = TestSink::new();
+    let now = std::time::Instant::now();
+    assert!(super::super::tick::output_is_ready_for_submit(
+        true,
+        sink.output_commit_in_flight(0),
+        None,
+        now,
+    ));
+
+    sink.set_commit_in_flight(0, true);
+    assert!(sink.output_commit_in_flight(0));
+    assert!(!super::super::tick::output_is_ready_for_submit(
+        true,
+        sink.output_commit_in_flight(0),
+        None,
+        now,
+    ));
+
+    sink.set_commit_in_flight(0, false);
+    assert!(!sink.output_commit_in_flight(0));
+    assert!(super::super::tick::output_is_ready_for_submit(
+        true,
+        sink.output_commit_in_flight(0),
+        None,
+        now,
+    ));
+}
+
+#[test]
 fn mark_scene_structure_dirty_is_idempotent() {
     let mut scene = SceneCompositor::stub();
     scene.scene_structure_dirty = false;

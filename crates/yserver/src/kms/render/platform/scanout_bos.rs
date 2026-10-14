@@ -74,6 +74,11 @@ impl PlatformBackend {
             .device_for_output(&output_key)
             .map(|device| Rc::clone(&device.device))
             .ok_or_else(|| io::Error::other("copied scanout KMS device disappeared"))?;
+        let atomic_commit_sink = self
+            .device_for_output(&output_key)
+            .map(|device| Rc::clone(&device.atomic_commit_sink))
+            .ok_or_else(|| io::Error::other("copied scanout atomic commit sink disappeared"))?;
+        let cursor_positions = self.cursor_plane_atomic_positions_for_outputs(&[output_idx]);
 
         let mut recovery_failed = false;
         let result = (|| {
@@ -120,12 +125,14 @@ impl PlatformBackend {
             let in_fence_fd = copy_completion.map_or(-1, IntoRawFd::into_raw_fd);
             destination.state.transition_to_submitted(in_fence_fd);
             let mut out_fence_fd = -1;
-            match crate::drm::page_flip::submit_flip_with_fences(
+            match crate::drm::page_flip::submit_scene_flip_with_fences(
                 &device,
+                atomic_commit_sink.as_ref(),
                 output,
                 framebuffer,
                 in_fence_fd,
                 &mut out_fence_fd,
+                &cursor_positions,
             ) {
                 Ok(()) => {
                     if let Some(fd) = destination.state.transition_to_pending(out_fence_fd) {
@@ -161,6 +168,17 @@ impl PlatformBackend {
                 }
             }
         })();
+
+        if atomic_commit_sink.take_last_cursor_rejection()
+            && let Err(error) = &result
+        {
+            let rejected = self.reject_atomic_cursor_commit(&cursor_positions, &error.to_string());
+            self.defer_cursor_move_outcome(rejected);
+        }
+
+        if result.is_ok() {
+            self.cursor_plane_scene_commit_submitted(&cursor_positions);
+        }
 
         if recovery_failed
             || result

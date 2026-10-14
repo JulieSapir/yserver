@@ -528,10 +528,40 @@ impl KmsBackend {
                 src_h: u32::from(layout.height),
             })
             .collect();
-        let primary = self.platform.primary_device().ok_or_else(|| {
-            io::Error::other("direct scanout submitted without an opened KMS device")
-        })?;
-        crate::drm::modeset::submit_direct_scanout(&primary.device, fb, &plane_states)?;
+        let (device, atomic_commit_sink) = self
+            .platform
+            .primary_device()
+            .map(|primary| {
+                (
+                    Rc::clone(&primary.device),
+                    Rc::clone(&primary.atomic_commit_sink),
+                )
+            })
+            .ok_or_else(|| {
+                io::Error::other("direct scanout submitted without an opened KMS device")
+            })?;
+        let output_indices: Vec<_> = (0..self.platform.outputs.len()).collect();
+        let cursor_positions = self
+            .platform
+            .cursor_plane_atomic_positions_for_outputs(&output_indices);
+        let result = crate::drm::modeset::submit_direct_scanout(
+            &device,
+            atomic_commit_sink.as_ref(),
+            fb,
+            &plane_states,
+            &cursor_positions,
+        );
+        if let Err(error) = &result
+            && atomic_commit_sink.take_last_cursor_rejection()
+        {
+            let outcome = self
+                .platform
+                .reject_atomic_cursor_commit(&cursor_positions, &error.to_string());
+            self.handle_cursor_move_outcome(outcome);
+        }
+        result?;
+        self.platform
+            .cursor_plane_scene_commit_submitted(&cursor_positions);
         frame.awaiting_outputs = (0..self.platform.outputs.len()).collect();
         Ok(())
     }
@@ -540,7 +570,14 @@ impl KmsBackend {
         // A cursor/overlay/topology invalidation which arrived while the
         // predecessor was in flight wins over the queued Present. Leave the
         // successor retained for the composed-unflip teardown to Skip.
-        if self.scanout_m2.unflip_requested {
+        if self.scanout_m2.unflip_requested || self.scanout_m2.pending.is_some() {
+            return;
+        }
+        let direct_outputs: Vec<_> = (0..self.platform.outputs.len()).collect();
+        if self
+            .platform
+            .cursor_commit_in_flight_for_outputs(&direct_outputs)
+        {
             return;
         }
         let Some(mut successor) = self.scanout_m2.queued_successor.take() else {
@@ -821,7 +858,14 @@ impl KmsBackend {
     /// AMD rejects independent per-CRTC replacement with `ENOSPC`; replacing
     /// the complete set together avoids both that intermediate state and the
     /// visible blackout of a disable/re-enable cycle.
-    fn submit_composed_unflip(&mut self) -> io::Result<()> {
+    fn submit_composed_unflip(&mut self) -> io::Result<bool> {
+        let output_indices: Vec<_> = (0..self.platform.outputs.len()).collect();
+        if self
+            .platform
+            .cursor_commit_in_flight_for_outputs(&output_indices)
+        {
+            return Ok(false);
+        }
         if !self.direct_scanout_topology_eligible() {
             return Err(io::Error::other(
                 "scanout M2: grouped unflip requires one DRM device and homogeneous refresh",
@@ -848,11 +892,41 @@ impl KmsBackend {
                 })
             })
             .collect::<io::Result<_>>()?;
-        let primary = self.platform.primary_device().ok_or_else(|| {
-            io::Error::other("scanout M2: composed unflip requested without a KMS device")
-        })?;
-        crate::drm::modeset::submit_composed_scanout(&primary.device, &planes)?;
-        self.scanout_m2.unflip_awaiting_outputs = (0..planes.len()).collect();
+        let output_count = planes.len();
+        let (device, atomic_commit_sink) = self
+            .platform
+            .primary_device()
+            .map(|primary| {
+                (
+                    Rc::clone(&primary.device),
+                    Rc::clone(&primary.atomic_commit_sink),
+                )
+            })
+            .ok_or_else(|| {
+                io::Error::other("scanout M2: composed unflip requested without a KMS device")
+            })?;
+        let output_indices: Vec<_> = (0..planes.len()).collect();
+        let cursor_positions = self
+            .platform
+            .cursor_plane_atomic_positions_for_outputs(&output_indices);
+        let result = crate::drm::modeset::submit_composed_scanout(
+            &device,
+            atomic_commit_sink.as_ref(),
+            &planes,
+            &cursor_positions,
+        );
+        if let Err(error) = &result
+            && atomic_commit_sink.take_last_cursor_rejection()
+        {
+            let outcome = self
+                .platform
+                .reject_atomic_cursor_commit(&cursor_positions, &error.to_string());
+            self.handle_cursor_move_outcome(outcome);
+        }
+        result?;
+        self.platform
+            .cursor_plane_scene_commit_submitted(&cursor_positions);
+        self.scanout_m2.unflip_awaiting_outputs = (0..output_count).collect();
         let describe_frame = |frame: &DirectPresentFrame| {
             (
                 frame.source_id.as_u64(),
@@ -862,13 +936,13 @@ impl KmsBackend {
         };
         log::debug!(
             "scanout_m2: submitted atomic composed unflip outputs={} reason={} last_reason={} pending={:?} current={:?}",
-            planes.len(),
+            output_count,
             self.scanout_m2.unflip_reason.unwrap_or("unknown"),
             self.scanout_m2.unflip_last_reason.unwrap_or("unknown"),
             self.scanout_m2.pending.as_ref().map(describe_frame),
             self.scanout_m2.current.as_ref().map(describe_frame)
         );
-        Ok(())
+        Ok(true)
     }
 
     pub(in crate::kms::render::backend) fn retire_direct_output(
@@ -1016,6 +1090,7 @@ impl KmsBackend {
                 matches!(
                     self.scene.cursor_mode(),
                     crate::kms::render::scene::CursorPlaneMode::Hw
+                        | crate::kms::render::scene::CursorPlaneMode::Hidden
                 ),
                 self.scene.root_overlay.is_empty(),
                 target,
@@ -1478,7 +1553,11 @@ impl KmsBackend {
         let scanout_allowed = self.scanout_allowed();
         let kms_outputs_active = self.kms_outputs_active;
         let cursor_mode = self.scene.cursor_mode();
-        let cursor_hw = matches!(cursor_mode, crate::kms::render::scene::CursorPlaneMode::Hw);
+        let cursor_hw = matches!(
+            cursor_mode,
+            crate::kms::render::scene::CursorPlaneMode::Hw
+                | crate::kms::render::scene::CursorPlaneMode::Hidden
+        );
         let root_overlay_empty = self.scene.root_overlay.is_empty();
         // Page flipping is off while any CRTC is transformed
         // (modesetting/present.c:266).
@@ -1694,12 +1773,41 @@ impl KmsBackend {
     /// `next_wakeup` never wakes for, the paint would be stranded (the
     /// xfce submenu bug — a menu painted after its map-compose sat
     /// off-screen until an unrelated event poked the loop).
-    pub(super) fn scene_wants_compose(&self) -> bool {
+    pub(super) fn scene_wants_scene(&self) -> bool {
         self.scene.scene_structure_dirty
             || self.store.has_pending_presentation_damage()
             // An invalidated or never-presented frame owes a repaint no producer
             // reports; without this the tick is never driven to paint it.
             || self.scene.owes_repaint()
+    }
+
+    pub(super) fn scene_wants_compose(&self) -> bool {
+        if self.scanout_m2.pending.is_some() || !self.scanout_m2.unflip_awaiting_outputs.is_empty()
+        {
+            // The grouped direct or composed transaction's flip events are
+            // the next progress source; its state will be re-arbitrated there.
+            return false;
+        }
+        let outputs: Vec<_> = (0..self.platform.outputs.len()).collect();
+        let direct_transaction_waiting = self.scanout_m2.pending.is_some()
+            || self.scanout_m2.queued_successor.is_some()
+            || self.scanout_m2.unflip_requested;
+        let unflip_waiting_for_cursor = self.scanout_m2.current.is_some()
+            && self.scanout_m2.unflip_requested
+            && self.platform.cursor_commit_in_flight_for_outputs(&outputs);
+        if unflip_waiting_for_cursor {
+            // The cursor flip event is the next progress source. Re-arming an
+            // immediate scene wake here would spin while the grouped unflip is
+            // correctly waiting for that event.
+            return false;
+        }
+        self.scene_wants_scene()
+            || (!direct_transaction_waiting && self.platform.has_eligible_atomic_cursor_move())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_scene_wants_compose(&self) -> bool {
+        self.scene_wants_compose()
     }
 }
 
@@ -1751,7 +1859,10 @@ impl KmsBackend {
             // state) but STILL run the sequence handler so the armed-target
             // map clears — leaving a stuck entry across suspend is exactly
             // the permanent-stall failure mode this guards against.
-            if let Ok((_flips, sequences)) = self.platform.drain_page_flip_events(drm_fd) {
+            if let Ok((flips, sequences)) = self.platform.drain_page_flip_events(drm_fd) {
+                for (output_idx, _) in flips {
+                    self.record_atomic_cursor_commit_retirement(output_idx);
+                }
                 for seq in sequences {
                     self.on_crtc_sequence_event(
                         seq.device_key,
@@ -1772,6 +1883,7 @@ impl KmsBackend {
             }
         };
         for (output_idx, clock) in flipped {
+            self.record_atomic_cursor_commit_retirement(output_idx);
             let direct_retired = self.retire_direct_output(output_idx, clock);
             let scene_retired = !direct_retired
                 && self.scene.handle_page_flip_complete(
@@ -1828,6 +1940,19 @@ impl KmsBackend {
             crate::kms::render::submit_group::FlushReason::PageflipRetire,
         ) {
             log::warn!("render on_page_flip_ready: flush_submit_group failed: {e:?}");
+        }
+    }
+
+    fn record_atomic_cursor_commit_retirement(&mut self, output_idx: usize) {
+        self.platform
+            .retire_atomic_cursor_commit_for_output(output_idx);
+        let Some(layout) = self.platform.outputs.get(output_idx) else {
+            return;
+        };
+        if let Some(device) = self.platform.device_for_output(&layout.key) {
+            device
+                .atomic_commit_sink
+                .note_cursor_commit_retired(layout.output.crtc, std::time::Instant::now());
         }
     }
 
@@ -1903,7 +2028,7 @@ impl KmsBackend {
         let allow_kms_timers = self.scanout_allowed() && self.kms_outputs_active;
         let scene_deadline = if allow_kms_timers {
             if self.scene_wants_compose() {
-                if self.scene.has_output_ready_for_submit() {
+                if self.scene.has_output_ready_for_submit(&self.platform) {
                     Some(now)
                 } else {
                     self.scene.earliest_retry_deadline()
@@ -2027,18 +2152,22 @@ impl KmsBackend {
         // Animated-cursor frame advance — after both gates above so
         // DPMS-off / VT-away never uploads (spec "DPMS / VT gating").
         self.tick_cursor_animation();
+        // Arbitration step 1: a direct successor retained behind a cursor-only
+        // commit gets the first opportunity once all of its CRTCs are clear.
+        // The helper leaves it in the slot while any CRTC is still blocked.
+        self.submit_queued_direct_successor();
         if self.scanout_m2.active() {
             use crate::kms::render::scene::CursorPlaneMode;
             let cursor_mode = self.scene.cursor_mode();
             if self.platform.any_output_transformed() {
                 self.request_direct_unflip("composite_tick_crtc_transform");
-            } else if !matches!(cursor_mode, CursorPlaneMode::Hw)
+            } else if !matches!(cursor_mode, CursorPlaneMode::Hw | CursorPlaneMode::Hidden)
                 || !self.scene.root_overlay.is_empty()
             {
                 let reason = match cursor_mode {
                     CursorPlaneMode::Mixed => "composite_tick_mixed_cursor",
                     CursorPlaneMode::Sw => "composite_tick_software_or_hidden_cursor",
-                    CursorPlaneMode::Hw => "composite_tick_root_overlay",
+                    CursorPlaneMode::Hw | CursorPlaneMode::Hidden => "composite_tick_root_overlay",
                 };
                 self.request_direct_unflip(reason);
             }
@@ -2047,36 +2176,69 @@ impl KmsBackend {
             // the direct transaction itself has fully retired.
             if self.scanout_m2.pending.is_some()
                 || !self.scanout_m2.unflip_awaiting_outputs.is_empty()
-                || (self.scanout_m2.hold_direct && !self.scanout_m2.unflip_requested)
             {
                 self.drain_render_telemetry();
                 self.telemetry.maybe_emit(self.engine.pending_count());
                 return Ok(());
             }
+            if self.scanout_m2.hold_direct && !self.scanout_m2.unflip_requested {
+                // A fully-retired direct frame may continue receiving cursor
+                // motion. Let the scheduling pass send cursor-only commits
+                // while there is no direct successor waiting; once a
+                // successor is retained, its grouped direct transaction gets
+                // every later position and no CRTC is extended by another
+                // cursor-only commit.
+                if self.scanout_m2.current.is_some() && self.scanout_m2.queued_successor.is_none() {
+                    for output_idx in 0..self.platform.outputs.len() {
+                        match self
+                            .platform
+                            .submit_atomic_cursor_move_for_output(output_idx)
+                        {
+                            Ok(outcome) => self.handle_cursor_move_outcome(outcome),
+                            Err(error) => log::warn!(
+                                "render maybe_composite: cursor-only atomic commit failed for output {output_idx}: {error}"
+                            ),
+                        }
+                    }
+                }
+                self.drain_render_telemetry();
+                self.telemetry.maybe_emit(self.engine.pending_count());
+                return Ok(());
+            }
             if self.scanout_m2.current.is_some() && self.scanout_m2.unflip_requested {
-                if let Err(error) = self.submit_composed_unflip() {
-                    log::error!(
-                        "scanout_m2: synchronized composed unflip failed: {error}; degrading to per-output composed flips"
-                    );
-                    // The atomic transaction never replaced the planes: the
-                    // kernel is still scanning the direct dma-buf, so the
-                    // direct frame's pins must stay held. Arm the composed-flip
-                    // retirement machinery and fall through into the per-output
-                    // scene compose path below — the scene flips replace the
-                    // planes this tick, and `retire_direct_output` releases the
-                    // direct frame only after every output has retired on the
-                    // composed framebuffer.
-                    self.scanout_m2.unflip_awaiting_outputs =
-                        (0..self.platform.outputs.len()).collect();
-                    self.scanout_m2.degraded_composed_unflip = true;
-                    self.scene.mark_scene_structure_dirty();
-                } else {
-                    // The atomic replacement itself is now pending on every
-                    // CRTC. Do not fall through into per-output scene flips in
-                    // this same tick: KMS correctly rejects those with EBUSY.
-                    self.drain_render_telemetry();
-                    self.telemetry.maybe_emit(self.engine.pending_count());
-                    return Ok(());
+                match self.submit_composed_unflip() {
+                    Ok(true) => {
+                        // The atomic replacement itself is now pending on every
+                        // CRTC. Do not fall through into per-output scene flips in
+                        // this same tick: KMS correctly rejects those with EBUSY.
+                        self.drain_render_telemetry();
+                        self.telemetry.maybe_emit(self.engine.pending_count());
+                        return Ok(());
+                    }
+                    Ok(false) => {
+                        // A cursor-only commit still owns one of these CRTCs.
+                        // Keep direct scanout active and retry after retirement.
+                        self.drain_render_telemetry();
+                        self.telemetry.maybe_emit(self.engine.pending_count());
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        log::error!(
+                            "scanout_m2: synchronized composed unflip failed: {error}; degrading to per-output composed flips"
+                        );
+                        // The atomic transaction never replaced the planes: the
+                        // kernel is still scanning the direct dma-buf, so the
+                        // direct frame's pins must stay held. Arm the composed-flip
+                        // retirement machinery and fall through into the per-output
+                        // scene compose path below — the scene flips replace the
+                        // planes this tick, and `retire_direct_output` releases the
+                        // direct frame only after every output has retired on the
+                        // composed framebuffer.
+                        self.scanout_m2.unflip_awaiting_outputs =
+                            (0..self.platform.outputs.len()).collect();
+                        self.scanout_m2.degraded_composed_unflip = true;
+                        self.scene.mark_scene_structure_dirty();
+                    }
                 }
             }
         }
@@ -2086,7 +2248,7 @@ impl KmsBackend {
         // submits) also carries this id.
         self.telemetry.advance_frame();
         let can_submit_scene =
-            self.scene_wants_compose() && self.scene.has_output_ready_for_submit();
+            self.scene_wants_scene() && self.scene.has_output_ready_for_submit(&self.platform);
         // #214 telemetry: did this tick's compose close submit paint, and
         // did the tick then compose anything?
         let mut legacy_close_submitted = false;
@@ -2135,6 +2297,9 @@ impl KmsBackend {
                 log::warn!("render maybe_composite: flush_submit_group failed: {e:?}");
             }
         }
+        // Task 4 inserts ready direct-candidate arbitration here. Direct
+        // Present callbacks keep their existing admission/submission paths.
+        let mut scene_submitted_outputs = HashSet::new();
         let result = if !can_submit_scene {
             Ok(())
         } else {
@@ -2154,6 +2319,7 @@ impl KmsBackend {
                 cow_host_xid,
             ) {
                 Ok(composed_outputs) => {
+                    scene_submitted_outputs.extend(composed_outputs.iter().copied());
                     if legacy_close_submitted {
                         crate::kms::vk::submit_stats::SUBMITS
                             .record_legacy_sc_tick(!composed_outputs.is_empty());
@@ -2194,6 +2360,29 @@ impl KmsBackend {
                 }
             }
         };
+        let cursor_outcome = self.platform.take_deferred_cursor_move_outcome();
+        self.handle_cursor_move_outcome(cursor_outcome);
+        for output_idx in 0..self.platform.outputs.len() {
+            if scene_submitted_outputs.contains(&output_idx)
+                || self.scene.has_pending_page_flip(output_idx)
+                || self.scene.output_submit_retry_pending(output_idx)
+                || (self.scene_wants_scene()
+                    && self
+                        .scene
+                        .output_ready_for_submit(output_idx, &self.platform))
+            {
+                continue;
+            }
+            match self
+                .platform
+                .submit_atomic_cursor_move_for_output(output_idx)
+            {
+                Ok(outcome) => self.handle_cursor_move_outcome(outcome),
+                Err(error) => log::warn!(
+                    "render maybe_composite: cursor-only atomic commit failed for output {output_idx}: {error}"
+                ),
+            }
+        }
         self.drain_paint_submit_telemetry();
         result
     }

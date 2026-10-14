@@ -122,6 +122,9 @@ pub trait OutputSink {
     fn cursor_plane_mut(&mut self) -> &mut dyn CursorPlaneSink;
 
     fn route(&self, output_idx: usize) -> OutputRoute;
+    /// Whether a non-scene KMS commit currently owns this output's CRTC.
+    /// Scene submitters must wait until that commit retires.
+    fn output_commit_in_flight(&self, output_idx: usize) -> bool;
     /// Number of frame slots of the output, `None` without slots.
     fn slot_count(&self, output_idx: usize) -> Option<usize>;
     fn acquire_slot(&mut self, output_idx: usize) -> Option<SlotToken>;

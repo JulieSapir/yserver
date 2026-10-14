@@ -86,16 +86,54 @@ impl SceneCompositor {
     /// commit-retry backoff, flushing paint would create GPU submit
     /// traffic that cannot be scanned out yet and would fragment COW
     /// batching under compositor drag workloads.
-    pub fn has_output_ready_for_submit(&self) -> bool {
+    pub fn has_output_ready_for_submit(&self, sink: &dyn OutputSink) -> bool {
         let Some(inner) = self.inner.as_ref() else {
             return true;
         };
         let now = std::time::Instant::now();
-        inner.outputs.iter().any(|o| {
-            o.pending_acks.is_empty()
-                && o.next_submit_retry_at
-                    .is_none_or(|deadline| now >= deadline)
-        })
+        inner
+            .outputs
+            .iter()
+            .enumerate()
+            .any(|(output_idx, output)| {
+                output_is_ready_for_submit(
+                    !self.has_pending_page_flip(output_idx),
+                    sink.output_commit_in_flight(output_idx),
+                    output.next_submit_retry_at,
+                    now,
+                )
+            })
+    }
+
+    /// Whether one output can accept a scene frame now.
+    pub fn output_ready_for_submit(&self, output_idx: usize, sink: &dyn OutputSink) -> bool {
+        let Some(output) = self
+            .inner
+            .as_ref()
+            .and_then(|inner| inner.outputs.get(output_idx))
+        else {
+            return false;
+        };
+        output_is_ready_for_submit(
+            !self.has_pending_page_flip(output_idx),
+            sink.output_commit_in_flight(output_idx),
+            output.next_submit_retry_at,
+            std::time::Instant::now(),
+        )
+    }
+
+    /// Whether an output's retry backoff currently prevents a scene submit.
+    pub fn output_submit_retry_pending(&self, output_idx: usize) -> bool {
+        let Some(output) = self
+            .inner
+            .as_ref()
+            .and_then(|inner| inner.outputs.get(output_idx))
+        else {
+            return false;
+        };
+        output
+            .next_submit_retry_at
+            .is_some_and(|deadline| std::time::Instant::now() < deadline)
     }
 
     /// True if any output's per-BO damage model owes a repaint that no producer
@@ -297,6 +335,17 @@ impl SceneCompositor {
         }
         Ok(composed)
     }
+}
+
+pub(super) fn output_is_ready_for_submit(
+    pending_acks_empty: bool,
+    output_commit_in_flight: bool,
+    retry_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    pending_acks_empty
+        && !output_commit_in_flight
+        && retry_at.is_none_or(|deadline| now >= deadline)
 }
 
 pub(super) fn tick_skip_log_enabled() -> bool {
@@ -565,6 +614,15 @@ fn tick_one_output(
         if !s.pending_acks.is_empty() {
             record_tick_skip(s, output_idx, TickSkipReason::PendingAcks, 0);
             return Ok(TickOutcome::Skipped(TickSkipReason::PendingAcks));
+        }
+        if !output_is_ready_for_submit(
+            true,
+            sink.output_commit_in_flight(output_idx),
+            None,
+            std::time::Instant::now(),
+        ) {
+            record_tick_skip(s, output_idx, TickSkipReason::CursorCommitInFlight, 0);
+            return Ok(TickOutcome::Skipped(TickSkipReason::CursorCommitInFlight));
         }
         if let Some(deadline) = s.next_submit_retry_at
             && std::time::Instant::now() < deadline

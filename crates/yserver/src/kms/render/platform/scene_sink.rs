@@ -46,6 +46,10 @@ impl OutputSink for PlatformBackend {
         }
     }
 
+    fn output_commit_in_flight(&self, output_idx: usize) -> bool {
+        self.cursor_commit_in_flight_for_output(output_idx)
+    }
+
     fn slot_count(&self, output_idx: usize) -> Option<usize> {
         self.scanout_pools
             .get(output_idx)
@@ -99,6 +103,15 @@ impl OutputSink for PlatformBackend {
                 format!("no DRM device for output {output_key:?}"),
             )));
         };
+        let Some(atomic_commit_sink) = self
+            .device_for_output(output_key)
+            .map(|device| Rc::clone(&device.atomic_commit_sink))
+        else {
+            return FinishOutcome::Unavailable(FrameTargetError::NoDevice(io::Error::other(
+                format!("no atomic commit sink for output {output_key:?}"),
+            )));
+        };
+        let cursor_positions = self.cursor_plane_atomic_positions_for_outputs(&[output_idx]);
         let Some(pool) = self
             .scanout_pools
             .get_mut(output_idx)
@@ -107,13 +120,28 @@ impl OutputSink for PlatformBackend {
             return FinishOutcome::Unavailable(FrameTargetError::NoSlot);
         };
         let output = &self.outputs[output_idx].output;
-        match pool {
+        let mut shared_cursor_commit_submitted = false;
+        let mut cursor_rejection_error = None;
+        let outcome = match pool {
             OutputScanout::Shared(pool) => {
                 let Some(bo) = pool.bos.get_mut(bo_idx) else {
                     return FinishOutcome::Unavailable(FrameTargetError::NoSlot);
                 };
-                let result = submit_shared_scanout_frame(&drm_device, output, bo, record)
-                    .map(FrameHandoff::FlipPending);
+                let submitted = submit_shared_scanout_frame(
+                    &drm_device,
+                    atomic_commit_sink.as_ref(),
+                    output,
+                    bo,
+                    record,
+                    &cursor_positions,
+                );
+                if let Err(error) = &submitted
+                    && atomic_commit_sink.take_last_cursor_rejection()
+                {
+                    cursor_rejection_error = Some(error.to_string());
+                }
+                let result = submitted.map(FrameHandoff::FlipPending);
+                shared_cursor_commit_submitted = result.is_ok();
                 FinishOutcome::Finished {
                     result,
                     previous_gpu_ns: bo.last_gpu_render_ns.take(),
@@ -139,7 +167,15 @@ impl OutputSink for PlatformBackend {
                     fail_stop,
                 }
             }
+        };
+        if shared_cursor_commit_submitted {
+            self.cursor_plane_scene_commit_submitted(&cursor_positions);
         }
+        if let Some(error) = cursor_rejection_error {
+            let rejected = self.reject_atomic_cursor_commit(&cursor_positions, &error);
+            self.defer_cursor_move_outcome(rejected);
+        }
+        outcome
     }
 
     fn invalidate_slot(&mut self, output_idx: usize, bo_idx: usize) {
@@ -417,9 +453,11 @@ impl ComposeRenderTarget for CopiedRenderSource {
 /// Render directly into the KMS framebuffer and immediately queue its flip.
 fn submit_shared_scanout_frame(
     drm: &crate::drm::Device,
+    atomic_commit_sink: &crate::drm::atomic::AtomicCommitSink,
     output: &crate::platform::drm::Output,
     bo: &mut ScanoutBo,
     record: &mut RecordFrame<'_>,
+    cursor_positions: &[crate::drm::atomic::CursorPlanePosition],
 ) -> Result<ComposeSubmit, PresentError> {
     use std::os::fd::{FromRawFd, IntoRawFd};
 
@@ -437,8 +475,15 @@ fn submit_shared_scanout_frame(
     bo.state.transition_to_submitted(fd);
 
     let mut out_fence: i32 = -1;
-    match crate::drm::page_flip::submit_flip_with_fences(drm, output, fb_handle, fd, &mut out_fence)
-    {
+    match crate::drm::page_flip::submit_scene_flip_with_fences(
+        drm,
+        atomic_commit_sink,
+        output,
+        fb_handle,
+        fd,
+        &mut out_fence,
+        cursor_positions,
+    ) {
         Ok(()) => {
             if let Some(reclaimed) = bo.state.transition_to_pending(out_fence) {
                 // SAFETY: `reclaimed` was inserted by

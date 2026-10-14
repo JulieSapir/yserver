@@ -505,6 +505,8 @@ impl KmsBackend {
             self.request_exit();
             return;
         }
+        self.platform
+            .clear_atomic_cursor_state_after_old_events_discard();
         if self.scanout_m2.active() {
             self.stop_direct_after_scanout_replaced("VT suspend");
         }
@@ -1007,6 +1009,8 @@ impl KmsBackend {
                 self.request_exit();
                 return Err(error);
             }
+            self.platform
+                .clear_atomic_cursor_state_after_old_events_discard();
             self.stop_direct_after_scanout_replaced("DPMS off");
             self.scanout_m1.clear("DPMS off");
             log::info!("kms: dpms sleep — scene.drain_all");

@@ -602,16 +602,14 @@ impl KmsBackend {
             self.core.cursor_y = new_y;
             // Stage 5 Phase D — pointer fast path. When the plane
             // is fully bound on every output AND no transition is
-            // pending, route motion directly through
-            // `cursor_plane_move` — one ioctl per visible CRTC, no
-            // GPU work, no compose cadence. The Mixed state (any
-            // output still has a Sw→Hw or Hw→Sw transition
-            // pending) falls back to the scene-wake path so the
-            // SW cursor doesn't desync from the eventual plane
-            // bind. The core thread owns DRM state, so this is
-            // not a thread-safety question — the ioctl is
-            // synchronous from the same thread that owns scene
-            // state.
+            // pending, route motion through `cursor_plane_move`.
+            // Atomic-capable devices record the latest position for
+            // the scheduling pass; devices without atomic position
+            // properties keep the legacy move ioctl. Neither path
+            // does GPU work. The Mixed state (any output still has
+            // a Sw→Hw or Hw→Sw transition pending) also wakes the
+            // scene so the SW cursor stays in sync with the eventual
+            // plane bind.
             let cursor_mode = self.scene.cursor_mode();
             if self.cursor_hidden {
                 // XFIXES HideCursor: there is no sprite to move. Showing
@@ -642,8 +640,8 @@ impl KmsBackend {
                     crate::kms::render::scene::CursorPlaneMode::Mixed
                 ) {
                     // Hardware and software cursor ownership may coexist on
-                    // arbitrary cards. Move every visible HW plane immediately
-                    // and also repaint the SW outputs.
+                    // arbitrary cards. Record/dispatch every visible HW plane
+                    // position and also repaint the SW outputs.
                     match self.platform.cursor_plane_move(cx, cy, hot_x, hot_y) {
                         Ok(outcome) => {
                             self.handle_cursor_move_outcome(outcome);
@@ -678,6 +676,9 @@ impl KmsBackend {
                     }
                 }
             } else {
+                // Software cursors need repaint; an all-Hidden cursor also
+                // needs a scene pass so motion back onto an output can be
+                // assigned there again.
                 self.scene.wake_for_damage();
             }
         }

@@ -15,7 +15,13 @@ use drm::{
 };
 use yserver_core::backend::ModeSpec;
 
-use crate::drm::Device;
+use crate::drm::{
+    Device,
+    atomic::{
+        AtomicCommitEvent, AtomicCommitKind, AtomicCommitRequest, AtomicCommitSink,
+        CursorPlanePosition,
+    },
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Mode {
@@ -1381,8 +1387,12 @@ pub(crate) struct ComposedScanoutPlaneState<'a> {
 /// It is never installed on hardware. Owning the DRM device makes teardown
 /// reliable during backend shutdown regardless of struct-field drop order.
 pub(crate) struct DirectScanoutProbeFramebuffer {
-    device: Rc<Device>,
     fb: framebuffer::Handle,
+    backing: Option<DirectScanoutProbeBacking>,
+}
+
+struct DirectScanoutProbeBacking {
+    device: Rc<Device>,
     gem: DrmBufferHandle,
 }
 
@@ -1390,15 +1400,24 @@ impl DirectScanoutProbeFramebuffer {
     pub(crate) fn handle(&self) -> framebuffer::Handle {
         self.fb
     }
+
+    /// Synthetic accepted probe for backend caller tests. Its handle is only
+    /// written into the recorded atomic request; no DRM object is owned.
+    #[cfg(test)]
+    pub(crate) fn for_tests(fb: framebuffer::Handle) -> Self {
+        Self { fb, backing: None }
+    }
 }
 
 impl Drop for DirectScanoutProbeFramebuffer {
     fn drop(&mut self) {
-        if let Err(error) = self.device.destroy_framebuffer(self.fb) {
-            log::warn!("scanout_m1: rm_fb during probe-cache teardown failed: {error}");
-        }
-        if let Err(error) = self.device.close_buffer(self.gem) {
-            log::warn!("scanout_m1: GEM close during probe-cache teardown failed: {error}");
+        if let Some(backing) = self.backing.as_ref() {
+            if let Err(error) = backing.device.destroy_framebuffer(self.fb) {
+                log::warn!("scanout_m1: rm_fb during probe-cache teardown failed: {error}");
+            }
+            if let Err(error) = backing.device.close_buffer(backing.gem) {
+                log::warn!("scanout_m1: GEM close during probe-cache teardown failed: {error}");
+            }
         }
     }
 }
@@ -1561,7 +1580,10 @@ pub(crate) fn probe_direct_scanout_test_only(
 
     match device.atomic_commit(AtomicCommitFlags::TEST_ONLY, request) {
         Ok(()) => Ok(DirectScanoutTestResult::Accepted(
-            DirectScanoutProbeFramebuffer { device, fb, gem },
+            DirectScanoutProbeFramebuffer {
+                fb,
+                backing: Some(DirectScanoutProbeBacking { device, gem }),
+            },
         )),
         Err(error) => {
             let _ = device.destroy_framebuffer(fb);
@@ -1580,13 +1602,15 @@ pub(crate) fn probe_direct_scanout_test_only(
 /// client source until every emitted CRTC page-flip event has retired.
 pub(crate) fn submit_direct_scanout(
     device: &Device,
+    atomic_commit_sink: &AtomicCommitSink,
     fb: framebuffer::Handle,
     planes: &[DirectScanoutPlaneState<'_>],
+    cursor_positions: &[CursorPlanePosition],
 ) -> io::Result<()> {
     if planes.is_empty() {
         return Err(io::Error::other("scanout M2: empty plane transaction"));
     }
-    let mut request = AtomicModeReq::new();
+    let mut request = AtomicCommitRequest::new();
     for state in planes {
         let output = state.output;
         request.add_raw_property(
@@ -1632,9 +1656,30 @@ pub(crate) fn submit_direct_scanout(
             u64::from(state.src_h),
         );
     }
-    device.atomic_commit(
+    for position in cursor_positions {
+        request.add_cursor_position(*position);
+    }
+    let events: Vec<_> = planes
+        .iter()
+        .map(|state| AtomicCommitEvent {
+            crtc: state.output.crtc,
+            motion_timestamp: cursor_positions
+                .iter()
+                .find(|position| position.crtc == state.output.crtc)
+                .and_then(|position| position.motion_timestamp),
+        })
+        .collect();
+    let kind = if cursor_positions.is_empty() {
+        AtomicCommitKind::Scene
+    } else {
+        AtomicCommitKind::SceneWithCursor
+    };
+    atomic_commit_sink.submit(
+        device,
         AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
+        kind,
         request,
+        &events,
     )
 }
 
@@ -1644,12 +1689,14 @@ pub(crate) fn submit_direct_scanout(
 /// source until the page-flip event from every CRTC has arrived.
 pub(crate) fn submit_composed_scanout(
     device: &Device,
+    atomic_commit_sink: &AtomicCommitSink,
     planes: &[ComposedScanoutPlaneState<'_>],
+    cursor_positions: &[CursorPlanePosition],
 ) -> io::Result<()> {
     if planes.is_empty() {
         return Err(io::Error::other("scanout M2: empty composed transaction"));
     }
-    let mut request = AtomicModeReq::new();
+    let mut request = AtomicCommitRequest::new();
     for state in planes {
         let output = state.output;
         request.add_raw_property(
@@ -1687,9 +1734,30 @@ pub(crate) fn submit_composed_scanout(
             u64::from(output.mode.size().1),
         );
     }
-    device.atomic_commit(
+    for position in cursor_positions {
+        request.add_cursor_position(*position);
+    }
+    let events: Vec<_> = planes
+        .iter()
+        .map(|state| AtomicCommitEvent {
+            crtc: state.output.crtc,
+            motion_timestamp: cursor_positions
+                .iter()
+                .find(|position| position.crtc == state.output.crtc)
+                .and_then(|position| position.motion_timestamp),
+        })
+        .collect();
+    let kind = if cursor_positions.is_empty() {
+        AtomicCommitKind::Scene
+    } else {
+        AtomicCommitKind::SceneWithCursor
+    };
+    atomic_commit_sink.submit(
+        device,
         AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
+        kind,
         request,
+        &events,
     )
 }
 

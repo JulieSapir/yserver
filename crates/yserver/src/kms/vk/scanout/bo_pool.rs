@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::kms::vk::scanout::{DmabufDirectionMetadata, DmabufLinearMetadata, KmsLinearLayout};
 use crate::kms::{
     scanout_route::ScanoutRoute,
     vk::{
@@ -97,6 +99,55 @@ impl OutputScanout {
 }
 
 impl ScanoutBoPool {
+    /// Small pool fixture for backend tests that exercise the real grouped
+    /// unflip caller through a recording commit sink. Its framebuffer handle
+    /// is synthetic and is never submitted to a DRM ioctl.
+    #[cfg(test)]
+    pub(crate) fn for_tests_on_screen_framebuffer(
+        vk: Arc<VkContext>,
+        drm: Rc<crate::drm::Device>,
+        route: ScanoutRoute,
+        width: u32,
+        height: u32,
+        framebuffer: drm::control::framebuffer::Handle,
+    ) -> Self {
+        let unknown_direction = || DmabufDirectionMetadata {
+            kms_prime: ScanoutMetadataSupport::Unknown,
+            vulkan_modifiers: ScanoutMetadataSupport::Unknown,
+            modifiers: Vec::new(),
+            modifier_path: ScanoutMetadataSupport::Unknown,
+            linear: DmabufLinearMetadata {
+                vulkan: ScanoutMetadataSupport::Unknown,
+                kms_layout: KmsLinearLayout::LegacyAddfb,
+                path: ScanoutMetadataSupport::Unknown,
+            },
+        };
+        let metadata = DmabufScanoutMetadata {
+            vulkan_external_memory_fd: ScanoutMetadataSupport::Unknown,
+            output_owned: unknown_direction(),
+            renderer_owned: unknown_direction(),
+        };
+        let bo = ScanoutBo::for_tests_on_screen_framebuffer(
+            Arc::clone(&vk),
+            Rc::clone(&drm),
+            framebuffer,
+            width,
+            height,
+        );
+
+        Self {
+            bos: vec![bo],
+            width,
+            height,
+            route,
+            ownership: ScanoutOwnership::Renderer,
+            allocation_plan: ScanoutAllocationPlan::LegacyLinear,
+            metadata,
+            verdict: DmabufScanoutVerdict::Unknown(Vec::new()),
+            gbm_device: None,
+        }
+    }
+
     pub(super) fn release_disposable_drm_resources(&mut self) -> io::Result<()> {
         for (index, bo) in self.bos.iter_mut().enumerate() {
             bo.release_disposable_drm_resources().map_err(|error| {

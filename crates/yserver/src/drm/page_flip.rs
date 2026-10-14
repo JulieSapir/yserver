@@ -19,6 +19,10 @@ use drm::control::{
 
 use crate::drm::{
     Device,
+    atomic::{
+        AtomicCommitEvent, AtomicCommitKind, AtomicCommitRequest, AtomicCommitSink,
+        CursorPlanePosition,
+    },
     modeset::{Output, PropMap},
 };
 
@@ -170,6 +174,68 @@ pub fn submit_flip_with_fences(
         fb_id,
         Some(in_fence_fd),
         Some(out_fence_holder),
+    )
+}
+
+/// Submit one scene flip through its owning device's recorder/timer and append
+/// any visible atomic cursor-plane positions for this output. The legacy
+/// non-rendering page-flip callers keep using `submit_flip_with_fences`.
+pub(crate) fn submit_scene_flip_with_fences(
+    device: &Device,
+    atomic_commit_sink: &AtomicCommitSink,
+    output: &Output,
+    fb_id: framebuffer::Handle,
+    in_fence_fd: i32,
+    out_fence_holder: &mut i32,
+    cursor_positions: &[CursorPlanePosition],
+) -> io::Result<()> {
+    let mut request = AtomicCommitRequest::new();
+    request.add_raw_property(
+        output.plane.into(),
+        output.plane_fb_id_prop,
+        u64::from(u32::from(fb_id)),
+    );
+    request.add_raw_property(
+        output.plane.into(),
+        output.plane_crtc_id_prop,
+        u64::from(u32::from(output.crtc)),
+    );
+    let in_fence_prop = match output.plane_in_fence_fd_prop {
+        Some(prop) => prop,
+        None => PropMap::for_object(device, output.plane)?.id("IN_FENCE_FD")?,
+    };
+    request.add_raw_property(
+        output.plane.into(),
+        in_fence_prop,
+        in_fence_fd as i64 as u64,
+    );
+    let out_fence_prop = match output.crtc_out_fence_ptr_prop {
+        Some(prop) => prop,
+        None => PropMap::for_object(device, output.crtc)?.id("OUT_FENCE_PTR")?,
+    };
+    let out_fence_ptr = (out_fence_holder as *mut i32) as usize as u64;
+    request.add_raw_property(output.crtc.into(), out_fence_prop, out_fence_ptr);
+    for position in cursor_positions {
+        request.add_cursor_position(*position);
+    }
+    let event = AtomicCommitEvent {
+        crtc: output.crtc,
+        motion_timestamp: cursor_positions
+            .iter()
+            .find(|position| position.crtc == output.crtc)
+            .and_then(|position| position.motion_timestamp),
+    };
+    let kind = if cursor_positions.is_empty() {
+        AtomicCommitKind::Scene
+    } else {
+        AtomicCommitKind::SceneWithCursor
+    };
+    atomic_commit_sink.submit(
+        device,
+        AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
+        kind,
+        request,
+        &[event],
     )
 }
 

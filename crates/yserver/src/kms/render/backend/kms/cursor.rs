@@ -664,11 +664,13 @@ impl KmsBackend {
         // queueing path; if any output is transitioning, the
         // bytes land in the deferred slot until the wait set
         // drains.
-        if matches!(
-            self.scene.cursor_mode(),
+        let refreshes_visible_cursor = match self.scene.cursor_mode() {
             crate::kms::render::scene::CursorPlaneMode::Hw
-                | crate::kms::render::scene::CursorPlaneMode::Mixed
-        ) {
+            | crate::kms::render::scene::CursorPlaneMode::Mixed => true,
+            crate::kms::render::scene::CursorPlaneMode::Hidden
+            | crate::kms::render::scene::CursorPlaneMode::Sw => false,
+        };
+        if refreshes_visible_cursor {
             // Direct root scanout does not need a composed primary-plane
             // retirement merely to replace cursor pixels. Update the legacy
             // cursor planes in place; if any output rejects the operation,

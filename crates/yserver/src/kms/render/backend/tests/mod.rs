@@ -1,3 +1,4 @@
+mod atomic_cursor;
 mod crossings;
 mod cursor;
 mod deadlines;
@@ -53,6 +54,60 @@ use std::{
     io,
     rc::Rc,
 };
+
+#[derive(Clone, Copy)]
+pub(crate) enum TestCursorHideResult {
+    Ok,
+    Error(i32),
+}
+
+#[derive(Default)]
+pub(crate) struct RecordingCursorHideExecutor {
+    calls: RefCell<Vec<::drm::control::crtc::Handle>>,
+    results: RefCell<VecDeque<TestCursorHideResult>>,
+}
+
+impl RecordingCursorHideExecutor {
+    pub(crate) fn script(&self, results: impl IntoIterator<Item = TestCursorHideResult>) {
+        self.results.borrow_mut().extend(results);
+    }
+
+    pub(crate) fn calls(&self) -> Vec<::drm::control::crtc::Handle> {
+        self.calls.borrow().clone()
+    }
+}
+
+impl crate::kms::cursor_plane::CursorHideExecutor for RecordingCursorHideExecutor {
+    fn hide(
+        &self,
+        _device: &crate::drm::Device,
+        crtc: ::drm::control::crtc::Handle,
+    ) -> io::Result<()> {
+        self.calls.borrow_mut().push(crtc);
+        match self
+            .results
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(TestCursorHideResult::Error(libc::ENOTTY))
+        {
+            TestCursorHideResult::Ok => Ok(()),
+            TestCursorHideResult::Error(errno) => Err(io::Error::from_raw_os_error(errno)),
+        }
+    }
+}
+
+pub(crate) fn install_recording_cursor_hide_executor(
+    backend: &mut KmsBackend,
+    device_idx: usize,
+    executor: Rc<RecordingCursorHideExecutor>,
+) {
+    backend.platform.devices[device_idx]
+        .cursor
+        .plane
+        .as_mut()
+        .expect("test cursor plane is installed")
+        .for_tests_set_hide_executor(executor);
+}
 use yserver_core::{
     backend::{Backend, CrtcConfigApply, CrtcConfigToken, Dri3Caps, ModeSpec},
     core_loop::{CoreSender, Message},
@@ -92,6 +147,13 @@ fn push_test_device(backend: &mut KmsBackend, key: DrmDeviceKey) {
         .push(crate::kms::render::platform::KmsDevice {
             key,
             device,
+            atomic_commit_sink: std::rc::Rc::new(crate::drm::atomic::AtomicCommitSink::new(
+                std::rc::Rc::new(crate::drm::atomic::DrmAtomicCommitExecutor),
+            )),
+            page_flip_event_source: std::rc::Rc::new(
+                crate::kms::render::platform::flip_events::DrmPageFlipEventSource,
+            ),
+            test_page_flip_event_source: None,
             cursor: crate::kms::render::platform::KmsCursorState::new(),
         });
 }

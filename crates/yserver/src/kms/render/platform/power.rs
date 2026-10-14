@@ -1,6 +1,65 @@
 use crate::{drm, kms::render::platform::PlatformBackend};
 use std::{io, rc::Rc};
 
+pub(in crate::kms::render) trait OutputPowerExecutor {
+    fn disable(
+        &self,
+        device: &drm::Device,
+        output: &crate::platform::drm::Output,
+    ) -> io::Result<()>;
+
+    fn enable(
+        &self,
+        device: &drm::Device,
+        output: &crate::platform::drm::Output,
+        framebuffer: ::drm::control::framebuffer::Handle,
+    ) -> io::Result<()>;
+}
+
+pub(super) struct DrmOutputPowerExecutor;
+
+impl OutputPowerExecutor for DrmOutputPowerExecutor {
+    fn disable(
+        &self,
+        device: &drm::Device,
+        output: &crate::platform::drm::Output,
+    ) -> io::Result<()> {
+        drm::modeset::disable_output(device, output)
+    }
+
+    fn enable(
+        &self,
+        device: &drm::Device,
+        output: &crate::platform::drm::Output,
+        framebuffer: ::drm::control::framebuffer::Handle,
+    ) -> io::Result<()> {
+        drm::modeset::commit_modeset(device, output, framebuffer)
+    }
+}
+
+#[cfg(test)]
+struct AcceptingOutputPowerExecutor;
+
+#[cfg(test)]
+impl OutputPowerExecutor for AcceptingOutputPowerExecutor {
+    fn disable(
+        &self,
+        _device: &drm::Device,
+        _output: &crate::platform::drm::Output,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn enable(
+        &self,
+        _device: &drm::Device,
+        _output: &crate::platform::drm::Output,
+        _framebuffer: ::drm::control::framebuffer::Handle,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 impl PlatformBackend {
     // ── Disable output ──────────────────────────────────────────
 
@@ -164,7 +223,9 @@ impl PlatformBackend {
                     }
                     continue;
                 };
-                if let Err(e) = crate::drm::modeset::commit_modeset(&device, &layout.output, fb_id)
+                if let Err(e) = self
+                    .output_power_executor
+                    .enable(&device, &layout.output, fb_id)
                 {
                     log::error!(
                         "dpms_set_outputs_active(true): commit_modeset for {} failed: {e}",
@@ -209,7 +270,7 @@ impl PlatformBackend {
                     }
                     continue;
                 };
-                if let Err(e) = crate::drm::modeset::disable_output(&device, &layout.output) {
+                if let Err(e) = self.output_power_executor.disable(&device, &layout.output) {
                     log::error!(
                         "dpms_set_outputs_active(false): disable_output for {} failed: {e}",
                         layout.output.connector_name,
@@ -224,5 +285,10 @@ impl PlatformBackend {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_accept_output_power_commits(&mut self) {
+        self.output_power_executor = Rc::new(AcceptingOutputPowerExecutor);
     }
 }

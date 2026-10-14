@@ -18,8 +18,8 @@ use std::io;
 /// looks at last-frame modes.
 ///
 /// Classification rules (load-bearing — see scene.rs:686 docstring):
-/// - `Hidden` outputs are NEUTRAL (cursor isn't on them, the
-///   per-CRTC visible check in `cursor_plane_move` skips them).
+/// - `Hidden` outputs are neutral when another output has a cursor; if every
+///   output is hidden, the result is `Hidden`.
 /// - `Hw` outputs vote for the fast path.
 /// - `Sw` / `SwPending` outputs need scene-compose updates for cursor position
 ///   (the sprite is part of the compose draw list).
@@ -30,17 +30,20 @@ pub(super) fn classify_cursor_mode_from_per_output(
 ) -> CursorPlaneMode {
     let mut any_hw = false;
     let mut any_sw_like = false;
+    let mut any_output = false;
     for m in modes {
+        any_output = true;
         match m {
             OutputCursorMode::Hw => any_hw = true,
             OutputCursorMode::Sw { .. } | OutputCursorMode::SwPending => any_sw_like = true,
             OutputCursorMode::Hidden => {}
         }
     }
-    match (any_hw, any_sw_like) {
-        (true, false) => CursorPlaneMode::Hw,
-        (false, _) => CursorPlaneMode::Sw,
-        (true, true) => CursorPlaneMode::Mixed,
+    match (any_hw, any_sw_like, any_output) {
+        (true, false, _) => CursorPlaneMode::Hw,
+        (false, true, _) | (false, false, false) => CursorPlaneMode::Sw,
+        (false, false, true) => CursorPlaneMode::Hidden,
+        (true, true, _) => CursorPlaneMode::Mixed,
     }
 }
 
@@ -110,7 +113,8 @@ impl SceneCompositor {
     /// carries an in-flight cursor transition. Mixed-state
     /// (transition pending on any output, or a heterogeneous
     /// mix) returns `Mixed`; the fast path falls back to scene
-    /// wake until the plane is fully consistent.
+    /// wake until the plane is fully consistent. `Hidden` means
+    /// every output is hidden with no transition pending.
     pub fn cursor_mode(&self) -> CursorPlaneMode {
         let Some(inner) = self.inner.as_ref() else {
             return CursorPlaneMode::Sw;
@@ -131,6 +135,19 @@ impl SceneCompositor {
             }
         }
         classify_cursor_mode_from_per_output(inner.outputs.iter().map(|o| o.last_frame_cursor_mode))
+    }
+
+    /// Set up the already-retired hardware-cursor state needed by direct
+    /// Present backend tests. Production never calls this fixture helper.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn for_tests_set_hw_cursor_mode(&mut self) {
+        if let Some(inner) = self.inner.as_mut() {
+            for output in &mut inner.outputs {
+                output.last_frame_cursor_mode = OutputCursorMode::Hw;
+                output.force_show_retry_version = None;
+            }
+        }
     }
 
     /// Stage 5 Phase D — steady-state HW sprite-change path. Called

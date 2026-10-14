@@ -138,6 +138,52 @@ impl PartialScanoutBoAllocation {
 }
 
 impl ScanoutBo {
+    /// Minimal on-screen BO whose framebuffer value is consumed only by a
+    /// recording atomic-commit sink. All owned GPU/KMS handles are null and
+    /// `disarmed` keeps teardown from treating the synthetic framebuffer as a
+    /// kernel object.
+    #[cfg(test)]
+    pub(crate) fn for_tests_on_screen_framebuffer(
+        vk: Arc<VkContext>,
+        drm: Rc<crate::drm::Device>,
+        framebuffer: drm::control::framebuffer::Handle,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            state: BoState {
+                phase: crate::kms::vk::scanout::BoPhase::OnScreen,
+                ..BoState::default()
+            },
+            width,
+            height,
+            is_alien: false,
+            pitch: 0,
+            last_gpu_render_ns: None,
+            vk_image: vk::Image::null(),
+            vk_memory: vk::DeviceMemory::null(),
+            vk_image_view: vk::ImageView::null(),
+            vk_semaphore: vk::Semaphore::null(),
+            export_semaphore_reuse: ExportSemaphoreReuseState::Reusable,
+            fb_handle: Some(framebuffer),
+            gem_handle: None,
+            vk_transfer: TransferResources {
+                command_pool: vk::CommandPool::null(),
+                command_buffer: vk::CommandBuffer::null(),
+                staging_buffer: vk::Buffer::null(),
+                staging_memory: vk::DeviceMemory::null(),
+                staging_mapped: std::ptr::NonNull::dangling(),
+                staging_size: 0,
+                timestamp_pool: vk::QueryPool::null(),
+                timestamps_written: false,
+            },
+            drm,
+            vk,
+            disarmed: true,
+            gbm_bo: None,
+        }
+    }
+
     /// Allocate one scanout bo: GBM-alloc or Vulkan-alloc dma-buf +
     /// DRM framebuffer registration. All steps must succeed; partial
     /// allocations are unwound on error so the returned `Err` leaves

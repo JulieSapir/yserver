@@ -743,6 +743,7 @@ impl KmsBackend {
                 matches!(
                     self.scene.cursor_mode(),
                     crate::kms::render::scene::CursorPlaneMode::Hw
+                        | crate::kms::render::scene::CursorPlaneMode::Hidden
                 ),
                 self.scene.root_overlay.is_empty(),
                 authoritative_root && scene_eligible,
@@ -838,6 +839,32 @@ impl KmsBackend {
         }
         if self.scene.has_pending_page_flips() {
             self.request_direct_unflip("eligible_direct_successor_scene_flip_pending");
+            self.scanout_m2.unflip_fallback_source = Some(source_id);
+            self.scanout_m2.unflip_shadow_ready = false;
+            <Self as Backend>::release_present_source(self, source_pin);
+            <Self as Backend>::release_present_source(self, fallback_target_pin);
+            return Ok(false);
+        }
+        let direct_outputs: Vec<_> = (0..self.platform.outputs.len()).collect();
+        if self
+            .platform
+            .cursor_commit_in_flight_for_outputs(&direct_outputs)
+        {
+            if self.scanout_m2.current.is_some() {
+                // A fully-retired direct frame owns the current slot. Keep
+                // this Present in the existing latest-wins successor slot;
+                // the scheduling pass submits it after the last cursor-only
+                // commit on the grouped transaction retires.
+                self.retain_direct_present_wake(&frame.event);
+                self.queue_direct_successor(frame);
+                return Ok(true);
+            }
+
+            // With no direct owner, this is the first-entry equivalent of a
+            // scene flip already in flight: let the caller take its composed
+            // path and release both pins. There must be no queued-only direct
+            // state for the cursor retirement to discover later.
+            self.request_direct_unflip("eligible_direct_present_cursor_commit_pending");
             self.scanout_m2.unflip_fallback_source = Some(source_id);
             self.scanout_m2.unflip_shadow_ready = false;
             <Self as Backend>::release_present_source(self, source_pin);

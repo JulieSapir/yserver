@@ -27,7 +27,7 @@
 mod connectors;
 mod cursor;
 mod devices;
-mod flip_events;
+pub(crate) mod flip_events;
 mod init;
 mod power;
 mod qualify;
@@ -47,7 +47,14 @@ use scanout_bos::*;
 #[cfg(test)]
 mod tests;
 
-use std::{collections::HashMap, io, os::fd::OwnedFd, rc::Rc, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    os::fd::OwnedFd,
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
 
 use ash::vk;
 use yserver_core::backend::PresentClockSample;
@@ -178,11 +185,36 @@ struct TransientCursorFallback {
     failures: u8,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct CursorHideRecovery {
+    attempts: u8,
+}
+
 /// Per-DRM-device hardware cursor state. Raw CRTC handles and legacy cursor
 /// ioctls are device-local, so none of these fields may live at platform scope.
 pub(crate) struct KmsCursorState {
     pub(crate) plane: Option<crate::kms::cursor_plane::CursorPlane>,
     pending_move: Option<(i32, i32, u16, u16)>,
+    /// Pointer-event timestamp paired with `pending_move` across an EBUSY
+    /// retry. Atomic positions carry this timestamp directly.
+    pending_move_timestamp: Option<Instant>,
+    /// Latest discovered atomic position for each cursor-visible CRTC. The
+    /// position remains available for every scene commit; the unsent copy is
+    /// consumed only after an accepted commit carries it.
+    atomic_positions:
+        HashMap<::drm::control::crtc::Handle, crate::drm::atomic::CursorPlanePosition>,
+    atomic_pending_moves:
+        HashMap<::drm::control::crtc::Handle, crate::drm::atomic::CursorPlanePosition>,
+    /// Accepted cursor-only commits, keyed by CRTC. A cursor-only commit is
+    /// in flight only after its atomic ioctl succeeded.
+    atomic_cursor_commits_in_flight:
+        HashMap<::drm::control::crtc::Handle, crate::drm::atomic::CursorPlanePosition>,
+    /// A cursor-only EBUSY proves another commit is pending on this CRTC.
+    /// Keep the latest position unsent until that CRTC's next flip event.
+    cursor_retry_waits_for_flip: HashSet<::drm::control::crtc::Handle>,
+    /// A rejected cursor request whose legacy hide failed. Pointer motion
+    /// retries this hide, with a device-wide terminal failure after 3 tries.
+    cursor_hide_recovery: HashMap<::drm::control::crtc::Handle, CursorHideRecovery>,
     permanently_disabled: bool,
     /// CursorPlane::new was attempted for an active startup topology and
     /// failed transiently. Only explicit active-topology/resume boundaries
@@ -194,7 +226,9 @@ pub(crate) struct KmsCursorState {
     headless_deferred: bool,
     topology_blocked: bool,
     transient_fallback_crtcs: HashMap<::drm::control::crtc::Handle, TransientCursorFallback>,
-    nvidia_policy_disabled: bool,
+    /// Capability-selected atomic position path for this device's active
+    /// CRTC topology.
+    pub(crate) atomic_cursor: bool,
     sprite_signature: Option<(u16, u16, u16, u16)>,
 }
 
@@ -345,6 +379,10 @@ struct TerminalDisposableProbeMarker {
 pub(crate) struct KmsDevice {
     pub(crate) key: crate::platform::drm::DrmDeviceKey,
     pub(crate) device: Rc<drm::Device>,
+    pub(crate) atomic_commit_sink: Rc<crate::drm::atomic::AtomicCommitSink>,
+    pub(crate) page_flip_event_source: Rc<dyn flip_events::PageFlipEventSource>,
+    #[cfg(test)]
+    pub(crate) test_page_flip_event_source: Option<Rc<flip_events::RecordingPageFlipEventSource>>,
     pub(crate) cursor: KmsCursorState,
 }
 
@@ -378,6 +416,11 @@ pub(crate) struct PlatformBackend {
     initial_scanout_rollback_armed: bool,
     // DRM / output side
     pub(crate) devices: Vec<KmsDevice>,
+    pub(super) output_power_executor: Rc<dyn power::OutputPowerExecutor>,
+    /// Cursor rollback outcomes raised while the scene owns the platform
+    /// borrow. The backend drains this immediately after the submit pass to
+    /// wake the scene and request an unflip when needed.
+    deferred_cursor_move_outcome: CursorMoveOutcome,
     /// Immutable same-instance Vulkan inventory of graphics+transfer
     /// queue-capable render-identified devices. Handles are valid for exactly
     /// the lifetime of `vk` below.

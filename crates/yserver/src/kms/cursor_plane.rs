@@ -10,12 +10,12 @@
 //! a separate overlay the kernel positions independently —
 //! an atomic position commit is microseconds and doesn't touch the GPU.
 //!
-//! Atomic cursor plane (replacement for legacy `set_cursor2` /
-//! `move_cursor` ioctls): when `DRM_CLIENT_CAP_ATOMIC` is set,
-//! AMD/amdgpu ignores the legacy cursor ioctls even though they
-//! succeed. Atomic plane commits work on all drivers including AMD.
-//! Legacy ioctls are retained as a per-CRTC fallback when no atomic
-//! cursor plane is discovered.
+//! Atomic position support is discovered per cursor plane from its
+//! `CRTC_X`/`CRTC_Y` properties. The device records whether every active
+//! CRTC can use that path; devices without complete support keep the legacy
+//! path. Task 1 deliberately leaves pointer motion on `move_cursor` until the
+//! cursor commit producer lands in Task 3. Image upload and plane show/hide
+//! continue to use the legacy cursor ioctls.
 //!
 //! Stage 5 Phase B (per-CRTC visibility + upload/show split): the
 //! shared dumb buffer is mutated by `load_image` and bound to each
@@ -35,10 +35,27 @@ use std::{
 use drm::{
     Device as DrmDevice, DriverCapability,
     buffer::{Buffer, DrmFourcc},
-    control::{Device as ControlDevice, PlaneType, crtc, dumbbuffer::DumbBuffer},
+    control::{Device as ControlDevice, PlaneType, crtc, dumbbuffer::DumbBuffer, plane, property},
 };
 
 use crate::drm::Device;
+
+/// Legacy cursor-plane hide operation. Production uses `set_cursor2`; the
+/// executor is retained on the plane so rejection rollback uses the same
+/// ioctl path as ordinary hide operations.
+pub(crate) trait CursorHideExecutor {
+    fn hide(&self, device: &Device, crtc: crtc::Handle) -> io::Result<()>;
+}
+
+#[derive(Default)]
+pub(crate) struct DrmCursorHideExecutor;
+
+impl CursorHideExecutor for DrmCursorHideExecutor {
+    #[allow(deprecated)]
+    fn hide(&self, device: &Device, crtc: crtc::Handle) -> io::Result<()> {
+        device.set_cursor2::<DumbBuffer>(crtc, None, (0, 0))
+    }
+}
 
 /// A failed cursor bind/reposition operation, including whether the cursor is
 /// still bound after best-effort rollback. Callers must not switch an output
@@ -160,6 +177,7 @@ pub const HW_CURSOR_FALLBACK_H: u32 = 64;
 /// Sw→Hw transition before another.
 pub struct CursorPlane {
     device: Rc<Device>,
+    hide_executor: Rc<dyn CursorHideExecutor>,
     dumb: Option<DumbBuffer>,
     ptr: NonNull<u8>,
     len: usize,
@@ -184,6 +202,9 @@ pub struct CursorPlane {
     /// CRTC needs a distinct compatible plane: a single universal plane cannot
     /// simultaneously display a cursor on two CRTCs.
     explicit_plane_crtcs: Option<Vec<HashSet<crtc::Handle>>>,
+    /// Atomic position property discovery, keyed by the compatible CRTC.
+    /// This is topology discovery data and must survive `retain_crtcs`.
+    atomic_positions: HashMap<crtc::Handle, (plane::Handle, property::Handle, property::Handle)>,
     /// In-memory storage for the ioctl-free test factory. Production cursor
     /// planes own an mmap through `dumb`; tests need a safe buffer to exercise
     /// lazy-init upload/version behavior without a real DRM node.
@@ -238,7 +259,14 @@ fn cursor_planes_cover_crtcs(
     )
 }
 
-fn discover_cursor_plane_crtcs(device: &Device) -> io::Result<Vec<HashSet<crtc::Handle>>> {
+struct DiscoveredCursorPlane {
+    handle: plane::Handle,
+    crtcs: HashSet<crtc::Handle>,
+    crtc_x: Option<property::Handle>,
+    crtc_y: Option<property::Handle>,
+}
+
+fn discover_cursor_plane_crtcs(device: &Device) -> io::Result<Vec<DiscoveredCursorPlane>> {
     let resources = device.resource_handles()?;
     let mut cursor_planes = Vec::new();
     for handle in device.plane_handles()? {
@@ -256,12 +284,15 @@ fn discover_cursor_plane_crtcs(device: &Device) -> io::Result<Vec<HashSet<crtc::
         if raw != PlaneType::Cursor as u64 {
             continue;
         }
-        cursor_planes.push(
-            resources
+        cursor_planes.push(DiscoveredCursorPlane {
+            handle,
+            crtcs: resources
                 .filter_crtcs(info.possible_crtcs())
                 .into_iter()
                 .collect(),
-        );
+            crtc_x: map.get("CRTC_X").map(|property| property.handle()),
+            crtc_y: map.get("CRTC_Y").map(|property| property.handle()),
+        });
     }
     Ok(cursor_planes)
 }
@@ -282,8 +313,24 @@ impl CursorPlane {
             );
             None
         } else {
-            Some(cursor_planes)
+            Some(
+                cursor_planes
+                    .iter()
+                    .map(|plane| plane.crtcs.clone())
+                    .collect(),
+            )
         };
+        let mut atomic_positions = HashMap::new();
+        for cursor_plane in &cursor_planes {
+            let (Some(crtc_x), Some(crtc_y)) = (cursor_plane.crtc_x, cursor_plane.crtc_y) else {
+                continue;
+            };
+            for crtc in &cursor_plane.crtcs {
+                atomic_positions
+                    .entry(*crtc)
+                    .or_insert((cursor_plane.handle, crtc_x, crtc_y));
+            }
+        }
         // Query the driver's preferred cursor dimensions. amdgpu commonly
         // reports 128×128 or 256×256; i915 typically 64×64. We MUST use
         // the reported size — see [`HW_CURSOR_FALLBACK_W`] for the
@@ -314,6 +361,7 @@ impl CursorPlane {
 
         let plane = Self {
             device,
+            hide_executor: Rc::new(DrmCursorHideExecutor),
             dumb: Some(dumb),
             ptr,
             len,
@@ -323,6 +371,7 @@ impl CursorPlane {
             visible: HashMap::new(),
             uploaded_version: None,
             explicit_plane_crtcs,
+            atomic_positions,
             #[cfg(test)]
             _test_backing: None,
         };
@@ -349,6 +398,7 @@ impl CursorPlane {
         let ptr = NonNull::new(test_backing.as_mut_ptr()).expect("non-empty test cursor buffer");
         Self {
             device,
+            hide_executor: Rc::new(DrmCursorHideExecutor),
             dumb: None,
             ptr,
             len,
@@ -358,8 +408,33 @@ impl CursorPlane {
             visible: HashMap::new(),
             uploaded_version: None,
             explicit_plane_crtcs: None,
+            atomic_positions: HashMap::new(),
             _test_backing: Some(test_backing),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_set_atomic_position_properties(
+        &mut self,
+        crtc: crtc::Handle,
+        plane: plane::Handle,
+        crtc_x: property::Handle,
+        crtc_y: property::Handle,
+    ) {
+        self.atomic_positions.insert(crtc, (plane, crtc_x, crtc_y));
+    }
+
+    /// Set only the in-memory binding observation. Production never calls
+    /// this; atomic scene-path tests use it to model a cursor that was already
+    /// shown without issuing `set_cursor2` against the test DRM fd.
+    #[cfg(test)]
+    pub(crate) fn for_tests_set_visible(&mut self, crtc: crtc::Handle, visible: bool) {
+        self.visible.insert(crtc, visible);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_set_hide_executor(&mut self, executor: Rc<dyn CursorHideExecutor>) {
+        self.hide_executor = executor;
     }
 
     /// Whether this device's explicitly exposed cursor planes can cover all
@@ -370,6 +445,27 @@ impl CursorPlane {
         self.explicit_plane_crtcs
             .as_ref()
             .is_none_or(|planes| cursor_planes_cover_crtcs(crtcs, planes))
+    }
+
+    /// Atomic plane and position properties discovered for `crtc`, if a
+    /// compatible cursor plane exposes both `CRTC_X` and `CRTC_Y`.
+    #[allow(dead_code)] // consumed by the scene commit path in Task 2
+    #[must_use]
+    pub(crate) fn atomic_position_properties(
+        &self,
+        crtc: crtc::Handle,
+    ) -> Option<(plane::Handle, property::Handle, property::Handle)> {
+        self.atomic_positions.get(&crtc).copied()
+    }
+
+    /// Whether every requested CRTC has a cursor plane with atomic position
+    /// properties. An empty topology is supported vacuously; active topology
+    /// selection always supplies its complete CRTC list.
+    #[must_use]
+    pub(crate) fn supports_atomic_positions(&self, crtcs: &[crtc::Handle]) -> bool {
+        crtcs
+            .iter()
+            .all(|crtc| self.atomic_position_properties(*crtc).is_some())
     }
 
     /// Copy a cursor image into the plane buffer. `bgra_bytes` is a
@@ -459,13 +555,8 @@ impl CursorPlane {
 
     /// Make the cursor visible on `crtc` at image-top-left position
     /// `(img_x, img_y)` in CRTC-local coordinates, with the given
-    /// `hotspot`. Uses `set_cursor2` + `move_cursor` (legacy ioctls)
-    /// — Xorg's modesetting driver does the same
-    /// (`drmmode_display.c:1812`). Legacy cursor ioctls don't EBUSY-
-    /// collide with atomic scanout commits on the same CRTC (the
-    /// kernel routes them through a separate path), so we avoid the
-    /// atomic-cursor-vs-atomic-pageflip storm that motivated the
-    /// (now-abandoned) bundle-cursor-atomic branch.
+    /// `hotspot`. Showing and hiding remain legacy `set_cursor2` operations;
+    /// steady pointer motion is selected separately by device capability.
     /// Idempotent — repeated calls just re-bind and reposition.
     ///
     /// # Errors
@@ -512,8 +603,8 @@ impl CursorPlane {
     }
 
     /// Detach the cursor from `crtc`. The plane buffer is retained so
-    /// a future `show` doesn't have to re-allocate. Uses `set_cursor2`
-    /// (legacy ioctl) — see [`Self::show`] for why we don't use atomic.
+    /// a future `show` doesn't have to re-allocate. Uses the legacy
+    /// `set_cursor2` ioctl, as required for plane show/hide.
     ///
     /// # Errors
     /// `set_cursor2` ioctl failure.
@@ -527,22 +618,15 @@ impl CursorPlane {
 
     #[allow(deprecated)]
     fn hide_legacy(&mut self, crtc: crtc::Handle) -> io::Result<()> {
-        self.device.set_cursor2::<DumbBuffer>(crtc, None, (0, 0))?;
+        self.hide_executor.hide(&self.device, crtc)?;
         self.visible.insert(crtc, false);
         Ok(())
     }
 
     /// Move the cursor on `crtc` to image-top-left `(x, y)` in
-    /// CRTC-local coordinates. Uses `drmModeMoveCursor` (legacy ioctl)
-    /// — Xorg's modesetting driver does the same
-    /// (`drmmode_display.c:1797`).
-    ///
-    /// The legacy path is **immediate** (the kernel updates the cursor
-    /// plane synchronously, not vblank-paced) — perfect for cursor
-    /// responsiveness. It also doesn't EBUSY-collide with atomic
-    /// scanout commits on the same CRTC because the kernel routes
-    /// legacy cursor ops through a separate path from the atomic
-    /// state machine.
+    /// CRTC-local coordinates with the master's legacy ioctl. Task 1 keeps
+    /// this call for every device; Task 3 switches capable devices to the
+    /// atomic position path.
     ///
     /// # Errors
     /// `move_cursor` ioctl failure.
@@ -676,6 +760,27 @@ mod tests {
         let planes = vec![HashSet::from([a, b]), HashSet::from([a])];
 
         assert!(cursor_planes_cover_crtcs(&[a, b], &planes));
+    }
+
+    #[test]
+    fn cursor_keeps_atomic_positions_across_a_zero_crtc_topology_step() {
+        let crtc = test_crtc(13);
+        let plane_handle = ::drm::control::from_u32(21).unwrap();
+        let crtc_x = ::drm::control::from_u32(31).unwrap();
+        let crtc_y = ::drm::control::from_u32(32).unwrap();
+        let device = Rc::new(crate::drm::Device::for_tests().expect("test DRM device"));
+        let mut plane = CursorPlane::for_tests_stub(device, 64, 64);
+        plane.for_tests_set_atomic_position_properties(crtc, plane_handle, crtc_x, crtc_y);
+
+        plane.retain_crtcs(&HashSet::new());
+        plane.retain_crtcs(&HashSet::from([crtc]));
+
+        assert_eq!(
+            plane.atomic_position_properties(crtc),
+            Some((plane_handle, crtc_x, crtc_y))
+        );
+        assert!(plane.supports_atomic_positions(&[crtc]));
+        assert!(!plane.is_visible_on(crtc));
     }
 
     #[test]

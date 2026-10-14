@@ -11,19 +11,29 @@ use crate::kms::render::{
     scene_diff::{ParticipantId, SceneRole},
     store::DrawableStore,
 };
-use std::io;
+use std::{collections::HashSet, io};
 use yserver_protocol::x11::xfixes;
 
 /// An output sink with no frame slots, no cursor plane and no Vulkan: what
 /// the headless `PlatformBackend::for_tests` answers on a fresh instance.
 struct TestSink {
     gpu: GpuCore,
+    commit_in_flight: HashSet<usize>,
 }
 
 impl TestSink {
     fn new() -> Self {
         Self {
             gpu: GpuCore::for_tests(),
+            commit_in_flight: HashSet::new(),
+        }
+    }
+
+    fn set_commit_in_flight(&mut self, output_idx: usize, in_flight: bool) {
+        if in_flight {
+            self.commit_in_flight.insert(output_idx);
+        } else {
+            self.commit_in_flight.remove(&output_idx);
         }
     }
 }
@@ -47,6 +57,10 @@ impl OutputSink for TestSink {
 
     fn route(&self, _output_idx: usize) -> OutputRoute {
         OutputRoute::None
+    }
+
+    fn output_commit_in_flight(&self, output_idx: usize) -> bool {
+        self.commit_in_flight.contains(&output_idx)
     }
 
     fn slot_count(&self, _output_idx: usize) -> Option<usize> {

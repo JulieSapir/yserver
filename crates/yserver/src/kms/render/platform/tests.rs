@@ -522,6 +522,11 @@ fn test_kms_device(key: crate::platform::drm::DrmDeviceKey) -> KmsDevice {
     KmsDevice {
         key,
         device: Rc::new(drm::Device::for_tests().expect("test DRM device")),
+        atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(Rc::new(
+            crate::drm::atomic::DrmAtomicCommitExecutor,
+        ))),
+        page_flip_event_source: Rc::new(flip_events::DrmPageFlipEventSource),
+        test_page_flip_event_source: None,
         cursor: KmsCursorState::new(),
     }
 }
@@ -1107,6 +1112,11 @@ fn cursor_route_qualifies_colliding_raw_crtcs_by_device() {
     platform.devices.push(KmsDevice {
         key: second_key,
         device: Rc::new(drm::Device::for_tests().expect("second test DRM device")),
+        atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(Rc::new(
+            crate::drm::atomic::DrmAtomicCommitExecutor,
+        ))),
+        page_flip_event_source: Rc::new(flip_events::DrmPageFlipEventSource),
+        test_page_flip_event_source: None,
         cursor: KmsCursorState::new(),
     });
     platform.outputs[0].key.device_key = second_key;
@@ -1127,6 +1137,11 @@ fn drm_device_fd_lookup_distinguishes_same_kind_poll_sources() {
             minor: 1,
         },
         device: second_device,
+        atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(Rc::new(
+            crate::drm::atomic::DrmAtomicCommitExecutor,
+        ))),
+        page_flip_event_source: Rc::new(flip_events::DrmPageFlipEventSource),
+        test_page_flip_event_source: None,
         cursor: KmsCursorState::new(),
     });
 
@@ -1705,36 +1720,30 @@ fn cursor_capacity_is_evaluated_per_card() {
 }
 
 #[test]
-fn nvidia_cursor_policy_follows_the_output_owner() {
+fn cursor_plane_without_atomic_position_properties_keeps_the_legacy_path() {
     let mut platform = PlatformBackend::for_tests();
-    let mesa_key = platform.devices[0].key;
-    let nvidia_key = crate::platform::drm::DrmDeviceKey {
-        major: 226,
-        minor: 77,
-    };
-    platform.devices.push(KmsDevice {
-        key: nvidia_key,
-        device: Rc::new(drm::Device::for_tests().expect("test DRM device")),
-        cursor: KmsCursorState::new_with_nvidia_policy(true),
-    });
+    let crtc = platform.outputs[0].output.crtc;
+    install_test_cursor_plane(&mut platform.devices[0], &[crtc], "legacy path test");
 
-    let policy_disabled = |platform: &PlatformBackend| {
-        let output = &platform.outputs[0];
-        platform
-            .device_for_key(output.key.device_key)
-            .expect("output owner")
-            .cursor
-            .nvidia_policy_disabled
-    };
-    platform.outputs[0].key.device_key = mesa_key;
-    assert!(!policy_disabled(&platform));
-    platform.outputs[0].key.device_key = nvidia_key;
-    assert!(policy_disabled(&platform));
+    assert!(!platform.devices[0].cursor.atomic_cursor);
+    assert!(!platform.devices[0].cursor.topology_blocked);
+    assert!(platform.devices[0].cursor.plane.is_some());
+    assert!(platform.cursor_plane_available_for_output(0));
 
-    platform.devices.swap(0, 1);
-    assert!(policy_disabled(&platform));
-    platform.outputs[0].key.device_key = mesa_key;
-    assert!(!policy_disabled(&platform));
+    platform.devices[0]
+        .cursor
+        .plane
+        .as_mut()
+        .expect("installed cursor plane")
+        .for_tests_set_atomic_position_properties(
+            crtc,
+            ::drm::control::from_u32(21).unwrap(),
+            ::drm::control::from_u32(31).unwrap(),
+            ::drm::control::from_u32(32).unwrap(),
+        );
+    let device_key = platform.devices[0].key;
+    platform.refresh_cursor_topology_for_devices(&HashSet::from([device_key]));
+    assert!(platform.devices[0].cursor.atomic_cursor);
 }
 
 #[test]

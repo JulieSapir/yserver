@@ -33,6 +33,37 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-13 hardware cursor in the wlroots model (branch `feat/atomic-cursor`):** on every device whose
+  cursor planes expose `CRTC_X`/`CRTC_Y`, the cursor is driven through atomic commits. Each CRTC has one commit
+  stream with at most one commit in flight:
+  - the cursor position rides the scene's commits (shared and copied flips, direct scanout, composed unflip);
+  - a cursor-only `NONBLOCK | PAGE_FLIP_EVENT` commit goes out from the scheduling pass when the CRTC is idle;
+  - the scene and direct scanout wait for it like for their own flip.
+
+  This removes the NVIDIA stall. nvidia-drm has no `atomic_async_check`/`atomic_async_update`, and its own
+  `nv_drm_atomic_commit` ignores `legacy_cursor_update`, so every legacy cursor ioctl was a blocking commit costing
+  about a vblank. The NVIDIA software-cursor policy is deleted, so direct scanout now engages on NVIDIA.
+
+  Also: a cursor hidden on every output (XFIXES `HideCursor`) no longer counts as a software cursor, so direct scanout
+  engages when a game hides the cursor before going fullscreen (on every GPU).
+
+  Rejections:
+  - after an EBUSY, the CRTC waits for its next flip event before another cursor-only attempt;
+  - other errors hide the plane through the legacy ioctl and fall back to the software cursor;
+  - accepted cursor-only commits join the old-event drain on topology changes, DPMS and VT release.
+
+  Measured on NVIDIA (card1), branch vs. master's software cursor and master's legacy hardware cursor:
+  - 0 core round trips over 8 ms on pure motion, drag and animation plus motion (legacy: 900–1200);
+  - drag lag p99 12 px (legacy 13–19);
+  - 2066 direct submits in fullscreen with motion;
+  - with the cursor hidden before fullscreen: 863 direct submits, where master gets 0;
+  - EBUSY 0, NONBLOCK ioctl p99 under 0.4 ms, motion-to-visible about 20 ms;
+  - a MATE session through 5 DPMS cycles while moving.
+
+  amdgpu and i915 now use the same model: their cursor can be up to a frame later than with the immediate legacy
+  move. `tools/cursor-bench/` measures this on a given card. On an AMD integrated GPU (amdgpu) every bench row matches master's legacy cursor and
+  motion-to-visible p99 stays at 20–30 ms. i915 and the VT switch are not yet validated on hardware. Plan: `docs/superpowers/plans/2026-10-13-atomic-cursor-wlroots-model.md`.
+
 - **2026-10-13 phase 3b, scene compositor in `yserver-render` (branch
   `refactor/phase3b-scene-split`):** the scene (`kms::render::scene`, with
   its tests) and `WindowGeometry`/`WindowsMap` (`kms::render::window_geometry`)

@@ -1,3 +1,4 @@
+pub mod atomic;
 pub mod buffer;
 pub mod device;
 pub mod fdinfo;

@@ -56,6 +56,9 @@ impl KmsBackend {
                         .as_ref()
                         .is_some_and(|frame| frame.awaiting_outputs.contains(output_idx))
                     || self.scanout_m2.unflip_awaiting_outputs.contains(output_idx)
+                    || self
+                        .platform
+                        .cursor_atomic_event_pending_for_output(*output_idx)
             })
             .map(|(_, output)| CrtcKey::for_output(output))
             .collect()
@@ -98,6 +101,8 @@ impl KmsBackend {
             self.request_exit();
             return Err(error);
         }
+        self.platform
+            .clear_atomic_cursor_state_after_old_events_discard();
 
         // Direct teardown may have submitted the lazy COW copy immediately
         // before disabling scanout. Wait for that work, then retire scene and

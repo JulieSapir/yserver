@@ -10,6 +10,7 @@ use crate::{
             InitialScanoutRollbackGuard, KmsCursorState, KmsDevice, PlatformBackend, RenderDevice,
             RollbackScanoutOutput, SCANOUT_POOL_DEPTH, WAKEUP_EVENTFD_TOKEN,
             cursor::initialize_cursor_plane_for_device,
+            flip_events::{DrmPageFlipEventSource, PageFlipEventSource},
             qualify::{
                 allocate_copied_scanout_pool, allocate_copy_free_scanout_pool,
                 route_requires_copy_free_probe,
@@ -25,21 +26,6 @@ use crate::{
     },
 };
 use std::{collections::HashMap, io, os::fd::AsFd as _, path::PathBuf, rc::Rc, sync::Arc};
-
-fn drm_device_is_nvidia(device: &drm::Device) -> bool {
-    use ::drm::Device as _;
-    device
-        .get_driver()
-        .ok()
-        .map(|driver| {
-            driver
-                .name()
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .contains("nvidia")
-        })
-        .unwrap_or(false)
-}
 
 fn retain_live_vk_contexts_after_terminal_probe(
     live_vk: &Arc<VkContext>,
@@ -354,11 +340,16 @@ impl PlatformBackend {
         let mut devices: Vec<KmsDevice> = devices
             .into_iter()
             .map(|device| {
-                let cursor =
-                    KmsCursorState::new_with_nvidia_policy(drm_device_is_nvidia(&device.device));
+                let cursor = KmsCursorState::new();
                 KmsDevice {
                     key: device.key,
                     device: device.device,
+                    atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(
+                        Rc::new(crate::drm::atomic::DrmAtomicCommitExecutor),
+                    )),
+                    page_flip_event_source: Rc::new(DrmPageFlipEventSource),
+                    #[cfg(test)]
+                    test_page_flip_event_source: None,
                     cursor,
                 }
             })
@@ -719,6 +710,9 @@ impl PlatformBackend {
         Ok(Self {
             initial_scanout_rollback_armed,
             devices,
+            output_power_executor: Rc::new(super::power::DrmOutputPowerExecutor),
+            deferred_cursor_move_outcome: crate::kms::render::platform::CursorMoveOutcome::default(
+            ),
             render_devices,
             selected_render_device: Some(selected_render_device),
             outputs,
@@ -776,13 +770,30 @@ impl PlatformBackend {
             RenderKmsRelationship::Unknown,
         );
         let device = Rc::new(drm::Device::for_tests().expect("test drm device"));
+        #[cfg(test)]
+        let test_page_flip_event_source =
+            Rc::new(super::flip_events::RecordingPageFlipEventSource::default());
+        #[cfg(test)]
+        let page_flip_event_source: Rc<dyn PageFlipEventSource> =
+            test_page_flip_event_source.clone();
+        #[cfg(not(test))]
+        let page_flip_event_source: Rc<dyn PageFlipEventSource> = Rc::new(DrmPageFlipEventSource);
         Self {
             initial_scanout_rollback_armed: false,
             devices: vec![KmsDevice {
                 key: device_key,
                 device,
+                atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(Rc::new(
+                    crate::drm::atomic::DrmAtomicCommitExecutor,
+                ))),
+                page_flip_event_source,
+                #[cfg(test)]
+                test_page_flip_event_source: Some(test_page_flip_event_source),
                 cursor: KmsCursorState::new(),
             }],
+            output_power_executor: Rc::new(super::power::DrmOutputPowerExecutor),
+            deferred_cursor_move_outcome: crate::kms::render::platform::CursorMoveOutcome::default(
+            ),
             render_devices: Vec::new(),
             selected_render_device: None,
             outputs: vec![ActiveOutput::new(

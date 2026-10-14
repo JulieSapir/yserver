@@ -276,10 +276,13 @@ pub enum CursorPlaneMode {
     /// Every active output is in HW mode + no transitions pending
     /// — pointer fast path may issue `cursor_plane_move` directly.
     Hw,
+    /// Every active output has the cursor hidden and no transition is pending.
+    /// Direct scanout is compatible and pointer motion has nothing to move.
+    Hidden,
     /// At least one output is currently SW or in transition. The
     /// pointer fast path falls back to `scene.wake_for_damage`.
     Mixed,
-    /// Every output is in SW (or Hidden) mode — scene wake required.
+    /// At least one output needs software cursor composition.
     Sw,
 }
 
@@ -523,6 +526,8 @@ struct DamageAuditLedgerEntry {
 enum TickSkipReason {
     /// `pending_acks` non-empty — flip in flight, KMS would EBUSY.
     PendingAcks,
+    /// An accepted non-scene commit owns this CRTC until its flip retires.
+    CursorCommitInFlight,
     /// `next_submit_retry_at` deadline still in the future.
     RetryDeadline,
     /// `output_damage` is empty and this is not the first frame.
