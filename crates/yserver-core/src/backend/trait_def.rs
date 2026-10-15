@@ -634,6 +634,10 @@ pub trait Backend {
     /// The live RandR provider set (`RRGetProviders`). Empty for
     /// backends that expose no provider topology.
     fn randr_providers(&mut self) -> Vec<crate::randr::RandrProvider>;
+    /// What the CRTCs can do and the screen size range.
+    fn randr_limits(&self) -> crate::randr::RandrLimits {
+        crate::randr::RandrLimits::default()
+    }
     fn render_opcode(&self) -> Option<u8>;
     fn xkb_opcode(&self) -> Option<u8>;
     fn xkb_info(&self) -> Option<(u8, u8, u8)>;
@@ -828,7 +832,8 @@ pub trait Backend {
     /// `lastSetTime` to the client's request timestamp (0/CurrentTime
     /// already resolved to `now` by the caller). A CRTC set bumps
     /// `lastSetTime` but NOT `lastConfigTime` (the available config did
-    /// not change). Default no-op for nested/recording backends.
+    /// not change). Also after a host resize (`host_screen_resized`), with
+    /// the resize's timestamp. Default no-op for nested/recording backends.
     fn refresh_randr_state_set_time(&mut self, _state: &mut ServerState, _set_time: u32) {}
 
     /// The RANDR layout changed (a CRTC set, a screen resize or a server
@@ -991,6 +996,14 @@ pub trait Backend {
     fn maybe_composite(&mut self) -> io::Result<()> {
         Ok(())
     }
+
+    /// The platform posted `Message::PlatformEvent`: drain its queue.
+    /// Default no-op for backends whose platform never posts one.
+    fn on_platform_event(&mut self, _state: &mut ServerState) {}
+
+    /// `state.clients` gained or lost an established client; `count` is
+    /// its new size. Default no-op.
+    fn note_client_count(&mut self, _count: usize) {}
 
     /// Dump the current scanout buffer to a file in the process's
     /// cwd. Diagnostic-only — fired from `Message::DumpScanout`
@@ -2375,6 +2388,12 @@ pub trait Backend {
         Dri3Caps::unsupported()
     }
 
+    /// Whether GLX (indirect, server-synthesised) is advertised. A platform
+    /// without a GL client stack to talk to turns it off.
+    fn glx_available(&self) -> bool {
+        true
+    }
+
     /// Import a client-supplied dma-buf as a server-owned pixmap and
     /// return the host xid the dispatcher should bind. The `fd`
     /// ownership transfers into the backend on success; on Err the
@@ -2969,6 +2988,13 @@ pub trait Backend {
     /// startup as Xorg's `XkbFinishInit` does. `None` = no keymap: keep
     /// Xorg's `DEFAULT_AUTOREPEATS`.
     fn keymap_auto_repeats(&self) -> Option<[u8; 32]> {
+        None
+    }
+
+    /// `(numGroups, enabledControls)` of the backend's XKB keyboard, as its
+    /// GetControls reply carries them, for the `XkbControlsNotify` the core
+    /// loop sends. `None` = no XKB keymap here.
+    fn xkb_controls_base(&self) -> Option<(u8, u32)> {
         None
     }
 

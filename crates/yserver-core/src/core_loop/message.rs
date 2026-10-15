@@ -226,10 +226,16 @@ pub enum Message {
         byte_order: ClientByteOrder,
         is_local: bool,
         fd_passing: bool,
+        /// Connected through [`Message::InternalClient`].
+        internal: bool,
         /// The setup reply bytes the client received, for RECORD's
         /// ClientStarted.
         setup_reply: Vec<u8>,
     },
+    /// The server's own X client (a window shell's clipboard bridge): the
+    /// core runs the setup on `stream` as for an accepted connection, with
+    /// no authorization, and marks the client internal.
+    InternalClient(std::os::unix::net::UnixStream),
     /// One framed X11 request from a client reader thread.
     Request {
         id: ClientId,
@@ -312,6 +318,10 @@ pub enum Message {
     /// dumps the three are indistinguishable from the scanout alone.
     /// Diagnostic-only; no-op for backends that don't redirect.
     DumpDrawables,
+    /// The backend's platform has work for the core thread (a frame
+    /// retired, a window closed). No payload: the platform keeps its own
+    /// queue, drained in `Backend::on_platform_event`.
+    PlatformEvent,
 }
 
 #[derive(Debug)]

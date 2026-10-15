@@ -19,7 +19,7 @@
 //! (`just yserver-xfce-hw`) is the
 //! load-bearing Stage 2 close gate; this file covers the
 //! correctness oracle that gates against pixel-level regressions.
-
+#![cfg(kms)]
 #![cfg(target_os = "linux")]
 
 mod backing_lifetime;
@@ -155,6 +155,7 @@ impl ProtoFixture {
             reader_control: None,
             is_local: true,
             fd_passing: true,
+            internal: false,
         }
     }
 

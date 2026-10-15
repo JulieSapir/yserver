@@ -78,7 +78,9 @@ pub(crate) fn is_session_scoped(message: &Message) -> bool {
         | Message::VtAcquire
         | Message::SwitchVt(_)
         | Message::DumpScanout
-        | Message::DumpDrawables => false,
+        | Message::DumpDrawables
+        | Message::PlatformEvent
+        | Message::InternalClient(_) => false,
     }
 }
 
@@ -194,6 +196,7 @@ mod tests {
             Message::SwitchVt(1),
             Message::DumpScanout,
             Message::DumpDrawables,
+            Message::PlatformEvent,
             device_removed(),
             Message::ClientDisconnected {
                 id: ClientId(1),

@@ -2,8 +2,12 @@ use crate::kms::{
     cpu_types::Rectangle16,
     render::{
         backend::{
-            KmsBackend, SharedBackingMoveSource, WindowGeometry, order_pieces_for_in_place_move,
-            portable::{clip::intersect_rect_with_clip, draw::compute_copy_area_dst_rects},
+            SharedBackingMoveSource, WindowGeometry, XBackend, order_pieces_for_in_place_move,
+            portable::{
+                clip::intersect_rect_with_clip, draw::compute_copy_area_dst_rects,
+                windows::default_window_init_color,
+            },
+            seam::Platform,
             shared_backing_move_pieces,
         },
         engine::decode_x11_pixel_for_storage,
@@ -12,17 +16,35 @@ use crate::kms::{
         target::{Dst, PaintTarget, Src},
     },
 };
+use std::io;
 use yserver_core::host_x11::HostSubwindowConfig;
 
-impl KmsBackend {
-    pub(in crate::kms::render::backend) fn init_root_storage(&mut self) {
+use super::super::seam::{ResizeFault, resize_fault};
+
+/// Placeholder xids of root/COW storage a resize prepared; no client xid
+/// has the top bits set.
+const PREPARED_ROOT_XID: u32 = 0xFFFF_FF00;
+const PREPARED_COW_XID: u32 = 0xFFFF_FF01;
+
+/// Root (and COW) storage of a new screen size, allocated and filled but
+/// not yet published.
+#[must_use]
+pub(crate) struct PreparedRootStorage {
+    width: u16,
+    height: u16,
+    root: Option<DrawableId>,
+    cow: Option<DrawableId>,
+}
+
+impl<P: Platform> XBackend<P> {
+    pub(crate) fn init_root_storage(&mut self) {
         let root_xid = self.core.window_id;
         if self.store.lookup(root_xid).is_some() {
             return;
         }
-        let width = self.platform.fb_w.max(1);
-        let height = self.platform.fb_h.max(1);
-        let storage = match self.platform.gpu.allocate_drawable_storage_as(
+        let width = self.platform.fb_size().0.max(1);
+        let height = self.platform.fb_size().1.max(1);
+        let storage = match self.platform.gpu().allocate_drawable_storage_as(
             width,
             height,
             32,
@@ -60,7 +82,7 @@ impl KmsBackend {
         };
         if let Err(e) = self.engine.fill_rect(
             &mut self.store,
-            &mut self.platform.gpu,
+            self.platform.gpu_mut(),
             Dst::server_internal(id),
             rect,
             decode_x11_pixel_for_storage(
@@ -70,10 +92,264 @@ impl KmsBackend {
                 24,
                 GpuCore::format_for_depth(24),
             ),
-        ) && self.platform.gpu.vk.is_some()
+        ) && self.platform.gpu().vk.is_some()
         {
             log::warn!("render init_root_storage: initial root fill failed: {e:?}");
         }
+    }
+
+    /// Allocate and fill root (and, if materialised, COW) storage of
+    /// `w`x`h` under placeholder xids: every fallible step of a screen
+    /// resize, done before anything published changes.
+    /// [`Self::commit_root_storage`] publishes it,
+    /// [`Self::discard_root_storage`] frees it.
+    ///
+    /// # Errors
+    ///
+    /// An allocation or a fill failed; what was made is freed again.
+    pub(crate) fn prepare_root_storage(
+        &mut self,
+        w: u16,
+        h: u16,
+    ) -> io::Result<PreparedRootStorage> {
+        let mut prepared = PreparedRootStorage {
+            width: w,
+            height: h,
+            root: None,
+            cow: None,
+        };
+        let root_xid = self.core.window_id;
+        if self.store.lookup(root_xid).is_some() {
+            let background = decode_x11_pixel_for_storage(
+                self.core
+                    .bg_pixel
+                    .unwrap_or(yserver_core::resources::ROOT_DEFAULT_BACKGROUND_PIXEL),
+                24,
+                GpuCore::format_for_depth(24),
+            );
+            match self.prepare_screen_drawable(
+                PREPARED_ROOT_XID,
+                DrawableKind::Root,
+                32,
+                w,
+                h,
+                background,
+            ) {
+                Ok(id) => prepared.root = Some(id),
+                Err(e) => {
+                    self.discard_root_storage(prepared);
+                    return Err(e);
+                }
+            }
+            // The fill is the pixel background; a background pixmap tiles
+            // over it, as Xorg repaints the whole resized root with its tile.
+            if let (Some(id), Some(bg_pixmap)) = (prepared.root, self.core.bg_pixmap) {
+                let extent = ash::vk::Extent2D {
+                    width: u32::from(w),
+                    height: u32::from(h),
+                };
+                let tiled = if resize_fault(ResizeFault::Fill) {
+                    Err(io::Error::other("injected tile failure"))
+                } else {
+                    self.tile_background_pixmap_into(
+                        Dst::server_internal(id),
+                        (0, 0),
+                        extent,
+                        bg_pixmap.as_raw(),
+                    )
+                    .map_err(|e| io::Error::other(format!("root tile: {e:?}")))
+                };
+                if let Err(e) = tiled
+                    && self.platform.gpu().vk.is_some()
+                {
+                    self.discard_root_storage(prepared);
+                    return Err(e);
+                }
+            }
+        }
+        // The COW is lazily allocated on the first CompositeGetOverlayWindow;
+        // unmaterialised, its first allocation takes the new extent.
+        if self.cow_id.is_some() {
+            // OPAQUE black, not transparent: the COW is a depth-24 drawable,
+            // and on X11 depth-24 has no alpha channel — it is opaque by
+            // definition. See `default_window_init_color`.
+            match self.prepare_screen_drawable(
+                PREPARED_COW_XID,
+                DrawableKind::Window,
+                24,
+                w,
+                h,
+                default_window_init_color(24),
+            ) {
+                Ok(id) => prepared.cow = Some(id),
+                Err(e) => {
+                    self.discard_root_storage(prepared);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(prepared)
+    }
+
+    /// One screen-sized drawable under the placeholder `xid`, filled with
+    /// `color`; a null stub without Vulkan (test fixtures).
+    fn prepare_screen_drawable(
+        &mut self,
+        xid: u32,
+        kind: DrawableKind,
+        depth: u8,
+        w: u16,
+        h: u16,
+        color: [f32; 4],
+    ) -> io::Result<DrawableId> {
+        let extent = ash::vk::Extent2D {
+            width: u32::from(w),
+            height: u32::from(h),
+        };
+        if resize_fault(ResizeFault::Alloc) {
+            return Err(io::Error::other("injected allocation failure"));
+        }
+        let storage = if self.platform.gpu().vk.is_none() {
+            Storage::for_tests_null(extent, GpuCore::format_for_depth(depth))
+        } else {
+            let storage = self
+                .platform
+                .gpu()
+                .allocate_drawable_storage_as(
+                    w,
+                    h,
+                    depth,
+                    crate::kms::vk::mem_accounting::MemCategory::WindowStorage,
+                )
+                .map_err(|e| io::Error::other(format!("{w}x{h} depth {depth} storage: {e:?}")))?;
+            self.telemetry.record_storage_allocation();
+            self.telemetry.record_image_view_create();
+            storage
+        };
+        let id = self
+            .store
+            .allocate(xid, kind, depth, true, storage)
+            .map_err(|e| io::Error::other(format!("store allocate: {e:?}")))?;
+        let rect = ash::vk::Rect2D {
+            offset: ash::vk::Offset2D::default(),
+            extent,
+        };
+        let filled = if resize_fault(ResizeFault::Fill) {
+            Err(io::Error::other("injected fill failure"))
+        } else if self.platform.gpu().vk.is_none() {
+            Ok(())
+        } else {
+            self.engine
+                .fill_rect(
+                    &mut self.store,
+                    self.platform.gpu_mut(),
+                    Dst::server_internal(id),
+                    rect,
+                    color,
+                )
+                .map_err(|e| io::Error::other(format!("{w}x{h} fill: {e:?}")))
+        };
+        if let Err(e) = filled {
+            self.store_decref_with_invalidate(id);
+            return Err(e);
+        }
+        Ok(id)
+    }
+
+    /// Free storage [`Self::prepare_root_storage`] made and nothing used.
+    pub(crate) fn discard_root_storage(&mut self, prepared: PreparedRootStorage) {
+        for id in [prepared.root, prepared.cow].into_iter().flatten() {
+            self.store_decref_with_invalidate(id);
+        }
+    }
+
+    /// Publish prepared root/COW storage in place of the old one and tell
+    /// the scene the storage under every output changed. Allocates and
+    /// submits nothing. The caller sets the platform extent.
+    ///
+    /// The KMS virtual-extent path (`apply_virtual_screen_extent`) and the
+    /// surface's resizes share it.
+    pub(crate) fn commit_root_storage(&mut self, prepared: PreparedRootStorage) {
+        let (w, h) = (prepared.width, prepared.height);
+        if let Some(new_id) = prepared.root {
+            let root_xid = self.core.window_id;
+            if let Some(old_id) = self.store.lookup(root_xid) {
+                self.store.detach_xid(root_xid);
+                self.store_decref_with_invalidate(old_id);
+            }
+            if let Err(e) = self.store.rebind_xid(new_id, root_xid) {
+                log::error!("render commit_root_storage: root rebind failed: {e:?}");
+            }
+            self.apply_pending_picture_refs(root_xid);
+        }
+        if let Some(new_cow_id) = prepared.cow {
+            let cow_xid = yserver_core::resources::COMPOSITE_OVERLAY_WINDOW.0;
+            if let Some(old_cow_id) = self.cow_id.take() {
+                self.store.detach_xid(cow_xid);
+                self.store_decref_with_invalidate(old_cow_id);
+            }
+            if let Err(e) = self.store.rebind_xid(new_cow_id, cow_xid) {
+                log::error!("render commit_root_storage: COW rebind failed: {e:?}");
+            }
+            self.apply_pending_picture_refs(cow_xid);
+            self.cow_id = Some(new_cow_id);
+            // Scene assembly uses the COW's window geometry.
+            if let Some(geom) = self.windows.get_mut(&cow_xid) {
+                geom.width = w;
+                geom.height = h;
+            }
+        }
+
+        // ── Mark scene dirty — no drain/rebuild needed ─────────────────
+        // A logical resize (RRSetScreenSize) does NOT change per-output
+        // scanout pool geometry or output positions; only the root/COW
+        // *source* dimensions change.  The scene resolves root and COW
+        // storage by xid on every frame (see `build_scene` → `store.lookup(
+        // core.window_id)`), so the reallocated storage above will be picked
+        // up automatically on the next compose tick.
+        //
+        // Crucially, we must NOT call `drain_all` + `rebuild_outputs` here.
+        // Those paths clear the scene's `pending_acks` queue (the per-output
+        // "flip in flight" gate) but do NOT drain the kernel's DRM event
+        // queue.  If output N has a pending atomic flip when we call
+        // drain_all, the scene thinks the CRTC is free and immediately
+        // attempts a new commit on the next tick — but the kernel still has
+        // the old flip pending, returning EBUSY.  This is what caused the
+        // observed "output 1 freezes black after RRSetScreenSize" on a live
+        // 2-monitor session.
+        //
+        // The existing per-output flip-pending gate (`pending_acks.is_empty()`
+        // in `tick_one_output`) already prevents EBUSY: if a flip is in
+        // flight the tick skips that output until the page-flip-complete event
+        // arrives.  So the correct fix is simply to defer to that gate.
+        //
+        // Old storage (root/COW) is released safely: `store_decref_with_
+        // invalidate` parks the DrawableId in `pending_retire` if the GPU
+        // fence has not yet signaled, deferring the VkImage destroy until the
+        // compose CB finishes — no `wait_idle_bounded` needed.
+        //
+        // root-overlay is root-absolute + layout-dependent; drop it on
+        // topology change. `rebuild_outputs` isn't called here (see above),
+        // so this logical-resize path needs its own explicit clear.
+        P::request_direct_unflip(self, "virtual_screen_extent_complete");
+        self.scene.root_overlay_clear();
+        // Step 3 — the root/COW storage under every scanout BO just changed
+        // size, while the BOs themselves stay valid. Nothing else tells the
+        // per-BO damage model that: the `RRSetScreenSize` caller deliberately
+        // skips `drain_all` + `rebuild_outputs` (see above), and
+        // `wake_for_damage` adds no region.
+        //
+        // For the hotplug caller this is belt-and-braces rather than load
+        // bearing: `fire_randr_changes` grows the extent only on a topology
+        // change, which has already run `scene.rebuild_outputs`, and that
+        // replaces EVERY output's `ScanoutDamage` with a fresh one whose every
+        // BO starts wholly missing (`ScanoutDamage::new`) — the relit output
+        // and the survivors alike. It is kept unconditional because it is the
+        // storage reallocation, not the scene rebuild, that makes the per-BO
+        // history meaningless, and the cost is at most one full repaint that
+        // was already going to happen.
+        self.scene.invalidate_all_scanout_damage();
+        self.scene.wake_for_damage();
     }
 
     /// Stamp alpha = 0xFF over `rects` (storage coordinates) when `target`
@@ -115,7 +391,7 @@ impl KmsBackend {
             .collect();
         if let Err(e) = self.engine.stamp_opaque_alpha(
             &mut self.store,
-            &mut self.platform.gpu,
+            self.platform.gpu_mut(),
             target.dst(),
             &rects16,
         ) {
@@ -603,7 +879,7 @@ impl KmsBackend {
             };
             if let Err(e) = self.engine.copy_area(
                 &mut self.store,
-                &mut self.platform.gpu,
+                self.platform.gpu_mut(),
                 Src::server_internal(backing),
                 Dst::server_internal(backing),
                 src_rect,

@@ -23,6 +23,10 @@ use yserver_core::core_loop::ResetPolicy;
 /// convention).
 pub const DEFAULT_DISPLAY: u16 = 7;
 
+/// First display tried by [`LaunchOptions::pick_free_display`]: `:0` is left
+/// to XQuartz, whose launchd agent may own it.
+pub const FIRST_FREE_DISPLAY: u16 = 1;
+
 const TCP_PORT_BASE: u16 = 6_000;
 
 /// Default UDP port to the XDMCP manager (`XDM_UDP_PORT`,
@@ -123,6 +127,51 @@ pub struct LaunchOptions {
     /// XDMCP configuration: `None` unless one of `-query`, `-broadcast`
     /// or `-indirect` was given. See [`XdmcpOptions`].
     pub xdmcp: Option<XdmcpOptions>,
+    /// `--headless`: on a platform without KMS, run without a window.
+    pub headless: bool,
+    /// `--geometry WxH`: the screen size in pixels on a platform without
+    /// KMS.
+    pub geometry: Option<(u16, u16)>,
+    /// `--scale auto|1|2`: backing pixels per X pixel in a window.
+    pub scale: ScaleOption,
+    /// Not from argv: set for a launch that cannot be given a display (the
+    /// macOS app bundle). Without `:N` and `-displayfd`, the lowest free
+    /// display from [`FIRST_FREE_DISPLAY`] is locked and used.
+    pub pick_free_display: bool,
+}
+
+/// How many backing pixels of a window one X pixel covers per axis.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ScaleOption {
+    /// The window's backing scale, rounded: one X pixel per point.
+    #[default]
+    Auto,
+    /// A fixed factor, 1 or 2.
+    Factor(u32),
+}
+
+/// Parse `--scale`: `auto`, `1` or `2`.
+fn parse_scale(value: &str) -> Result<ScaleOption, String> {
+    match value {
+        "auto" => Ok(ScaleOption::Auto),
+        "1" => Ok(ScaleOption::Factor(1)),
+        "2" => Ok(ScaleOption::Factor(2)),
+        _ => Err(format!(
+            "invalid --scale argument: {value} (expected auto, 1 or 2)"
+        )),
+    }
+}
+
+/// Parse a `WxH` screen size; both sides must be non-zero.
+fn parse_geometry(value: &str) -> Result<(u16, u16), String> {
+    let invalid = || format!("invalid --geometry argument: {value} (expected WxH)");
+    let (w, h) = value.split_once(['x', 'X']).ok_or_else(invalid)?;
+    let w = w.parse::<u16>().map_err(|_| invalid())?;
+    let h = h.parse::<u16>().map_err(|_| invalid())?;
+    if w == 0 || h == 0 {
+        return Err(invalid());
+    }
+    Ok((w, h))
 }
 
 fn next_value(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
@@ -204,6 +253,12 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<LaunchOption
             };
         } else if arg == "-novtswitch" {
             // Known no-arg no-op (lightdm passes it).
+        } else if arg == "--headless" {
+            o.headless = true;
+        } else if arg == "--geometry" {
+            o.geometry = Some(parse_geometry(&next_value(&mut it, "--geometry")?)?);
+        } else if arg == "--scale" {
+            o.scale = parse_scale(&next_value(&mut it, "--scale")?)?;
         } else if matches!(arg.as_str(), "--version" | "-version") {
             // Print-and-exit; the binary acts on this before `run()`.
             // Keep scanning so it works regardless of position.
@@ -331,6 +386,9 @@ pub enum Resolution {
     Explicit { display: u16, lock: bool },
     /// Scan for the lowest free display (gdm-style `-displayfd`); no lock.
     AutoPick,
+    /// The lowest display from `first` whose lock and socket are free;
+    /// locked (see [`autopick_locked`]).
+    FirstFree { first: u16 },
 }
 
 /// The display-resolution table from the spec. Lock iff `-displayfd` is
@@ -347,6 +405,9 @@ pub fn resolve(opts: &LaunchOptions) -> Resolution {
             lock: false,
         },
         (None, Some(_)) => Resolution::AutoPick,
+        (None, None) if opts.pick_free_display => Resolution::FirstFree {
+            first: FIRST_FREE_DISPLAY,
+        },
         (None, None) => Resolution::Explicit {
             display: DEFAULT_DISPLAY,
             lock: true,
@@ -548,7 +609,10 @@ enum Occupancy {
 /// never-accepting listener in the world-writable socket dir, must not
 /// hang the launch). EAGAIN ⇒ backlog full ⇒ the display IS occupied.
 fn probe(path: &Path) -> Occupancy {
-    use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, connect, socket};
+    use nix::{
+        fcntl::{FcntlArg, FdFlag, OFlag, fcntl},
+        sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, connect, socket},
+    };
 
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
@@ -558,15 +622,21 @@ fn probe(path: &Path) -> Occupancy {
     if !meta.file_type().is_socket() {
         return Occupancy::NonSocket;
     }
+    // Flags via fcntl: Apple has no SOCK_NONBLOCK/SOCK_CLOEXEC.
     let fd = match socket(
         AddressFamily::Unix,
         SockType::Stream,
-        SockFlag::SOCK_NONBLOCK | SockFlag::SOCK_CLOEXEC,
+        SockFlag::empty(),
         None,
     ) {
         Ok(fd) => fd,
         Err(_) => return Occupancy::Opaque,
     };
+    if fcntl(&fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).is_err()
+        || fcntl(&fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).is_err()
+    {
+        return Occupancy::Opaque;
+    }
     let addr = match UnixAddr::new(path) {
         Ok(a) => a,
         Err(_) => return Occupancy::Opaque,
@@ -668,6 +738,33 @@ pub fn autopick(socket_dir: &Path) -> io::Result<(u16, UnixListener, PathBuf)> {
     Err(io::Error::new(
         ErrorKind::AddrInUse,
         "no free X display in 0..256",
+    ))
+}
+
+/// Lock and bind the lowest display in `first..256` whose lock is not held
+/// by a live server and whose socket is not live, skipping any display
+/// lost to a concurrent starter.
+pub fn autopick_locked(
+    lock_dir: &Path,
+    socket_dir: &Path,
+    first: u16,
+) -> io::Result<(u16, LockGuard, UnixListener, PathBuf)> {
+    for n in first..256 {
+        let guard = match acquire_lock(lock_dir, n) {
+            Ok(guard) => guard,
+            Err(e) if e.kind() == ErrorKind::AddrInUse => continue,
+            Err(e) => return Err(e),
+        };
+        match bind_explicit(socket_dir, n) {
+            Ok((listener, path)) => return Ok((n, guard, listener, path)),
+            // Dropping the guard releases the lock before the next display.
+            Err(e) if e.kind() == ErrorKind::AddrInUse => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        ErrorKind::AddrInUse,
+        format!("no free X display in {first}..256"),
     ))
 }
 
@@ -1130,6 +1227,48 @@ mod tests {
     }
 
     #[test]
+    fn headless_flag_parses() {
+        assert!(!parse(&[":1"]).unwrap().headless);
+        let o = parse(&[":1", "--headless"]).unwrap();
+        assert!(o.headless);
+        assert_eq!(o.display, Some(1));
+    }
+
+    #[test]
+    fn geometry_parses_and_rejects_malformed_values() {
+        assert_eq!(parse(&[":1"]).unwrap().geometry, None);
+        assert_eq!(
+            parse(&["--geometry", "1600x1000"]).unwrap().geometry,
+            Some((1600, 1000))
+        );
+        for bad in ["1600", "0x10", "10x", "x10", "70000x10", "axb"] {
+            assert!(parse(&["--geometry", bad]).is_err(), "{bad}");
+        }
+        assert!(parse(&["--geometry"]).is_err(), "missing value");
+    }
+
+    #[test]
+    fn scale_parses_and_rejects_other_values() {
+        assert_eq!(parse(&[":1"]).unwrap().scale, ScaleOption::Auto);
+        assert_eq!(
+            parse(&["--scale", "auto"]).unwrap().scale,
+            ScaleOption::Auto
+        );
+        assert_eq!(
+            parse(&["--scale", "1"]).unwrap().scale,
+            ScaleOption::Factor(1)
+        );
+        assert_eq!(
+            parse(&["--scale", "2"]).unwrap().scale,
+            ScaleOption::Factor(2)
+        );
+        for bad in ["0", "3", "1.5", "Auto", "", "-1"] {
+            assert!(parse(&["--scale", bad]).is_err(), "{bad:?}");
+        }
+        assert!(parse(&["--scale"]).is_err(), "missing value");
+    }
+
+    #[test]
     fn unknown_flags_are_tolerated() {
         let o = parse(&["-bogus", "--whatever", ":1"]).unwrap();
         assert_eq!(o.display, Some(1));
@@ -1200,6 +1339,52 @@ mod tests {
                 lock: true
             }
         );
+        let pick = |d: Option<u16>, fd: Option<RawFd>| LaunchOptions {
+            pick_free_display: true,
+            ..mk(d, fd)
+        };
+        assert_eq!(
+            resolve(&pick(None, None)),
+            Resolution::FirstFree {
+                first: FIRST_FREE_DISPLAY
+            }
+        );
+        assert_eq!(
+            resolve(&pick(Some(3), None)),
+            Resolution::Explicit {
+                display: 3,
+                lock: true
+            }
+        );
+        assert_eq!(resolve(&pick(None, Some(9))), Resolution::AutoPick);
+    }
+
+    #[test]
+    fn autopick_locked_takes_first_free_and_locks_it() {
+        let dir = unique_tmp_dir("autopick-locked");
+        let (n, guard, listener, path) = autopick_locked(&dir, &dir, 1).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(path, dir.join("X1"));
+        assert!(lock_path(&dir, 1).exists());
+        assert!(!dir.join("X0").exists());
+        drop(listener);
+        drop(guard);
+        assert!(!lock_path(&dir, 1).exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autopick_locked_skips_held_lock_and_live_socket() {
+        let dir = unique_tmp_dir("autopick-locked-busy");
+        // :1 locked by a live server (us), :2 served by a lock-less server.
+        let held = acquire_lock(&dir, 1).unwrap();
+        let live = TestListener::bind(dir.join("X2")).unwrap();
+        let (n, guard, listener, _path) = autopick_locked(&dir, &dir, 1).unwrap();
+        assert_eq!(n, 3);
+        // The lock taken for :2 was released when its socket was live.
+        assert!(!lock_path(&dir, 2).exists());
+        drop((listener, guard, live, held));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

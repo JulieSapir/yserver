@@ -991,7 +991,8 @@ pub(super) fn disconnect_with_pending_cleanup(
     }
     pending.unblock_xi_config(client);
     crate::core_loop::process_disconnect::process_disconnect(state, backend, client);
-    reset_trigger.note_client_departed(state.clients.len());
+    reset_trigger.note_client_departed(state.counted_clients());
+    backend.note_client_count(state.counted_clients());
 }
 
 /// Disconnect every client a write failed on (`client_io` flags it; the
@@ -1733,7 +1734,8 @@ fn process_one_request(
     // in the handler guarantees that, and an unreported departure is a
     // trigger that silently never fires again.
     if state.clients.len() < clients_before {
-        reset_trigger.note_client_departed(state.clients.len());
+        reset_trigger.note_client_departed(state.counted_clients());
+        backend.note_client_count(state.counted_clients());
     }
     if let Some(start) = req_start {
         telemetry.record_request(
@@ -2025,15 +2027,6 @@ pub(crate) fn drain_ready_crtc_configs(
         }
     }
 }
-
-/// X11 default auto-repeat initial delay before the first synthetic
-/// KeyPress fires. Matches xset's `-r` defaults; not yet pulled from
-/// the XKB Controls block.
-const REPEAT_INITIAL_DELAY: Duration = Duration::from_millis(660);
-
-/// X11 default auto-repeat period (25 Hz = 40 ms between synthetic
-/// KeyPress events while a key is held).
-const REPEAT_PERIOD: Duration = Duration::from_millis(40);
 
 /// Run the core loop until `Message::Shutdown` is observed.
 ///
@@ -2454,6 +2447,24 @@ fn run_core_with_inventory(
                                 telemetry.record_deferred_push(req.id);
                                 deferred_requests.push_back(req);
                             }
+                            Message::InternalClient(stream) => {
+                                let id = client_id_allocator.allocate();
+                                if let Err(err) = setup_thread::spawn(
+                                    id,
+                                    stream,
+                                    sender.bind(),
+                                    setup_registry.clone(),
+                                    auth.clone(),
+                                    true,
+                                    true,
+                                    true,
+                                ) {
+                                    error!(
+                                        "setup thread spawn failed for internal client {}: {err}",
+                                        id.0
+                                    );
+                                }
+                            }
                             Message::SetupAllocate { id, response_tx } => {
                                 handle_setup_allocate(state, id, response_tx);
                             }
@@ -2466,6 +2477,7 @@ fn run_core_with_inventory(
                                 byte_order,
                                 is_local,
                                 fd_passing,
+                                internal,
                                 setup_reply,
                             } => {
                                 if let Err(err) = handle_client_setup_complete(
@@ -2479,8 +2491,7 @@ fn run_core_with_inventory(
                                     resource_id_base,
                                     resource_id_mask,
                                     byte_order,
-                                    is_local,
-                                    fd_passing,
+                                    (is_local, fd_passing, internal),
                                     &setup_reply,
                                 ) {
                                     error!("ClientSetupComplete for client {} failed: {err}", id.0);
@@ -2492,6 +2503,9 @@ fn run_core_with_inventory(
                                         &mut reset_trigger,
                                         id,
                                     );
+                                } else if internal {
+                                    // The server's own client: no XDMCP
+                                    // session, and it arms no reset.
                                 } else if let Some(service) = xdmcp.as_mut() {
                                     // `XdmcpOpenDisplay` (`xdmcp.c:632`),
                                     // called from `ClientAuthorized`
@@ -2532,6 +2546,7 @@ fn run_core_with_inventory(
                                 } else {
                                     reset_trigger.note_client_established();
                                 }
+                                backend.note_client_count(state.counted_clients());
                             }
                             Message::ClientDisconnected { id, reason: _ } => {
                                 disconnect_with_pending_cleanup(
@@ -2776,6 +2791,7 @@ fn run_core_with_inventory(
                             }
                             Message::DumpScanout => backend.dump_scanout(),
                             Message::DumpDrawables => backend.dump_drawables(),
+                            Message::PlatformEvent => backend.on_platform_event(state),
                         }
                         if state.server_grab_owner.is_none() {
                             release_server_grab_waiters(
@@ -3542,25 +3558,58 @@ pub(crate) fn handle_host_container_resize(
     backend: &mut dyn Backend,
     ev: crate::host_x11::HostConfigureEvent,
 ) {
-    if ev.width == 0
-        || ev.height == 0
-        || (state.randr.screen_width == ev.width && state.randr.screen_height == ev.height)
-    {
+    host_screen_resized(state, backend, ev.width, ev.height);
+}
+
+/// The host resized the window that shows the screen: the single output
+/// and the screen become `width`x`height`, and clients hear of what
+/// changed: root and COW ConfigureNotify only for a new screen size,
+/// Crtc/OutputChangeNotify only for a new output mode, ScreenChangeNotify
+/// for either (Xorg `TellChanged`). The backend has already resized its
+/// storage and re-derives its RandR outputs through
+/// `refresh_randr_state_set_time`. Zero or unchanged sizes are ignored.
+pub fn host_screen_resized(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    width: u16,
+    height: u16,
+) {
+    if width == 0 || height == 0 {
         return;
     }
+    let screen_changed = (state.randr.screen_width, state.randr.screen_height) != (width, height);
+    let output_changed = state
+        .randr
+        .outputs
+        .first()
+        .is_some_and(|o| (o.width, o.height) != (width, height));
+    if !screen_changed && !output_changed {
+        return;
+    }
+    let mm = (state.randr.width_mm, state.randr.height_mm);
     let timestamp = state.timestamp_now();
-    state.randr.resize(timestamp, ev.width, ev.height);
+    state.randr.resize(timestamp, width, height);
+    if !screen_changed {
+        // A client's RRSetScreenSize millimetres stay with its size.
+        (state.randr.width_mm, state.randr.height_mm) = mm;
+    }
+    backend.refresh_randr_state_set_time(state, timestamp);
 
-    // The nested path resizes the single output, so it genuinely changes
-    // CRTC geometry — pass the output as changed so CrtcChangeNotify fires.
+    // The single output follows the host window, so its CRTC geometry
+    // genuinely changes — pass it as changed so CrtcChangeNotify fires.
     let changed: Vec<(u32, u32, u32)> = state
         .randr
         .outputs
         .first()
+        .filter(|_| output_changed)
         .map(|o| (o.output_id, o.crtc_id, o.mode_id))
         .into_iter()
         .collect();
-    apply_screen_size_side_effects(state, backend, ev.width, ev.height, &changed);
+    if screen_changed {
+        apply_screen_size_side_effects(state, backend, width, height, &changed);
+    } else {
+        emit_randr_change_notifications(state, &changed);
+    }
 }
 
 /// Tell RANDR subscribers the layout changed without the screen resizing.
@@ -4251,6 +4300,13 @@ pub fn handle_host_input(state: &mut ServerState, backend: &mut dyn Backend, ev:
 /// Xorg's per-device XKB repeat state: a key press from another keyboard
 /// cannot replace it. A matching release clears that origin's timer.
 fn update_repeat_state(state: &mut ServerState, ev: &HostInputEvent) {
+    update_repeat_state_at(state, ev, Instant::now());
+}
+
+/// [`update_repeat_state`] at `now`; a press arms its first repeat the XKB
+/// RepeatKeys delay later (Xorg `AccessXFilterPressEvent`'s `TimerSet` of
+/// `ctrls->repeat_delay`).
+fn update_repeat_state_at(state: &mut ServerState, ev: &HostInputEvent, now: Instant) {
     use crate::core_loop::{
         InputOrigin,
         message::HostInputEvent::{DeviceRemoved, DeviceSuspended, Key},
@@ -4284,7 +4340,8 @@ fn update_repeat_state(state: &mut ServerState, ev: &HostInputEvent) {
             key.origin,
             KeyRepeatState {
                 event: *key,
-                next_fire: Instant::now() + REPEAT_INITIAL_DELAY,
+                next_fire: now
+                    + Duration::from_millis(u64::from(state.keyboard_control.repeat_delay)),
             },
         );
     } else if state
@@ -4312,6 +4369,16 @@ fn update_repeat_state(state: &mut ServerState, ev: &HostInputEvent) {
 /// compositor at the iteration rate instead of the repeat rate
 /// (idle free-run, [[project_idle_compositor_redraw_loop]] cut 2a).
 pub fn fire_pending_repeats(state: &mut ServerState, backend: &mut dyn Backend) -> bool {
+    fire_pending_repeats_at(state, backend, Instant::now())
+}
+
+/// [`fire_pending_repeats`] at `now`. Each fire re-arms the XKB RepeatKeys
+/// interval later, read at fire time like Xorg's `AccessXRepeatKeyExpire`.
+pub(crate) fn fire_pending_repeats_at(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    now: Instant,
+) -> bool {
     let mut origins: Vec<_> = state.key_repeats.keys().copied().collect();
     origins.sort_by_key(|origin| match origin {
         crate::core_loop::InputOrigin::Physical(source) => (0, source.0),
@@ -4342,7 +4409,6 @@ pub fn fire_pending_repeats(state: &mut ServerState, backend: &mut dyn Backend) 
         state.key_repeats.remove(&origin);
     }
 
-    let now = Instant::now();
     let due: Vec<_> = origins
         .into_iter()
         .filter_map(|origin| {
@@ -4358,10 +4424,12 @@ pub fn fire_pending_repeats(state: &mut ServerState, backend: &mut dyn Backend) 
         return false;
     }
 
+    // SetControls refuses 0; never spin on it.
+    let interval = Duration::from_millis(u64::from(state.keyboard_control.repeat_interval.max(1)));
     for (origin, armed) in due {
         let mut next_fire = armed.next_fire;
         while now >= next_fire {
-            next_fire += REPEAT_PERIOD;
+            next_fire += interval;
         }
         // Update the timer first so any reentrant arming during fan-out
         // doesn't double-fire.
@@ -4494,8 +4562,7 @@ fn handle_client_setup_complete(
     resource_id_base: u32,
     resource_id_mask: u32,
     byte_order: yserver_protocol::x11::ClientByteOrder,
-    is_local: bool,
-    fd_passing: bool,
+    (is_local, fd_passing, internal): (bool, bool, bool),
     setup_reply: &[u8],
 ) -> io::Result<()> {
     use std::sync::{Arc, Mutex, atomic::AtomicU16};
@@ -4526,6 +4593,7 @@ fn handle_client_setup_complete(
             reader_control: Some(reader_control_tx),
             is_local,
             fd_passing,
+            internal,
         },
     );
     setup_registry
@@ -4765,6 +4833,7 @@ fn accept_pending(
                     auth.clone(),
                     is_local,
                     fd_passing,
+                    false,
                 ) {
                     error!("setup thread spawn failed for client {}: {err}", id.0);
                 }

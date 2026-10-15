@@ -66,6 +66,7 @@ pub fn make_registry() -> SetupRegistry {
 /// it happens to wake.
 ///
 /// [`CoreSender::bind`]: crate::core_loop::sender::CoreSender::bind
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     id: ClientId,
     stream: impl Into<Transport>,
@@ -74,8 +75,12 @@ pub fn spawn(
     auth: Arc<AuthState>,
     is_local: bool,
     fd_passing: bool,
+    internal: bool,
 ) -> io::Result<()> {
     let stream = stream.into();
+    // BSD `accept` (macOS has no `accept4`) inherits the listener's O_NONBLOCK;
+    // the setup thread's timed blocking reads need a blocking socket.
+    stream.set_nonblocking(false)?;
     let cloned = stream.try_clone()?;
     registry
         .lock()
@@ -90,7 +95,8 @@ pub fn spawn(
                 id,
                 registry: registry_for_thread,
             };
-            if let Err(e) = run_setup(id, stream, &sender, &auth, is_local, fd_passing) {
+            if let Err(e) = run_setup(id, stream, &sender, &auth, (is_local, fd_passing, internal))
+            {
                 // ConnectionAborted/UnexpectedEof on shutdown is
                 // expected; anything else is worth a warn.
                 if !matches!(
@@ -140,8 +146,7 @@ fn run_setup(
     mut stream: Transport,
     sender: &BoundSender,
     auth: &AuthState,
-    is_local: bool,
-    fd_passing: bool,
+    (is_local, fd_passing, internal): (bool, bool, bool),
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(SETUP_TIMEOUT))?;
     stream.set_write_timeout(Some(SETUP_TIMEOUT))?;
@@ -165,13 +170,17 @@ fn run_setup(
     // session credential is bound to the generation its `Accept` belonged to,
     // so a connection accepted in a destroyed session fails the comparison
     // even if it reaches this line long after the reset, and even though the
-    // new session has by then installed a credential of its own.
-    if let AuthVerdict::Reject(reason) = auth.check(
-        auth_transport,
-        sender.generation(),
-        &setup.auth_protocol_name,
-        &setup.auth_protocol_data,
-    ) {
+    // new session has by then installed a credential of its own. The
+    // server's own client is not authorized: it never came through a
+    // listener.
+    if !internal
+        && let AuthVerdict::Reject(reason) = auth.check(
+            auth_transport,
+            sender.generation(),
+            &setup.auth_protocol_name,
+            &setup.auth_protocol_data,
+        )
+    {
         warn!(
             "client {} auth rejected ({reason:?}); presented proto {:?}",
             id.0,
@@ -273,6 +282,7 @@ fn run_setup(
         byte_order: setup.byte_order,
         is_local,
         fd_passing,
+        internal,
         setup_reply,
     })?;
     Ok(())
@@ -291,6 +301,43 @@ mod tests {
     use yserver_protocol::x11::ClientByteOrder;
 
     #[test]
+    fn setup_on_a_nonblocking_accepted_socket_waits_for_the_late_request() {
+        let (server, mut peer) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let (_poll, sender, rx) = channel().unwrap();
+        let registry = make_registry();
+        spawn(
+            ClientId(1),
+            Transport::Unix(server),
+            sender.bind(),
+            registry.clone(),
+            AuthState::new(None),
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let mut setup = [0; 12];
+        setup[0] = b'l';
+        setup[2] = 11;
+        peer.write_all(&setup).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut allocated = false;
+        while !allocated && Instant::now() < deadline {
+            allocated = rx
+                .try_recv_all()
+                .any(|m| matches!(m, Message::SetupAllocate { .. }));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        shutdown_all(&registry);
+        assert!(
+            allocated,
+            "a setup request sent after accept must still be read"
+        );
+    }
+
+    #[test]
     fn tcp_setup_without_loaded_auth_never_allocates_a_client() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let mut peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -304,6 +351,7 @@ mod tests {
             sender.bind(),
             registry.clone(),
             AuthState::new(None),
+            false,
             false,
             false,
         )
@@ -354,7 +402,12 @@ mod tests {
 
     /// Drain `n` bytes from `s` with a deadline; returns the bytes.
     fn read_n_with_timeout(s: &mut UnixStream, n: usize, timeout: Duration) -> io::Result<Vec<u8>> {
-        s.set_read_timeout(Some(timeout))?;
+        // macOS fails SO_RCVTIMEO with EINVAL once the peer has closed; the
+        // read below then reports the buffered bytes or EOF itself.
+        match s.set_read_timeout(Some(timeout)) {
+            Err(e) if e.kind() != io::ErrorKind::InvalidInput => return Err(e),
+            _ => {}
+        }
         let mut buf = vec![0u8; n];
         s.read_exact(&mut buf)?;
         Ok(buf)
@@ -376,6 +429,7 @@ mod tests {
             AuthState::new(None),
             true,
             true,
+            false,
         )
         .unwrap();
 
@@ -464,6 +518,7 @@ mod tests {
             AuthState::new(None),
             true,
             true,
+            false,
         )
         .unwrap();
         write_big_endian_setup(&mut client_side).unwrap();
@@ -530,6 +585,7 @@ mod tests {
             AuthState::new(None),
             true,
             true,
+            false,
         )
         .unwrap();
 
@@ -567,6 +623,7 @@ mod tests {
             AuthState::new(None),
             true,
             true,
+            false,
         )
         .unwrap();
         write_setup_request(&mut client_side).unwrap();
@@ -686,6 +743,7 @@ mod tests {
             AuthState::new(Some(path.clone())),
             true,
             true,
+            false,
         )
         .unwrap();
 
@@ -714,6 +772,7 @@ mod tests {
             AuthState::new(Some(path.clone())),
             true,
             true,
+            false,
         )
         .unwrap();
 
@@ -742,9 +801,10 @@ mod tests {
 
         // Connection is closed by the server after reject (read → 0 bytes / EOF).
         let mut tail = [0u8; 1];
-        client_side
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
+        // macOS fails SO_RCVTIMEO with EINVAL once the peer has closed.
+        if let Err(e) = client_side.set_read_timeout(Some(Duration::from_secs(2))) {
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "read timeout: {e}");
+        }
         let n = client_side.read(&mut tail).unwrap_or(0);
         assert_eq!(n, 0, "server closed the connection after reject");
         let _ = std::fs::remove_file(&path);

@@ -33,6 +33,49 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-15 macOS M3: window, scale, clipboard, bundle (branch `feat/macos-m0`, plan
+  `plans/2026-10-14-macos-m3-window.md`):** the X screen follows the window. Resizes are coalesced per frame-clock
+  tick (`surface/resize.rs` `ResizeCoalescer`); the root and the output size are separate, so RRSetScreenSize and a
+  RandR mode switch resize the window (`ShellUi` window request with a token), and a host resize goes through the
+  core's `host_screen_resized`. Root storage is resized as prepare/commit (`render` backend), shared with the KMS
+  `xrandr --fb` path. `--scale auto|1|2`: X pixels per point (`auto` = one per point) and a NEAREST slot→swapchain
+  blit at the copy factor; the factor and the WINDOW-0 millimetres (CGDisplayScreenSize) are posted with every
+  `Resized` and passed in `WindowSpec` at startup; the screen keeps 96 DPI. CLIPBOARD is bridged to NSPasteboard by
+  an internal X client on a socketpair (`surface/clipboard/`, flagged `internal`: not counted, no auth, no XDMCP);
+  UTF8_STRING/STRING/TEXT/TARGETS/TIMESTAMP/MULTIPLE, INCR both ways, keeps the text when the X owner exits.
+  Quitting with X clients connected asks first (internal clients excluded). `just macos-bundle` builds
+  `target/yserver.app` (Homebrew Mesa via `VK_DRIVER_FILES`, lowest free display from `:1` in the title, log in
+  `~/Library/Logs/yserver.log`). The core thread flushes Core Animation after each swapchain build (KosmicKrisp sets
+  layer properties there). Verified on eiger: scale, resize at scale 2, mm (ruler), clipboard (589 KB / 969 KB
+  byte-identical, owner gone), bundle, quit dialog. Black startup frames and full-screen black/stale frames are a Mesa
+  26.2.x KosmicKrisp bug, fixed on Mesa main (51ffe555 suspected); HEAD fixes both. Homebrew xterm in Latin-1
+  ("locale not supported by Xlib") is the `libx11` bottle's misnamed locale modules (Homebrew/homebrew-core#318717),
+  not the server. Open: moving the window to a screen with another backing scale (no second screen yet); PRIMARY,
+  clipboard images/files (M4).
+
+- **2026-10-14 macOS M2: input and cursor (branch `feat/macos-m0`, plan `plans/2026-10-14-macos-m2-input.md`):**
+  keyboard, mouse, scroll and the X cursor in the rooted window. A local key monitor sends every key to X (Cmd =
+  Super_L/R on Mod4, Option = Alt on Mod1, Cmd-Q = Super+Q; quit is the close button, the menu's Quit without a
+  shortcut, or SIGTERM). The OS-neutral translator (`src/surface/input/`: kVK→evdev table, sided modifiers from
+  device bits, Caps Lock toggles, dropped autorepeat, releases on focus loss, pointer/scroll front-end over the
+  shared `src/scroll_v120.rs`) feeds `Message::HostInput` from two XI slaves ("macOS keyboard"/"macOS pointer", no
+  Device Node). Key repeat is the core's (XKB controls); Num Lock starts locked; Caps Lock is re-synced when the
+  window becomes key. The cursor is an `NSCursor`: the surface platform is the scene's cursor plane and hands the
+  shown image to the shell; XWarpPointer warps the host pointer (`Platform::host_pointer_warped`). Linux tests the
+  translator (unit) and the backend side (lavapipe); `src/macos/` is compiled on macOS only. Unverified constants
+  (some kVK, the NX device masks) are listed in the plan's implementation notes.
+
+- **2026-10-14 macOS M1: rooted window (branch `feat/macos-m0`, plan
+  `plans/2026-10-14-macos-m0-m1.md`):** the default macOS invocation opens one AppKit window
+  (`--geometry WxH` X pixels, CAMetalLayer) and runs the core loop on a worker thread; `--headless` stays a test
+  mode. The surface platform (`src/surface/`, OS-neutral) presents through a per-surface Vulkan swapchain: the scene
+  composes into one of two offscreen slots, then a non-blocking acquire, a slot→image copy and `vkQueuePresentKHR`;
+  a frame retires on the first frame-clock tick after its copy fence. Present is Copy-only, paced by the clock
+  (CVDisplayLink on macOS), which wakes the core only for a pending frame or an armed MSC target. RandR shows one
+  `WINDOW-0` output. Linux covers all of it on lavapipe through `VK_EXT_headless_surface`
+  (`surface::tests`); the AppKit layer (`src/macos/`) is compiled and run on macOS only. No input yet (M2).
+  Recipe: `just macos-run [display] [geometry] [log]`.
+
 - **2026-10-13 hardware cursor in the wlroots model (branch `feat/atomic-cursor`):** on every device whose
   cursor planes expose `CRTC_X`/`CRTC_Y`, the cursor is driven through atomic commits. Each CRTC has one commit
   stream with at most one commit in flight:

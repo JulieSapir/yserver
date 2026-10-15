@@ -852,7 +852,19 @@ pub struct KeyboardControlState {
     pub auto_repeats_explicit: [u8; 32],
     /// LED bitmask (led N → bit N-1). `DEFAULT_LEDS` = all off.
     pub led_mask: u32,
+    /// XKB RepeatKeys delay before the first repeat, ms (`repeat_delay`,
+    /// set by XKB SetControls). [`XKB_DEFAULT_REPEAT_DELAY`] at startup.
+    pub repeat_delay: u16,
+    /// XKB RepeatKeys interval between repeats, ms (`repeat_interval`).
+    /// [`XKB_DEFAULT_REPEAT_INTERVAL`] at startup.
+    pub repeat_interval: u16,
 }
+
+/// Xorg `XkbDfltRepeatDelay` (`xkb/xkbAccessX.c:46`); Xvfb's GetControls
+/// reports it (`kms/testdata/xorg-repeat-controls.txt`).
+pub const XKB_DEFAULT_REPEAT_DELAY: u16 = 660;
+/// Xorg `XkbDfltRepeatInterval` (`xkb/xkbAccessX.c:47`).
+pub const XKB_DEFAULT_REPEAT_INTERVAL: u16 = 40;
 
 /// Xorg `include/input.h` `DEFAULT_AUTOREPEATS`: keycodes 8..=135
 /// repeat, the rest don't.
@@ -873,6 +885,8 @@ impl KeyboardControlState {
             auto_repeats: DEFAULT_AUTO_REPEATS,
             auto_repeats_explicit: [0; 32],
             led_mask: 0,
+            repeat_delay: XKB_DEFAULT_REPEAT_DELAY,
+            repeat_interval: XKB_DEFAULT_REPEAT_INTERVAL,
         }
     }
 
@@ -1478,8 +1492,8 @@ pub struct ServerState {
 /// Server-side key auto-repeat for one input origin. Carries the original
 /// `HostKeyEvent` so synthetic repeat events retain source, state, and
 /// coordinates, plus the `Instant` at which the next repeat should fire.
-/// Per-key delay/rate overrides aren't tracked today — `core_loop::run` uses
-/// the X11 defaults (660 ms initial, 40 ms period ≈ 25 Hz).
+/// The delay and interval are the XKB RepeatKeys controls in
+/// [`KeyboardControlState`].
 #[derive(Clone, Copy, Debug)]
 pub struct KeyRepeatState {
     pub event: crate::host_x11::HostKeyEvent,
@@ -2318,6 +2332,13 @@ impl ServerState {
         }
     }
 
+    /// The connected clients that count as users of the server: all but
+    /// the internal ones.
+    #[must_use]
+    pub fn counted_clients(&self) -> usize {
+        self.clients.values().filter(|c| !c.internal).count()
+    }
+
     #[must_use]
     pub fn timestamp_now(&self) -> u32 {
         // X11 timestamps are 32-bit milliseconds; truncation is intentional.
@@ -2974,6 +2995,9 @@ pub struct ClientState {
     pub is_local: bool,
     /// Whether this connection can carry SCM_RIGHTS descriptors.
     pub fd_passing: bool,
+    /// The server's own client (a window shell's clipboard bridge): not
+    /// counted as connected for the shell or the last-client reset.
+    pub internal: bool,
     pub byte_order: ClientByteOrder,
     pub last_sequence: Arc<AtomicU16>,
     pub resource_id_base: u32,
