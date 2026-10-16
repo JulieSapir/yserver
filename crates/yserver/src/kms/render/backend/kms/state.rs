@@ -15,6 +15,7 @@ use yserver_core::backend::{
 };
 
 use crate::{
+    drm::async_flip::AsyncShape,
     internal_probe::RouteProbeRequest,
     kms::{
         backend::OutputKey,
@@ -149,18 +150,35 @@ pub(in crate::kms::render::backend) struct ScanoutM1ProbeEntry {
     /// Retained solely for its FB/GEM lifetime; `Drop` performs teardown.
     pub(in crate::kms::render::backend) _framebuffer:
         Option<crate::drm::modeset::DirectScanoutProbeFramebuffer>,
+    /// Exact source allocation shape used by the async suspension ledger.
+    pub(in crate::kms::render::backend) async_shape: Option<AsyncShape>,
 }
 
 impl ScanoutM1ProbeEntry {
     pub(in crate::kms::render::backend) fn rejected() -> Self {
-        Self { _framebuffer: None }
+        Self {
+            _framebuffer: None,
+            async_shape: None,
+        }
     }
 
+    #[cfg(test)]
     pub(in crate::kms::render::backend) fn accepted(
         framebuffer: crate::drm::modeset::DirectScanoutProbeFramebuffer,
     ) -> Self {
         Self {
             _framebuffer: Some(framebuffer),
+            async_shape: None,
+        }
+    }
+
+    pub(in crate::kms::render::backend) fn accepted_with_shape(
+        framebuffer: crate::drm::modeset::DirectScanoutProbeFramebuffer,
+        async_shape: AsyncShape,
+    ) -> Self {
+        Self {
+            _framebuffer: Some(framebuffer),
+            async_shape: Some(async_shape),
         }
     }
 
@@ -204,6 +222,11 @@ pub(in crate::kms::render::backend) struct DirectPresentFrame {
     pub(in crate::kms::render::backend) fallback_target_pin: u64,
     pub(in crate::kms::render::backend) source_id: DrawableId,
     pub(in crate::kms::render::backend) candidate: PresentScanoutCandidate,
+    /// Backend receipt time retained across the latest-wins direct successor
+    /// slot until its atomic submit.
+    pub(in crate::kms::render::backend) present_received_at: std::time::Instant,
+    /// Receipt timestamp in CLOCK_MONOTONIC's domain, shared with DRM UST.
+    pub(in crate::kms::render::backend) present_received_monotonic: Option<std::time::Duration>,
     pub(in crate::kms::render::backend) fallback_target: PaintTarget,
     pub(in crate::kms::render::backend) event: yserver_core::backend::CompletedPresentEvent,
     /// Output whose CRTC domain owns CompleteNotify/MSC for this Present.
@@ -214,7 +237,15 @@ pub(in crate::kms::render::backend) struct DirectPresentFrame {
     pub(in crate::kms::render::backend) completion_clock:
         Option<yserver_core::backend::PresentClockSample>,
     pub(in crate::kms::render::backend) awaiting_outputs: HashSet<usize>,
+    pub(in crate::kms::render::backend) async_outcome: crate::drm::async_flip::AsyncOutcome,
 }
+
+pub(in crate::kms::render::backend) type DirectFrameSubmitter =
+    fn(
+        &mut KmsBackend,
+        &mut DirectPresentFrame,
+        crate::drm::async_flip::FlipTiming,
+    ) -> io::Result<crate::drm::async_flip::AsyncOutcome>;
 
 /// Require a short stable run before entering direct ownership. Compositors
 /// such as E27 alternate full-root Presents with authoritative region-limited
@@ -255,10 +286,6 @@ pub(in crate::kms::render::backend) struct ScanoutM2State {
     /// per-output scene compose path. Keep direct-frame pins held until those
     /// composed flips replace every direct plane.
     pub(in crate::kms::render::backend) degraded_composed_unflip: bool,
-    #[cfg(test)]
-    pub(in crate::kms::render::backend) test_force_active: bool,
-    #[cfg(test)]
-    pub(in crate::kms::render::backend) test_submit_direct_without_drm: bool,
 }
 
 impl ScanoutM2State {
@@ -281,24 +308,11 @@ impl ScanoutM2State {
             unflip_fallback_source: None,
             unflip_shadow_ready: false,
             degraded_composed_unflip: false,
-            #[cfg(test)]
-            test_force_active: false,
-            #[cfg(test)]
-            test_submit_direct_without_drm: false,
         }
     }
 
     pub(in crate::kms::render::backend) fn active(&self) -> bool {
-        self.pending.is_some() || self.queued_successor.is_some() || self.current.is_some() || {
-            #[cfg(test)]
-            {
-                self.test_force_active
-            }
-            #[cfg(not(test))]
-            {
-                false
-            }
-        }
+        self.pending.is_some() || self.queued_successor.is_some() || self.current.is_some()
     }
 
     pub(in crate::kms::render::backend) fn admit_eligible_root(&mut self) -> bool {
@@ -316,6 +330,84 @@ impl ScanoutM2State {
         self.eligible_root_streak = 0;
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::kms::render::backend) enum TearingState {
+    Off,
+    On {
+        window: u32,
+        host_window: u32,
+        crtc_epoch: u64,
+        admission: TearingAdmissionContext,
+    },
+}
+
+/// Facts from the last Present admitted to tearing. Scene-only passes reuse
+/// this candidate and target to revalidate ownership against the live tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::kms::render::backend) struct TearingAdmissionContext {
+    pub(in crate::kms::render::backend) candidate: PresentScanoutCandidate,
+    pub(in crate::kms::render::backend) target: ScanoutM0Target,
+    pub(in crate::kms::render::backend) root_host_xid: u32,
+}
+
+pub(in crate::kms::render::backend) struct Tearing {
+    pub(in crate::kms::render::backend) state: TearingState,
+    pub(in crate::kms::render::backend) probation: u8,
+    pub(in crate::kms::render::backend) probation_owner: Option<u32>,
+    pub(in crate::kms::render::backend) hide_failed_logged: bool,
+    pub(in crate::kms::render::backend) last_cursor_compose: Option<std::time::Instant>,
+    pub(in crate::kms::render::backend) deferred_cursor_wake: Option<std::time::Instant>,
+}
+
+impl Tearing {
+    pub(in crate::kms::render::backend) fn new() -> Self {
+        Self {
+            state: TearingState::Off,
+            probation: 0,
+            probation_owner: None,
+            hide_failed_logged: false,
+            last_cursor_compose: None,
+            deferred_cursor_wake: None,
+        }
+    }
+
+    pub(in crate::kms::render::backend) fn is_on(&self) -> bool {
+        matches!(self.state, TearingState::On { .. })
+    }
+
+    pub(in crate::kms::render::backend) fn reset_probation(&mut self) {
+        self.probation = 0;
+        self.probation_owner = None;
+    }
+
+    pub(in crate::kms::render::backend) fn note_composed_submit(
+        &mut self,
+        now: std::time::Instant,
+    ) {
+        if self.is_on() {
+            self.last_cursor_compose = Some(now);
+            self.deferred_cursor_wake = None;
+        }
+    }
+
+    pub(in crate::kms::render::backend) fn cursor_compose_interval(
+        &self,
+        platform: &PlatformBackend,
+    ) -> std::time::Duration {
+        let refresh_hz = platform
+            .outputs
+            .iter()
+            .map(|output| output.output.picked.vrefresh)
+            .filter(|refresh_hz| *refresh_hz > 0)
+            .max()
+            .unwrap_or(60);
+        std::time::Duration::from_nanos(1_000_000_000 / u64::from(refresh_hz))
+    }
+}
+
+pub(in crate::kms::render::backend) const TEARING_ENTRY_PROBATION: u8 =
+    SCANOUT_M2_ELIGIBLE_ROOT_PROBATION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::kms::render::backend) struct ScanoutM1OutputGeometry {
@@ -738,6 +830,13 @@ pub struct KmsBackendState {
     pub(in crate::kms::render::backend) scanout_m0: ScanoutM0Telemetry,
     pub(in crate::kms::render::backend) scanout_m1: ScanoutM1ProbeCache,
     pub(in crate::kms::render::backend) scanout_m2: ScanoutM2State,
+    pub(in crate::kms::render::backend) tearing: Tearing,
+    /// Monotonic clock for KMS cursor-composition pacing.
+    pub(in crate::kms::render::backend) monotonic_clock:
+        std::rc::Rc<dyn Fn() -> std::time::Instant>,
+    pub(in crate::kms::render::backend) direct_frame_submitter: DirectFrameSubmitter,
+    pub(in crate::kms::render::backend) vt_resume_executor:
+        std::rc::Rc<dyn super::session::VtResumeExecutor>,
 
     /// Per-CRTC armed absolute MSC for idle vblank pacing. Keyed by the
     /// stable `crtc::Handle`; presence means "a `DRM_CRTC_SEQUENCE` is
@@ -801,7 +900,7 @@ pub struct KmsBackendState {
         u32,
         (
             yserver_protocol::x11::ClientId,
-            std::sync::Arc<crate::kms::render::imported_syncobj::ImportedSyncobj>,
+            std::sync::Arc<dyn crate::kms::render::imported_syncobj::PresentSyncobj>,
         ),
     >,
 

@@ -145,6 +145,7 @@ impl SceneCompositor {
             inner: Some(inner),
             root_overlay: crate::kms::render::root_overlay::RootOverlay::default(),
             scene_structure_dirty: true,
+            cursor_only_wake: false,
             structure_generation: 0,
             #[cfg(any(test, feature = "test-support"))]
             test_flip_in_flight_override: None,
@@ -334,6 +335,7 @@ impl SceneCompositor {
             inner: None,
             root_overlay: crate::kms::render::root_overlay::RootOverlay::default(),
             scene_structure_dirty: false,
+            cursor_only_wake: false,
             structure_generation: 0,
             #[cfg(any(test, feature = "test-support"))]
             test_flip_in_flight_override: None,

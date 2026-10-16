@@ -3769,6 +3769,7 @@ fn run_iteration_tail_drains_present_work_before_compositing() {
                 effective_target_msc: None,
             },
             source_ready: false,
+            superseded_by_executed_present_id: None,
             wait_id: Some(WAIT_ID),
             pin: None,
         },

@@ -97,6 +97,7 @@ impl<P: Platform> XBackend<P> {
                 &self.windows,
                 &outputs,
                 self.platform.fb_size(),
+                P::tearing_active(self),
             );
             match self.scene.tick(
                 &input,

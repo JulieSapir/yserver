@@ -1,3 +1,4 @@
+pub mod async_flip;
 pub mod atomic;
 pub mod buffer;
 pub mod device;

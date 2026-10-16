@@ -59,6 +59,9 @@ pub struct CursorRecord {
     /// premultiplied) so the HW dumb-buffer and the SW pixmap
     /// agree on sample values byte-for-byte.
     pub bgra_bytes: Vec<u8>,
+    /// Cached from the final BGRA image at construction. The backend uses
+    /// this classification anywhere cursor visibility affects scanout.
+    pub is_fully_transparent: bool,
     /// Pixel roles retained for core monochrome cursors so
     /// `RecolorCursor` can regenerate the sprite even when the original
     /// foreground and background colors were identical. `None` identifies
@@ -70,6 +73,21 @@ pub struct CursorRecord {
 }
 
 impl CursorRecord {
+    /// Clone this immutable image under a fresh serial while preserving its
+    /// creation-time alpha classification.
+    pub fn with_version(&self, version: u64) -> Arc<Self> {
+        Arc::new(Self {
+            width: self.width,
+            height: self.height,
+            hot_x: self.hot_x,
+            hot_y: self.hot_y,
+            bgra_bytes: self.bgra_bytes.clone(),
+            is_fully_transparent: self.is_fully_transparent,
+            color_roles: self.color_roles.clone(),
+            version,
+        })
+    }
+
     pub fn new(
         width: u16,
         height: u16,
@@ -83,12 +101,14 @@ impl CursorRecord {
             usize::from(width) * usize::from(height) * 4,
             "CursorRecord bytes must be width*height*4",
         );
+        let is_fully_transparent = bgra_bytes.chunks_exact(4).all(|pixel| pixel[3] == 0);
         Arc::new(Self {
             width,
             height,
             hot_x,
             hot_y,
             bgra_bytes,
+            is_fully_transparent,
             color_roles: None,
             version,
         })
@@ -127,12 +147,14 @@ impl CursorRecord {
     ) -> Arc<Self> {
         debug_assert_eq!(color_roles.len(), usize::from(width) * usize::from(height));
         debug_assert_eq!(bgra_bytes.len(), color_roles.len() * 4);
+        let is_fully_transparent = bgra_bytes.chunks_exact(4).all(|pixel| pixel[3] == 0);
         Arc::new(Self {
             width,
             height,
             hot_x,
             hot_y,
             bgra_bytes,
+            is_fully_transparent,
             color_roles: Some(color_roles),
             version,
         })
@@ -196,6 +218,9 @@ pub struct AnimFrame {
 /// host handle in `KmsBackend::anim_cursor_records`.
 pub struct AnimCursorRecord {
     pub frames: Vec<AnimFrame>,
+    /// True only when every snapshotted frame has alpha 0 on every pixel.
+    /// This remains stable while the canonical record map advances frames.
+    pub is_fully_transparent: bool,
 }
 
 /// Live animation state — at most one, mirroring the single

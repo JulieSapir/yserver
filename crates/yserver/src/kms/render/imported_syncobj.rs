@@ -25,6 +25,14 @@ use std::{
 
 use ::drm::control::{Device as DrmControlDevice, syncobj};
 
+/// Operations needed by the Present acquire-wait path. Kept behind a trait
+/// so the Backend can drive imported DRM syncobjs and deterministic test
+/// timelines through the same wait entries.
+pub(crate) trait PresentSyncobj: yserver_core::backend::SyncobjHandle {
+    fn timeline_value(&self) -> std::io::Result<u64>;
+    fn signaled_eventfd(&self, value: u64) -> std::io::Result<OwnedFd>;
+}
+
 #[cfg(all(target_os = "linux", target_env = "musl"))]
 type SyncobjIoctlReq = libc::c_int;
 #[cfg(any(
@@ -206,6 +214,16 @@ impl yserver_core::backend::SyncobjHandle for ImportedSyncobj {
             (Ok(()), Err(e)) => Err(e),
             (Ok(()), Ok(())) => Ok(()),
         }
+    }
+}
+
+impl PresentSyncobj for ImportedSyncobj {
+    fn timeline_value(&self) -> std::io::Result<u64> {
+        ImportedSyncobj::timeline_value(self)
+    }
+
+    fn signaled_eventfd(&self, value: u64) -> std::io::Result<OwnedFd> {
+        ImportedSyncobj::signaled_eventfd(self, value)
     }
 }
 

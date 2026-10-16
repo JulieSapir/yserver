@@ -1,6 +1,7 @@
 use crate::kms::{
     render::gpu::{
         FencePool, FencePoolInner, FenceTicket, FenceTicketInner, GpuCore, PresentCompletionSignal,
+        TicketReadiness,
     },
     vk::device::VkContext,
 };
@@ -69,16 +70,21 @@ impl FenceTicket {
         if self.inner.signaled_cache.get() {
             return Ok(true);
         }
-        match unsafe { vk.device.get_fence_status(self.inner.fence) } {
-            Ok(true) => {
-                self.inner.signaled_cache.set(true);
-                Ok(true)
+        match &self.inner.readiness {
+            TicketReadiness::Fence => {
+                match unsafe { vk.device.get_fence_status(self.inner.fence) } {
+                    Ok(true) => {
+                        self.inner.signaled_cache.set(true);
+                        Ok(true)
+                    }
+                    Ok(false) => Ok(false),
+                    Err(error) => {
+                        self.note_status_failure();
+                        Err(error)
+                    }
+                }
             }
-            Ok(false) => Ok(false),
-            Err(error) => {
-                self.note_status_failure();
-                Err(error)
-            }
+            TicketReadiness::Manual(signal) => Ok(signal.get()),
         }
     }
 
@@ -100,17 +106,29 @@ impl FenceTicket {
         if self.inner.signaled_cache.get() {
             return Ok(());
         }
-        // 5 second timeout — long enough to cover any realistic
-        // GPU work; if we hit it the device is hung anyway.
-        match unsafe {
-            vk.device
-                .wait_for_fences(&[self.inner.fence], true, 5_000_000_000)
-        } {
-            Ok(()) => {
-                self.inner.signaled_cache.set(true);
-                Ok(())
+        match &self.inner.readiness {
+            TicketReadiness::Manual(signal) => {
+                if signal.get() {
+                    self.inner.signaled_cache.set(true);
+                    Ok(())
+                } else {
+                    Err(vk::Result::TIMEOUT)
+                }
             }
-            Err(e) => Err(e),
+            TicketReadiness::Fence => {
+                // 5 second timeout — long enough to cover any realistic
+                // GPU work; if we hit it the device is hung anyway.
+                match unsafe {
+                    vk.device
+                        .wait_for_fences(&[self.inner.fence], true, 5_000_000_000)
+                } {
+                    Ok(()) => {
+                        self.inner.signaled_cache.set(true);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
         }
     }
 
@@ -159,8 +177,35 @@ impl FenceTicket {
                 pool: Weak::<RefCell<FencePoolInner>>::new(),
                 vk: None,
                 imported_wait_semaphores: RefCell::new(Vec::new()),
+                readiness: TicketReadiness::Fence,
             }),
         }
+    }
+
+    /// Test-only controllable ticket for scheduler tests that need an
+    /// unsignalled completion dependency without blocking a Vulkan queue.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_tests_unsignaled() -> Self {
+        Self {
+            inner: Rc::new(FenceTicketInner {
+                fence: vk::Fence::null(),
+                signaled_cache: Cell::new(false),
+                pool: Weak::<RefCell<FencePoolInner>>::new(),
+                vk: None,
+                imported_wait_semaphores: RefCell::new(Vec::new()),
+                readiness: TicketReadiness::Manual(Rc::new(Cell::new(false))),
+            }),
+        }
+    }
+
+    /// Release a ticket created by [`Self::for_tests_unsignaled`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn signal_for_tests(&self) {
+        let TicketReadiness::Manual(signal) = &self.inner.readiness else {
+            panic!("signal_for_tests called on a non-test ticket");
+        };
+        signal.set(true);
+        self.inner.signaled_cache.set(true);
     }
 }
 
@@ -334,6 +379,7 @@ impl FencePool {
                 pool: Rc::downgrade(&self.inner),
                 vk: Some(vk),
                 imported_wait_semaphores: RefCell::new(Vec::new()),
+                readiness: TicketReadiness::Fence,
             }),
         })
     }

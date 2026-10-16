@@ -923,8 +923,6 @@ impl KmsBackend {
         syncobj_xid: u32,
         value: u64,
     ) -> io::Result<()> {
-        use yserver_core::backend::SyncobjHandle as _;
-
         let arc = self
             .pstate
             .dri3_syncobjs

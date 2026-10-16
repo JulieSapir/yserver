@@ -76,6 +76,95 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   (`surface::tests`); the AppKit layer (`src/macos/`) is compiled and run on macOS only. No input yet (M2).
   Recipe: `just macos-run [display] [geometry] [log]`.
 
+- **2026-10-14 tearing-on-demand Task 1:** Each opened KMS device now records
+  `DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP`; Present `Async` capability follows the
+  device owning a window's selected CRTC. `AsyncMayTear` remains unset and no
+  page-flip behavior changes in this task. Protocol and encoding tests cover
+  the advertisement; hardware validation remains in Task 6.
+
+- **2026-10-14 tearing-on-demand Task 2:** Atomic direct and composed requests
+  can now carry `PAGE_FLIP_ASYNC` without cursor properties or `OUT_FENCE_PTR`.
+  An async `EINVAL` retries the same frame with Vsync and records consecutive
+  failures by stream and shape; two failures suspend that shape. Production
+  callers still select Vsync until Task 3 wires the Present request policy.
+  Recording-sink and Vulkan-backed scene fixtures cover both submit routes;
+  hardware validation remains in Task 6.
+
+- **2026-10-14 tearing-on-demand Task 3:** Present `Async` requests can enter
+  tearing after probation when the full-root gate passes with the cursor term
+  ignored. The owner is the paint destination host window; exits clear the
+  async ledger and restore normal cursor policy. Tearing suppresses hardware
+  cursor planes, while direct async scanout remains available when no plane is
+  visible. Hardware validation remains in Task 6.
+
+- **2026-10-14 tearing-on-demand Task 4:** Composed scene passes use async only
+  after the shared gate revalidates the owner. Visible-cursor transitions from
+  held direct scanout hand off through a composed pass; the cursor plane is
+  hidden at unflip retirement, and Copy fallback sources are registered for
+  safe replacement. Hardware validation remains in Task 6.
+
+- **2026-10-14 tearing-on-demand Task 5:** Visible software-cursor motion while
+  tearing is on recomposes at most once per shortest output refresh interval.
+  The core-loop deadline triggers the deferred pass; client Copy damage remains
+  immediate, and composed submits or tearing exits clear the timer state. Exit
+  tests cover HW, transformed-output SW, XFIXES-hidden, DPMS-off, and owner
+  destruction. Hardware validation remains in Task 6.
+
+- **2026-10-14 tearing-on-demand Amendment A, item 1:** Cursor records cache
+  whether every final BGRA alpha byte is zero; an animated cursor is hidden
+  only when all its snapshotted frames are transparent. The effective-hidden
+  predicate combines XFIXES state, missing cursor images, and image transparency
+  across scene visibility, direct scanout, tearing handoff, pointer motion, and
+  VT/DPMS rearm. Cursor tests cover core, glyph, RENDER, recolor, animation, and
+  transparent-to-opaque handoff. The segfault seen in
+  `entry_waits_for_queued_show_on_retire` was a real defect: the unflip shadow
+  copy read a null Vulkan image. It now rejects an unavailable image before
+  copying.
+
+- **2026-10-15 tearing-on-demand Task 6 (telemetry and bench):** loop telemetry
+  adds `tearing_summary` (async/vsync submits, EINVAL fallbacks, suspensions,
+  entries and exits) and `present_latency_summary`. In the latter,
+  `async_flip_turnaround` is ioctl to event receipt. `present_to_flip_event`
+  maps the kernel flip timestamp into the submit clock and prints `n/a` when it
+  cannot detect the clock domain (nvidia-drm today).
+  `tools/cursor-bench/tests/tearing.sh` runs mpv (Vulkan immediate/mailbox/fifo)
+  and GL interval 0 with the cursor visible and XFIXES-hidden. `aggregate.sh`
+  summarises the logs and skips unavailable windows. The cursor-only
+  recomposition cap now also covers `run_core`'s `mark_dirty` wake: `build_scene`
+  fell from about 5.7k/s to about 405/s with a moving visible cursor.
+
+- **2026-10-15 tearing-on-demand Amendment B (core supersession parity with
+  Xorg, spec §1b):** the core scraps a pending Present only while it is parked
+  for a future MSC (whether or not its fence has signalled). A due Present waiting
+  for its acquire/source fence is never scrapped; it executes
+  when the fence signals, in arrival order. It completes as Skip if a newer
+  same-window, same-target Present has already executed. This applies to every
+  Present, not only while tearing; Vsync stays paced by vblank. Before this, an
+  explicit-sync Vulkan client that presents before the GPU finishes (NVIDIA WSI,
+  radv, DXVK, CS2) had almost every frame scrapped: CS2 sent 330–360 Presents/s
+  with 300–340/s scrapped and stuttered. A `run_core`-driven regression with late
+  acquire points covers it.
+
+  Hardware (Xid 0 throughout):
+  - NVIDIA RTX 5060 Ti (driver 615), mpv Vulkan immediate with XFIXES-hidden
+    cursor: 519–549 direct async flips/s, every Present shown, 0 core skips
+    (about 77/s before Amendment B). Present→submit p50 about 43 µs (p99
+    about 140 µs); Present→flip is `n/a` on nvidia-drm (see below). GL interval 0: 155 flips/s for 164–186 Presents/s.
+  - NVIDIA, CS2 for about 8 minutes: median 312 direct flips/s (p10 231, max 413),
+    1.0 flip per Present, no second below 60. Menus (composed, cursor visible):
+    median 199/s. The user's verdict: smooth, low-latency play.
+  - AMD iGPU (card0), mpv Vulkan immediate with XFIXES-hidden cursor, after
+    Amendment B: 507–536 direct async flips/s, 1.0 per Present, 0 core skips
+    (7/s before Amendment B). Present→submit p50/p99 10/34 µs, async
+    turnaround p50/p99 41/87 µs. Present→flip reads about 0 µs: amdgpu stamps
+    async flips with the last vblank, so that metric is not meaningful there.
+  - AMD iGPU (card0), GL: 329 direct async flips/s (0.999 per Present),
+    present_to_submit 10 µs, async turnaround 58 µs. Composed path with a visible
+    cursor: 474/s at 0.47 ms composite GPU time.
+  - Controls: mpv mailbox and fifo never entered tearing.
+  - Known gaps: `present_to_flip_event` is `n/a` on NVIDIA. AMD fifo with a
+    moving cursor runs at about 30 flips/s (pre-existing, also on master).
+
 - **2026-10-13 hardware cursor in the wlroots model (branch `feat/atomic-cursor`):** on every device whose
   cursor planes expose `CRTC_X`/`CRTC_Y`, the cursor is driven through atomic commits. Each CRTC has one commit
   stream with at most one commit in flight:
@@ -7497,13 +7586,15 @@ regression and must not be reverted on this evidence. The diagnostic selector
 and harness remain useful reproduction tools, but `post95` stays the production
 behavior.
 
-This branch deliberately stops at VBlank-synchronized direct scanout. It does
-not advertise async-tear capability or submit `PAGE_FLIP_ASYNC`. On-demand
-tearing is a separate follow-up (Phase C): only a Present that both qualifies
-for fullscreen direct scanout and carries an effective `PresentOptionAsync` or
-`PresentOptionAsyncMayTear` request may use an async KMS flip, and only when the
-DRM device reports support. Synced Presents, ineligible windows, and unsupported
-devices retain the tear-free path provided here.
+Production flips still use VBlank synchronization at this task boundary. Task 1
+advertises `PresentCapabilityAsync` on devices that report async page-flip
+support, and Task 2 adds async request building, same-frame Vsync fallback and
+per-stream shape suspension. No production caller requests `PAGE_FLIP_ASYNC`
+until Task 3 wires the Present request policy. The intended policy is limited
+to eligible fullscreen direct Presents carrying an effective
+`PresentOptionAsync` or `PresentOptionAsyncMayTear` request on a supporting DRM
+device; synced Presents, ineligible windows and unsupported devices retain the
+Vsync path.
 
 ## Damage-clipped repaint for non-composited desktops (branch `fix/noncomposited-damage-repaint`, 2026-09-01 → 2026-09-03)
 

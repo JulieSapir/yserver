@@ -35,6 +35,28 @@ use ash::vk;
 use std::sync::Arc;
 
 impl SceneCompositor {
+    /// Test-only snapshot of the per-output submit retry deadline and the
+    /// number of BOs retained after a failed submit.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn submit_retry_state_for_tests(&self) -> Vec<(usize, Option<std::time::Instant>, usize)> {
+        self.inner
+            .as_ref()
+            .map(|inner| {
+                inner
+                    .outputs
+                    .iter()
+                    .map(|output| {
+                        (
+                            output.output_idx,
+                            output.next_submit_retry_at,
+                            output.failed_submit_bos.len(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Test-only: force [`has_pending_page_flips`](Self::has_pending_page_flips)
     /// without a live output/`PendingAck` queue.
     #[cfg(any(test, feature = "test-support"))]
@@ -63,7 +85,7 @@ impl SceneCompositor {
             cursor,
             None,
             None,
-            hw_cursor_allowed(input.outputs),
+            hw_cursor_allowed(input.outputs) && !input.hw_cursor_suppressed,
             Visibility::On,
         )
         .cursor_assignment

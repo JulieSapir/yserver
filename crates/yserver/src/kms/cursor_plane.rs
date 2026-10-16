@@ -47,6 +47,67 @@ pub(crate) trait CursorHideExecutor {
     fn hide(&self, device: &Device, crtc: crtc::Handle) -> io::Result<()>;
 }
 
+/// The backing required for a cursor-plane bind. `Test` represents in-memory
+/// fixture storage and is only accepted by the injected test executor.
+pub(crate) enum CursorPlaneBuffer {
+    Dumb(DumbBuffer),
+    #[allow(dead_code)]
+    Test,
+}
+
+/// Executor for the legacy cursor show + initial bind operation.
+pub(crate) trait CursorShowExecutor {
+    fn show(
+        &self,
+        device: &Device,
+        buffer: &CursorPlaneBuffer,
+        crtc: crtc::Handle,
+        hotspot: (i32, i32),
+        img_x: i32,
+        img_y: i32,
+    ) -> io::Result<()>;
+
+    fn move_to(
+        &self,
+        device: &Device,
+        crtc: crtc::Handle,
+        img_x: i32,
+        img_y: i32,
+    ) -> io::Result<()>;
+}
+
+#[derive(Default)]
+pub(crate) struct DrmCursorShowExecutor;
+
+impl CursorShowExecutor for DrmCursorShowExecutor {
+    #[allow(deprecated)]
+    fn show(
+        &self,
+        device: &Device,
+        buffer: &CursorPlaneBuffer,
+        crtc: crtc::Handle,
+        hotspot: (i32, i32),
+        _img_x: i32,
+        _img_y: i32,
+    ) -> io::Result<()> {
+        let CursorPlaneBuffer::Dumb(dumb) = buffer else {
+            return Err(io::Error::other("test cursor backing used by DRM executor"));
+        };
+        device.set_cursor2(crtc, Some(dumb), hotspot)
+    }
+
+    #[allow(deprecated)]
+    fn move_to(
+        &self,
+        device: &Device,
+        crtc: crtc::Handle,
+        img_x: i32,
+        img_y: i32,
+    ) -> io::Result<()> {
+        device.move_cursor(crtc, (img_x, img_y))
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct DrmCursorHideExecutor;
 
@@ -178,7 +239,8 @@ pub const HW_CURSOR_FALLBACK_H: u32 = 64;
 pub struct CursorPlane {
     device: Rc<Device>,
     hide_executor: Rc<dyn CursorHideExecutor>,
-    dumb: Option<DumbBuffer>,
+    show_executor: Rc<dyn CursorShowExecutor>,
+    dumb: Option<CursorPlaneBuffer>,
     ptr: NonNull<u8>,
     len: usize,
     stride: u32,
@@ -398,7 +460,8 @@ impl CursorPlane {
         let plane = Self {
             device,
             hide_executor: Rc::new(DrmCursorHideExecutor),
-            dumb: Some(dumb),
+            show_executor: Rc::new(DrmCursorShowExecutor),
+            dumb: Some(CursorPlaneBuffer::Dumb(dumb)),
             ptr,
             len,
             stride,
@@ -433,8 +496,9 @@ impl CursorPlane {
         let mut test_backing = vec![0_u8; len].into_boxed_slice();
         let ptr = NonNull::new(test_backing.as_mut_ptr()).expect("non-empty test cursor buffer");
         Self {
-            device,
+            device: Rc::clone(&device),
             hide_executor: Rc::new(DrmCursorHideExecutor),
+            show_executor: Rc::new(DrmCursorShowExecutor),
             dumb: None,
             ptr,
             len,
@@ -447,6 +511,25 @@ impl CursorPlane {
             atomic_positions: HashMap::new(),
             _test_backing: Some(test_backing),
         }
+    }
+
+    /// Test constructor that exercises the same checked show path as
+    /// production while redirecting the final bind through an injected
+    /// executor. `has_buffer` models whether a dumb buffer was allocated.
+    #[cfg(test)]
+    pub(crate) fn for_tests_with_show_executor(
+        device: Rc<Device>,
+        width: u32,
+        height: u32,
+        has_buffer: bool,
+        show_executor: Rc<dyn CursorShowExecutor>,
+    ) -> Self {
+        let mut plane = Self::for_tests_stub(device, width, height);
+        plane.show_executor = show_executor;
+        if has_buffer {
+            plane.dumb = Some(CursorPlaneBuffer::Test);
+        }
+        plane
     }
 
     #[cfg(test)]
@@ -622,17 +705,17 @@ impl CursorPlane {
         img_x: i32,
         img_y: i32,
     ) -> Result<(), CursorShowError> {
-        let Some(dumb) = self.dumb.as_ref() else {
+        let Some(buffer) = self.dumb.as_ref() else {
             return Err(CursorShowError::Unbound(io::Error::other(
                 "cursor plane already destroyed",
             )));
         };
         let prior_visible = self.is_visible_on(crtc);
-        self.device
-            .set_cursor2(crtc, Some(dumb), hotspot)
+        self.show_executor
+            .show(&self.device, buffer, crtc, hotspot, img_x, img_y)
             .map_err(|error| bind_failure(prior_visible, error))?;
         self.visible.insert(crtc, true);
-        match self.device.move_cursor(crtc, (img_x, img_y)) {
+        match self.show_executor.move_to(&self.device, crtc, img_x, img_y) {
             Ok(()) => Ok(()),
             Err(move_error) => Err(move_failure(move_error, self.hide_legacy(crtc))),
         }
@@ -754,7 +837,7 @@ impl Drop for CursorPlane {
                 log::debug!("cursor: hide on drop for {crtc:?} failed: {e}");
             }
         }
-        if let Some(dumb) = self.dumb.take() {
+        if let Some(CursorPlaneBuffer::Dumb(dumb)) = self.dumb.take() {
             let _ = self.device.destroy_dumb_buffer(dumb);
         }
     }
@@ -920,6 +1003,55 @@ mod tests {
             error.rollback_error().and_then(io::Error::raw_os_error),
             Some(libc::ENODEV)
         );
+    }
+
+    #[test]
+    // Mutation: invoke an injected show executor before checking for a dumb buffer.
+    fn show_executor_does_not_bypass_missing_dumb_buffer_check() {
+        use std::cell::Cell;
+
+        struct CountingShowExecutor(Cell<usize>);
+
+        impl CursorShowExecutor for CountingShowExecutor {
+            fn show(
+                &self,
+                _device: &Device,
+                _buffer: &CursorPlaneBuffer,
+                _crtc: crtc::Handle,
+                _hotspot: (i32, i32),
+                _img_x: i32,
+                _img_y: i32,
+            ) -> io::Result<()> {
+                self.0.set(self.0.get() + 1);
+                Ok(())
+            }
+
+            fn move_to(
+                &self,
+                _device: &Device,
+                _crtc: crtc::Handle,
+                _img_x: i32,
+                _img_y: i32,
+            ) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let device = Rc::new(crate::drm::Device::for_tests().expect("test DRM device"));
+        let executor = Rc::new(CountingShowExecutor(Cell::new(0)));
+        let mut plane =
+            CursorPlane::for_tests_with_show_executor(device, 64, 64, false, executor.clone());
+
+        let error = plane
+            .show(test_crtc(11), (0, 0), 10, 10)
+            .expect_err("a plane without a dumb buffer cannot be shown");
+        assert!(!error.remains_visible());
+        assert_eq!(
+            executor.0.get(),
+            0,
+            "executor must not run without a buffer"
+        );
+        assert!(!plane.is_visible_on(test_crtc(11)));
     }
 
     /// Phase B regression: `is_visible_on` tracks per-CRTC binding

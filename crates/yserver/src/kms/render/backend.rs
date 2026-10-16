@@ -148,6 +148,7 @@ pub(super) fn scene_input<'a>(
     windows: &'a WindowsMap,
     outputs: &'a [crate::kms::render::scene::OutputLayout],
     fb_size: (u16, u16),
+    hw_cursor_suppressed: bool,
 ) -> crate::kms::render::scene::SceneInput<'a> {
     crate::kms::render::scene::SceneInput {
         window_id: core.window_id,
@@ -159,6 +160,7 @@ pub(super) fn scene_input<'a>(
         windows,
         outputs,
         fb_size,
+        hw_cursor_suppressed,
     }
 }
 

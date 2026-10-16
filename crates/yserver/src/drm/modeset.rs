@@ -1573,10 +1573,16 @@ pub(crate) fn submit_direct_scanout(
     fb: framebuffer::Handle,
     planes: &[DirectScanoutPlaneState<'_>],
     cursor_positions: &[CursorPlanePosition],
+    timing: crate::drm::async_flip::FlipTiming,
+    tearing_context: crate::drm::atomic::TearingCommitContext,
 ) -> io::Result<()> {
     if planes.is_empty() {
         return Err(io::Error::other("scanout M2: empty plane transaction"));
     }
+    let cursor_positions = match timing {
+        crate::drm::async_flip::FlipTiming::Vsync => cursor_positions,
+        crate::drm::async_flip::FlipTiming::Async => &[],
+    };
     let request = direct_scanout_request(fb, planes, cursor_positions);
     let events: Vec<_> = planes
         .iter()
@@ -1588,13 +1594,17 @@ pub(crate) fn submit_direct_scanout(
                 .and_then(|position| position.motion_timestamp),
         })
         .collect();
-    atomic_commit_sink.submit(
-        device,
-        AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
-        cursor_commit_kind(cursor_positions),
-        request,
-        &events,
-    )
+    let kind = match timing {
+        crate::drm::async_flip::FlipTiming::Vsync => cursor_commit_kind(cursor_positions),
+        crate::drm::async_flip::FlipTiming::Async => AtomicCommitKind::Async,
+    };
+    let flags = AtomicCommitFlags::PAGE_FLIP_EVENT
+        | AtomicCommitFlags::NONBLOCK
+        | match timing {
+            crate::drm::async_flip::FlipTiming::Vsync => AtomicCommitFlags::empty(),
+            crate::drm::async_flip::FlipTiming::Async => AtomicCommitFlags::PAGE_FLIP_ASYNC,
+        };
+    atomic_commit_sink.submit_tearing(device, flags, kind, request, &events, tearing_context)
 }
 
 /// `TEST_ONLY` the exact request `submit_direct_scanout` would commit, cursor

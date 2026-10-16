@@ -892,6 +892,7 @@ fn stub_pending_present_entry(window: u32, present_id: u64) -> crate::server::Pe
             effective_target_msc: None,
         },
         source_ready: false,
+        superseded_by_executed_present_id: None,
         wait_id: None,
         pin: None,
     }
@@ -948,6 +949,7 @@ fn present_pending_entry_with(
             effective_target_msc,
         },
         source_ready,
+        superseded_by_executed_present_id: None,
         wait_id: None,
         pin: Some(present_id), // distinct-ish pin id for release assertions
     }
@@ -1109,6 +1111,7 @@ impl SupersessionFixture {
         crate::server::PendingPresentEntry {
             pending: self.pending(),
             source_ready: true,
+            superseded_by_executed_present_id: None,
             wait_id: None,
             pin: None,
         }

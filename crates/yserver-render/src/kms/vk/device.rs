@@ -685,7 +685,6 @@ impl VkContext {
             vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
         let mut dynamic_rendering_features =
             vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
-
         // `logicOp` (the X11 GcFunction Xor/And/Or/Invert fill path —
         // all 16 variants map 1:1 to `VkLogicOp`) and `dualSrcBlend`
         // (the SRC1_* blend factors used by the RENDER `component_alpha`

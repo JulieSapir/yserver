@@ -2637,6 +2637,11 @@ pub struct PendingPresentEntry {
     /// The producer-side wait (dma-buf READ sync-file / acquire timeline
     /// point) has signalled. Distinct from msc-due (Task 7).
     pub source_ready: bool,
+    /// Newer covered same-target Present that executed while this entry's
+    /// source/acquire wait was still pending. Keep waiting for the producer;
+    /// once it signals, complete this entry as Skip instead of showing an
+    /// older frame after the newer one.
+    pub superseded_by_executed_present_id: Option<u64>,
     /// Backend-owned source-wait id, `Some` only while the entry is
     /// parked on `arm_present_source_wait` / `arm_present_syncobj_wait`
     /// returning `Deferred`. Mirrored in `ServerState::present_wait_to_id`.

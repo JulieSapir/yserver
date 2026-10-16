@@ -578,14 +578,13 @@ fn seed_present_selection(
 }
 
 #[test]
-fn supersede_scraps_covered_same_window_same_target_entry() {
+fn supersede_scraps_covered_msc_parked_same_window_same_target_entry() {
     const WINDOW: u32 = 0x0001_0001;
     const PRESENT_EID: u32 = 0x0020_1001;
     const VICTIM_ID: u64 = 10;
     const SUCCESSOR_ID: u64 = 11;
     const TARGET: u64 = 500;
     const IDLE_FENCE: u32 = 0x0030_1001;
-    const WAIT_ID: u64 = 777;
     const PIN_ID: u64 = 1;
 
     let mut state = ServerState::new();
@@ -613,10 +612,8 @@ fn supersede_scraps_covered_same_window_same_target_entry() {
         .geometry(0, 0, 50, 50)
         .idle_fence(IDLE_FENCE)
         .entry();
-    victim.wait_id = Some(WAIT_ID);
     victim.pin = Some(PIN_ID);
     state.present_pending_exec.insert(VICTIM_ID, victim);
-    state.present_wait_to_id.insert(WAIT_ID, VICTIM_ID);
 
     let successor = SupersessionFixture::new(SUCCESSOR_ID, WINDOW)
         .eff(Some(TARGET))
@@ -635,8 +632,8 @@ fn supersede_scraps_covered_same_window_same_target_entry() {
     );
     assert_eq!(
         backend.finished_present_source_waits,
-        vec![WAIT_ID],
-        "the armed source wait must be cancelled"
+        Vec::<u64>::new(),
+        "an MSC-parked victim has no source wait to cancel"
     );
     assert_eq!(
         backend.released_present_sources,
@@ -998,7 +995,6 @@ fn arm_before_scrap_syncobj_failure_leaves_covered_victim_untouched() {
     const SUCCESSOR_ID: u64 = 63;
     const TARGET: u64 = 500;
     const IDLE_FENCE: u32 = 0x0030_1008;
-    const WAIT_ID: u64 = 778;
     const PIN_ID: u64 = 2;
 
     let mut state = ServerState::new();
@@ -1018,10 +1014,8 @@ fn arm_before_scrap_syncobj_failure_leaves_covered_victim_untouched() {
         .geometry(0, 0, 50, 50)
         .idle_fence(IDLE_FENCE)
         .entry();
-    victim.wait_id = Some(WAIT_ID);
     victim.pin = Some(PIN_ID);
     state.present_pending_exec.insert(VICTIM_ID, victim);
-    state.present_wait_to_id.insert(WAIT_ID, VICTIM_ID);
 
     let successor = SupersessionFixture::new(SUCCESSOR_ID, WINDOW)
         .eff(Some(TARGET))
@@ -1045,13 +1039,10 @@ fn arm_before_scrap_syncobj_failure_leaves_covered_victim_untouched() {
         state.present_pending_exec.contains_key(&VICTIM_ID),
         "specifically the victim, untouched"
     );
-    assert!(
-        state.present_wait_to_id.contains_key(&WAIT_ID),
-        "the victim's wait side-map row must survive too"
-    );
+    assert!(state.present_wait_to_id.is_empty());
     assert!(
         backend.finished_present_source_waits.is_empty(),
-        "the victim's wait must not be cancelled"
+        "the MSC-parked victim has no producer wait to finish"
     );
     assert!(
         backend.released_present_sources.is_empty(),

@@ -2,8 +2,8 @@ use crate::kms::{
     backend::OutputKey,
     render::{
         platform::{
-            CrtcKey, DrainedPageFlipEvents, PendingScanoutRenderCompletion, PlatformBackend,
-            ReadyScanoutRenderCompletion, SequenceCompletion,
+            CrtcKey, DrainedPageFlipEvents, FlipEventTimestamps, PendingScanoutRenderCompletion,
+            PlatformBackend, ReadyScanoutRenderCompletion, SequenceCompletion,
         },
         scene::FlipRetirement,
     },
@@ -17,7 +17,45 @@ use std::{
 };
 use yserver_core::backend::{BackendFdKind, PresentClockSample, PresentClockSource};
 
-pub(crate) type KernelPageFlip = (::drm::control::crtc::Handle, u32, std::time::Duration);
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct KernelPageFlip {
+    pub(crate) crtc: ::drm::control::crtc::Handle,
+    pub(crate) frame: u32,
+    /// Kernel UST used by Present and kept in its original clock domain.
+    pub(crate) ust: std::time::Duration,
+    /// User-space CLOCK_MONOTONIC time when yserver received the event.
+    pub(crate) event_at_monotonic: Option<std::time::Duration>,
+    /// User-space CLOCK_BOOTTIME time when yserver received the event, on Linux.
+    pub(crate) event_at_boottime: Option<std::time::Duration>,
+}
+
+const FLIP_TIMESTAMP_PLAUSIBLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Convert the kernel completion timestamp to CLOCK_MONOTONIC for telemetry.
+/// Present still receives the original UST. Prefer monotonic when it is a
+/// plausible timestamp; NVIDIA's suspend-inclusive BOOTTIME-like UST can be
+/// recognized when it is ahead of monotonic but close to BOOTTIME at receipt.
+fn completion_timestamp_monotonic(
+    ust: std::time::Duration,
+    received_monotonic: Option<std::time::Duration>,
+    received_boottime: Option<std::time::Duration>,
+) -> Option<std::time::Duration> {
+    if let Some(received_monotonic) = received_monotonic
+        && received_monotonic
+            .checked_sub(ust)
+            .is_some_and(|age| age <= FLIP_TIMESTAMP_PLAUSIBLE_WINDOW)
+    {
+        return Some(ust);
+    }
+
+    let received_monotonic = received_monotonic?;
+    let received_boottime = received_boottime?;
+    let age = received_boottime.checked_sub(ust)?;
+    if age > FLIP_TIMESTAMP_PLAUSIBLE_WINDOW {
+        return None;
+    }
+    received_monotonic.checked_sub(age)
+}
 pub(crate) type KernelCrtcSequence = (u64, i64, u64);
 
 pub(crate) trait PageFlipEventSource {
@@ -46,7 +84,15 @@ impl PageFlipEventSource for DrmPageFlipEventSource {
         let mut sequences = Vec::new();
         crate::drm::page_flip::drain_events(
             device,
-            |crtc, frame, duration| flips.push((crtc, frame, duration)),
+            |crtc, frame, duration| {
+                flips.push(KernelPageFlip {
+                    crtc,
+                    frame,
+                    ust: duration,
+                    event_at_monotonic: crate::drm::atomic::monotonic_timestamp(),
+                    event_at_boottime: crate::drm::atomic::boottime_timestamp(),
+                });
+            },
             |user_data, time_ns, sequence| sequences.push((user_data, time_ns, sequence)),
         )?;
         Ok((flips, sequences))
@@ -96,9 +142,49 @@ pub(crate) struct RecordingPageFlipEventSource {
 #[cfg(test)]
 impl RecordingPageFlipEventSource {
     pub(crate) fn queue_flip(&self, crtc: ::drm::control::crtc::Handle, frame: u32) {
-        self.flips
-            .borrow_mut()
-            .push_back((crtc, frame, std::time::Duration::ZERO));
+        self.queue_flip_at(crtc, frame, std::time::Duration::ZERO);
+    }
+
+    pub(crate) fn queue_flip_at(
+        &self,
+        crtc: ::drm::control::crtc::Handle,
+        frame: u32,
+        timestamp: std::time::Duration,
+    ) {
+        self.queue_flip_with_timestamps(crtc, frame, timestamp, timestamp);
+    }
+
+    pub(crate) fn queue_flip_with_timestamps(
+        &self,
+        crtc: ::drm::control::crtc::Handle,
+        frame: u32,
+        ust: std::time::Duration,
+        event_at_monotonic: std::time::Duration,
+    ) {
+        self.queue_flip_with_clock_samples(
+            crtc,
+            frame,
+            ust,
+            Some(event_at_monotonic),
+            crate::drm::atomic::boottime_timestamp(),
+        );
+    }
+
+    pub(crate) fn queue_flip_with_clock_samples(
+        &self,
+        crtc: ::drm::control::crtc::Handle,
+        frame: u32,
+        ust: std::time::Duration,
+        event_at_monotonic: Option<std::time::Duration>,
+        event_at_boottime: Option<std::time::Duration>,
+    ) {
+        self.flips.borrow_mut().push_back(KernelPageFlip {
+            crtc,
+            frame,
+            ust,
+            event_at_monotonic,
+            event_at_boottime,
+        });
     }
 
     #[cfg(test)]
@@ -295,6 +381,16 @@ impl PlatformBackend {
         expected_pageflips: &HashSet<CrtcKey>,
         timeout: std::time::Duration,
     ) -> io::Result<()> {
+        // All CRTCs are already off at each caller. The event source below
+        // retires old kernel events without delivering normal flip callbacks,
+        // so their per-CRTC accepted-commit telemetry associations must be
+        // discarded at the same boundary.
+        for device in &self.devices {
+            device
+                .atomic_commit_sink
+                .discard_pending_page_flip_telemetry();
+        }
+
         let mut expected = expected_pageflips.clone();
         let deadline = std::time::Instant::now() + timeout;
 
@@ -308,8 +404,8 @@ impl PlatformBackend {
                     continue;
                 };
                 drained_any_event |= !flips.is_empty() || !sequences.is_empty();
-                for (crtc, _, _) in flips {
-                    expected.remove(&CrtcKey::new(device.key, crtc));
+                for flip in flips {
+                    expected.remove(&CrtcKey::new(device.key, flip.crtc));
                 }
             }
             if expected.is_empty() && !drained_any_event {
@@ -382,8 +478,8 @@ impl PlatformBackend {
                 let device_key = device.key;
                 let (flips, _sequences) =
                     device.page_flip_event_source.drain_events(&device.device)?;
-                for (crtc, _, _) in flips {
-                    expected.remove(&CrtcKey::new(device_key, crtc));
+                for flip in flips {
+                    expected.remove(&CrtcKey::new(device_key, flip.crtc));
                 }
             }
         }
@@ -419,15 +515,18 @@ impl PlatformBackend {
             .collect();
 
         let mut completions = Vec::with_capacity(flipped.len());
-        for (crtc, frame, dur) in flipped {
-            let crtc_key = CrtcKey::new(device_key, crtc);
+        for flip in flipped {
+            let crtc_key = CrtcKey::new(device_key, flip.crtc);
             let Some(output_idx) = self.output_index_for_crtc(crtc_key) else {
-                log::warn!("render: pageflip-complete for unknown CRTC {crtc:?} on {device_key}");
+                log::warn!(
+                    "render: pageflip-complete for unknown CRTC {:?} on {device_key}",
+                    flip.crtc
+                );
                 continue;
             };
             // u32 frame → u64 MSC (kernel wraps at 2^32; monotonic enough
             // for a frame clock within a session). UST in microseconds.
-            let ust = u64::try_from(dur.as_micros()).unwrap_or(u64::MAX);
+            let ust = u64::try_from(flip.ust.as_micros()).unwrap_or(u64::MAX);
             // apple_drm (Asahi) reports `frame == 0` on every page-flip
             // completion — the kernel does not maintain a CRTC sequence
             // counter — and rejects `DRM_IOCTL_CRTC_QUEUE_SEQUENCE` with
@@ -437,7 +536,7 @@ impl PlatformBackend {
             // forever). Fall back to a per-output software counter that
             // increments on every flip when the kernel reports 0; on
             // drivers that report a real frame this stays untouched.
-            let msc = if frame == 0 {
+            let msc = if flip.frame == 0 {
                 let next = self
                     .software_msc
                     .get(&crtc_key)
@@ -452,11 +551,12 @@ impl PlatformBackend {
                 );
                 next
             } else {
-                u64::from(frame)
+                u64::from(flip.frame)
             };
             log::debug!(
                 target: "yserver::kms::render::platform",
-                "render pageflip ust_msc output={output_idx} msc={msc} kernel_frame={frame} kernel_ust_micros={ust}"
+                "render pageflip ust_msc output={output_idx} msc={msc} kernel_frame={} kernel_ust_micros={ust}",
+                flip.frame
             );
             self.record_vblank_clock(crtc_key, msc, ust);
             let sample = PresentClockSample {
@@ -469,7 +569,19 @@ impl PlatformBackend {
                 target: "present_pace",
                 "present_clock sample source=pageflip output={output_idx} msc={msc} ust={ust}"
             );
-            completions.push((output_idx, sample));
+            let completion_at_monotonic = completion_timestamp_monotonic(
+                flip.ust,
+                flip.event_at_monotonic,
+                flip.event_at_boottime,
+            );
+            completions.push((
+                output_idx,
+                sample,
+                FlipEventTimestamps {
+                    received_at_monotonic: flip.event_at_monotonic,
+                    completion_at_monotonic,
+                },
+            ));
         }
         Ok((completions, sequenced))
     }

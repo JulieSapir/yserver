@@ -79,6 +79,7 @@ fn shared_scene_flip_records_the_latest_cursor_position() {
         -1,
         &mut out_fence,
         &positions,
+        crate::drm::async_flip::FlipTiming::Vsync,
     )
     .expect("record shared scene flip");
 
@@ -149,6 +150,7 @@ fn copied_scene_flip_uses_the_sink_devices_cursor_plane() {
         -1,
         &mut out_fence,
         &positions,
+        crate::drm::async_flip::FlipTiming::Vsync,
     )
     .expect("record copied sink flip");
 
@@ -204,6 +206,7 @@ fn legacy_scene_flip_has_no_atomic_cursor_properties() {
         -1,
         &mut out_fence,
         &positions,
+        crate::drm::async_flip::FlipTiming::Vsync,
     )
     .expect("record legacy scene flip");
 
@@ -234,6 +237,7 @@ fn backend_with_live_scene() -> Option<KmsBackend> {
     let layouts = backend.platform.scene_output_layouts();
     backend.scene = crate::kms::render::scene::SceneCompositor::new(&backend.platform, &layouts)
         .expect("construct hardware-free live scene");
+    install_visible_cursor_via_backend(&mut backend);
     backend.scene.for_tests_set_hw_cursor_mode();
     backend.scene.scene_structure_dirty = false;
     for drawable in backend.store.armed_damaged_ids() {
@@ -242,6 +246,28 @@ fn backend_with_live_scene() -> Option<KmsBackend> {
         }
     }
     Some(backend)
+}
+
+fn install_visible_cursor_via_backend(backend: &mut KmsBackend) {
+    use yserver_core::backend::Backend;
+
+    let source = Backend::create_pixmap(backend, None, 1, 1, 1).expect("cursor source pixmap");
+    Backend::put_image(backend, None, source.as_raw(), 1, 1, 1, 0, 0, &[1, 0, 0, 0])
+        .expect("paint visible cursor pixel");
+    let cursor = Backend::create_cursor(
+        backend,
+        None,
+        source,
+        None,
+        (u16::MAX, u16::MAX, u16::MAX),
+        (0, 0, 0),
+        0,
+        0,
+    )
+    .expect("create visible cursor");
+    Backend::define_cursor(backend, None, backend.core.window_id, cursor.as_raw())
+        .expect("define visible root cursor");
+    assert!(!backend.effective_cursor_hidden());
 }
 
 fn backend_with_hidden_dead_zone_scene() -> Option<KmsBackend> {
@@ -435,7 +461,11 @@ fn hidden_cursor_motion_from_dead_zone_wakes_scene_on_reentry() {
     let Some(mut backend) = backend_with_hidden_dead_zone_scene() else {
         return;
     };
+    install_visible_cursor_via_backend(&mut backend);
     let mut state = ServerState::new();
+    Backend::warp_pointer_root(&mut backend, &mut state, 850, 450);
+    // Model the initial retirement at a location covered by neither output.
+    backend.scene.scene_structure_dirty = false;
     assert!(!backend.cursor_hidden, "this is not XFIXES HideCursor");
     assert_eq!(
         backend.scene.cursor_mode(),
@@ -444,7 +474,6 @@ fn hidden_cursor_motion_from_dead_zone_wakes_scene_on_reentry() {
     assert!(!backend.for_tests_scene_wants_compose());
 
     // The gap and the shorter output's lower edge form the dead zone.
-    Backend::warp_pointer_root(&mut backend, &mut state, 850, 450);
     assert_eq!(
         (backend.core.cursor_x, backend.core.cursor_y),
         (850.0, 450.0)
@@ -504,6 +533,7 @@ fn motion_during_scene_flip_waits_and_scene_request_carries_latest_position() {
         -1,
         &mut out_fence,
         &positions,
+        crate::drm::async_flip::FlipTiming::Vsync,
     )
     .expect("record the next scene request");
     backend
@@ -596,6 +626,7 @@ fn scene_damage_after_cursor_retirement_submits_scene_with_latest_position() {
         -1,
         &mut out_fence,
         &positions,
+        crate::drm::async_flip::FlipTiming::Vsync,
     )
     .expect("record prioritized scene request");
     backend
@@ -780,6 +811,7 @@ fn scene_commit_failure_blames_the_cursor_only_when_its_fields_cause_it() {
             -1,
             &mut out_fence,
             &[position],
+            crate::drm::async_flip::FlipTiming::Vsync,
         );
         assert!(result.is_err(), "{name}: the scene commit itself failed");
         assert_eq!(
@@ -827,8 +859,16 @@ fn direct_scanout_probe_tests_the_request_it_commits() {
     let sink = &platform.devices[0].atomic_commit_sink;
     crate::drm::modeset::test_direct_scanout(device, sink, raw(91), &planes, &[position])
         .expect("record M1 probe");
-    crate::drm::modeset::submit_direct_scanout(device, sink, raw(91), &planes, &[position])
-        .expect("record live direct commit");
+    crate::drm::modeset::submit_direct_scanout(
+        device,
+        sink,
+        raw(91),
+        &planes,
+        &[position],
+        crate::drm::async_flip::FlipTiming::Vsync,
+        crate::drm::atomic::TearingCommitContext::NONE,
+    )
+    .expect("record live direct commit");
 
     let records = recorder.records();
     assert_eq!(records.len(), 2);

@@ -316,6 +316,11 @@ pub struct ScanoutBo {
     /// image / memory — declared last so Rust drops it after the
     /// explicit `Drop` impl has torn those down.
     gbm_bo: Option<gbm::BufferObject<()>>,
+    /// The recording-scene fixture borrows image/view storage but owns its
+    /// semaphore and transfer resources. Its test-only Drop path releases
+    /// those handles without treating the synthetic framebuffer as a DRM FB.
+    #[cfg(test)]
+    test_compose_target: bool,
 }
 
 /// Per-bo transfer-side resources (command pool/buffer + staging

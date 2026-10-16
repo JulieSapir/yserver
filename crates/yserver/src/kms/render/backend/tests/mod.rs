@@ -14,6 +14,7 @@ mod render_clip;
 mod render_picture;
 mod root_scanout;
 mod stacking;
+mod tearing;
 mod vt_session;
 mod window_border;
 mod window_tree;
@@ -97,6 +98,44 @@ impl crate::kms::cursor_plane::CursorHideExecutor for RecordingCursorHideExecuto
     }
 }
 
+type CursorShowCall = (::drm::control::crtc::Handle, (i32, i32), i32, i32);
+
+#[derive(Default)]
+pub(crate) struct RecordingCursorShowExecutor {
+    calls: RefCell<Vec<CursorShowCall>>,
+}
+
+impl RecordingCursorShowExecutor {
+    pub(crate) fn calls(&self) -> Vec<CursorShowCall> {
+        self.calls.borrow().clone()
+    }
+}
+
+impl crate::kms::cursor_plane::CursorShowExecutor for RecordingCursorShowExecutor {
+    fn show(
+        &self,
+        _device: &crate::drm::Device,
+        _buffer: &crate::kms::cursor_plane::CursorPlaneBuffer,
+        crtc: ::drm::control::crtc::Handle,
+        hotspot: (i32, i32),
+        img_x: i32,
+        img_y: i32,
+    ) -> io::Result<()> {
+        self.calls.borrow_mut().push((crtc, hotspot, img_x, img_y));
+        Ok(())
+    }
+
+    fn move_to(
+        &self,
+        _device: &crate::drm::Device,
+        _crtc: ::drm::control::crtc::Handle,
+        _img_x: i32,
+        _img_y: i32,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 pub(crate) fn install_recording_cursor_hide_executor(
     backend: &mut KmsBackend,
     device_idx: usize,
@@ -148,6 +187,7 @@ fn push_test_device(backend: &mut KmsBackend, key: DrmDeviceKey) {
         .push(crate::kms::render::platform::KmsDevice {
             key,
             device,
+            async_page_flip: false,
             atomic_commit_sink: std::rc::Rc::new(crate::drm::atomic::AtomicCommitSink::new(
                 std::rc::Rc::new(crate::drm::atomic::DrmAtomicCommitExecutor),
             )),
@@ -948,6 +988,8 @@ fn retain_direct_frame_from_source_test(
             explicit_sync: false,
             options: 0,
         },
+        present_received_at: std::time::Instant::now(),
+        present_received_monotonic: None,
         fallback_target: PaintTarget::new(fallback_id, (0, 0), None, 24),
         event: CompletedPresentEvent {
             client_id: yserver_protocol::x11::ClientId(1),
@@ -968,6 +1010,7 @@ fn retain_direct_frame_from_source_test(
         completion_output_idx: 0,
         completion_clock,
         awaiting_outputs: std::collections::HashSet::new(),
+        async_outcome: crate::drm::async_flip::AsyncOutcome::NotRequested,
     });
     b.pstate.scanout_m2.hold_direct = true;
 }
@@ -1180,6 +1223,8 @@ pub(super) fn install_direct_frame_for_target_test(
         fallback_target_pin,
         source_id,
         candidate,
+        present_received_at: std::time::Instant::now(),
+        present_received_monotonic: None,
         fallback_target: PaintTarget::new(fallback_id, (0, 0), None, 24),
         event: CompletedPresentEvent {
             client_id: yserver_protocol::x11::ClientId(1),
@@ -1208,6 +1253,7 @@ pub(super) fn install_direct_frame_for_target_test(
         } else {
             std::collections::HashSet::from([0])
         },
+        async_outcome: crate::drm::async_flip::AsyncOutcome::NotRequested,
     };
     if current {
         b.pstate.scanout_m2.current = Some(frame);

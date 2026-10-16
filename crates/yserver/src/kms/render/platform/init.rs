@@ -341,9 +341,18 @@ impl PlatformBackend {
             .into_iter()
             .map(|device| {
                 let cursor = KmsCursorState::new();
+                let async_page_flip = {
+                    use ::drm::Device as _;
+                    device
+                        .device
+                        .get_driver_capability(::drm::DriverCapability::AtomicASyncPageFlip)
+                        .ok()
+                        .is_some_and(|value| value != 0)
+                };
                 KmsDevice {
                     key: device.key,
                     device: device.device,
+                    async_page_flip,
                     atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(
                         Rc::new(crate::drm::atomic::DrmAtomicCommitExecutor),
                     )),
@@ -710,6 +719,9 @@ impl PlatformBackend {
         Ok(Self {
             initial_scanout_rollback_armed,
             devices,
+            tearing_on: false,
+            tearing_copy_received_at: None,
+            tearing_copy_received_monotonic: None,
             output_power_executor: Rc::new(super::power::DrmOutputPowerExecutor),
             deferred_cursor_move_outcome: crate::kms::render::platform::CursorMoveOutcome::default(
             ),
@@ -722,6 +734,11 @@ impl PlatformBackend {
             ust_msc: std::collections::HashMap::new(),
             completion_clocks: std::collections::HashMap::new(),
             software_msc: std::collections::HashMap::new(),
+            async_ledger: crate::drm::async_flip::AsyncFlipLedger::default(),
+            async_outcomes: HashMap::new(),
+            requested_flip_timing: crate::drm::async_flip::FlipTiming::Vsync,
+            scene_flip_timings: Vec::new(),
+            scene_cursor_hide_failed: false,
             input_ctx,
             #[cfg(target_os = "linux")]
             hotplug_monitor,
@@ -783,6 +800,7 @@ impl PlatformBackend {
             devices: vec![KmsDevice {
                 key: device_key,
                 device,
+                async_page_flip: false,
                 atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(Rc::new(
                     crate::drm::atomic::DrmAtomicCommitExecutor,
                 ))),
@@ -791,6 +809,9 @@ impl PlatformBackend {
                 test_page_flip_event_source: Some(test_page_flip_event_source),
                 cursor: KmsCursorState::new(),
             }],
+            tearing_on: false,
+            tearing_copy_received_at: None,
+            tearing_copy_received_monotonic: None,
             output_power_executor: Rc::new(super::power::DrmOutputPowerExecutor),
             deferred_cursor_move_outcome: crate::kms::render::platform::CursorMoveOutcome::default(
             ),
@@ -850,6 +871,11 @@ impl PlatformBackend {
             ust_msc: std::collections::HashMap::new(),
             completion_clocks: std::collections::HashMap::new(),
             software_msc: std::collections::HashMap::new(),
+            async_ledger: crate::drm::async_flip::AsyncFlipLedger::default(),
+            async_outcomes: HashMap::new(),
+            requested_flip_timing: crate::drm::async_flip::FlipTiming::Vsync,
+            scene_flip_timings: Vec::new(),
+            scene_cursor_hide_failed: false,
             input_ctx: None,
             #[cfg(target_os = "linux")]
             hotplug_monitor,

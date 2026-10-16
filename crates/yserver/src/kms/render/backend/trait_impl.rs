@@ -149,9 +149,22 @@ impl<P: Platform> Backend for XBackend<P> {
     }
 
     fn mark_dirty(&mut self) {
-        // Wake the compositor without inventing full-output damage.
-        // Paint paths already record per-drawable presentation
-        // damage, and cursor motion is projected by build_scene.
+        // The core loop calls mark_dirty after every handled X request, even
+        // when the request changed no scene state. During capped tearing that
+        // generic wake must not turn XTest motion fan-out (and client replies
+        // to MotionNotify) into ordinary scene damage. Real paint damage,
+        // repaint obligations, and structural changes retain their own wakes.
+        if P::tearing_cursor_compose_cap_applies(self) {
+            // Paint damage and repaint obligations are already scheduler
+            // inputs; structural mutations mark the scene directly, and
+            // pointer motion records its cursor-only cause. This generic hook
+            // runs after every X request, so it must not turn any of those
+            // existing causes into ordinary damage or erase the cursor cap.
+            return;
+        }
+
+        // Outside the cursor-cap case, preserve the established generic
+        // request wake behavior without inventing full-output damage.
         self.scene.wake_for_damage();
     }
 
@@ -1035,6 +1048,7 @@ impl<P: Platform> Backend for XBackend<P> {
         width: u16,
         height: u16,
     ) -> io::Result<()> {
+        P::note_tearing_copy_damage(self, dst_host_xid);
         Self::backend_draw_copy_area(
             self,
             _origin,
@@ -1767,8 +1781,8 @@ impl<P: Platform> Backend for XBackend<P> {
         P::arm_present_completion_idle_vblanks(self, crtc_id, target_mscs)
     }
 
-    fn present_capabilities(&self, window: u32) -> PresentCaps {
-        P::present_capabilities(self, window)
+    fn present_capabilities(&self, window: u32, crtc_id: u32) -> PresentCaps {
+        P::present_capabilities(self, window, crtc_id)
     }
 
     fn xkb_proxy(

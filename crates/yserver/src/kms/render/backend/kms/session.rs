@@ -5,7 +5,7 @@ use crate::{
         render::{
             backend::{
                 CrtcConfigProbeExecutor, KmsBackend, KmsBackendState, RandrIdAllocator,
-                ScanoutM0Telemetry, ScanoutM1ProbeCache, ScanoutM2State,
+                ScanoutM0Telemetry, ScanoutM1ProbeCache, ScanoutM2State, Tearing,
                 kms::export::probe_dmabuf_export_support,
             },
             engine::RenderEngine,
@@ -20,6 +20,40 @@ use std::{
     io,
 };
 use yserver_core::{backend::Backend as _, server::ServerState};
+
+pub(in crate::kms::render::backend) trait VtResumeExecutor {
+    fn acquire_master(&self, device: &crate::kms::render::platform::KmsDevice) -> io::Result<()>;
+    fn release_master(&self, device: &crate::kms::render::platform::KmsDevice) -> io::Result<()>;
+    fn probe_connector_snapshot(
+        &self,
+        platform: &PlatformBackend,
+    ) -> io::Result<Vec<crate::kms::render::platform::ConnectorSnapshot>>;
+}
+
+pub(in crate::kms::render::backend) struct DrmVtResumeExecutor;
+
+impl VtResumeExecutor for DrmVtResumeExecutor {
+    fn acquire_master(&self, device: &crate::kms::render::platform::KmsDevice) -> io::Result<()> {
+        use ::drm::Device as _;
+        try_acquire_master_bounded(
+            || device.device.acquire_master_lock(),
+            10,
+            std::time::Duration::from_millis(5),
+        )
+    }
+
+    fn release_master(&self, device: &crate::kms::render::platform::KmsDevice) -> io::Result<()> {
+        use ::drm::Device as _;
+        device.device.release_master_lock()
+    }
+
+    fn probe_connector_snapshot(
+        &self,
+        platform: &PlatformBackend,
+    ) -> io::Result<Vec<crate::kms::render::platform::ConnectorSnapshot>> {
+        platform.probe_connector_snapshot()
+    }
+}
 
 fn try_acquire_master_bounded<F>(
     mut attempt: F,
@@ -42,6 +76,14 @@ where
 }
 
 impl KmsBackend {
+    #[cfg(test)]
+    pub(in crate::kms::render::backend) fn for_tests_set_vt_resume_executor(
+        &mut self,
+        executor: std::rc::Rc<dyn VtResumeExecutor>,
+    ) {
+        self.pstate.vt_resume_executor = executor;
+    }
+
     /// Real-DRM-real-Vk constructor. Per Stage 2a, the platform
     /// layer (DRM device, output layouts, libinput, VkContext,
     /// ops command pool, fence pool, per-output scanout pools)
@@ -104,6 +146,10 @@ impl KmsBackend {
             scanout_m0: ScanoutM0Telemetry::default(),
             scanout_m1: ScanoutM1ProbeCache::new(),
             scanout_m2: ScanoutM2State::new(),
+            tearing: Tearing::new(),
+            direct_frame_submitter: KmsBackend::submit_direct_frame_live,
+            vt_resume_executor: std::rc::Rc::new(DrmVtResumeExecutor),
+            monotonic_clock: std::rc::Rc::new(std::time::Instant::now),
             armed_vblank_targets: std::collections::HashMap::new(),
             absolute_vblank_targets: std::collections::HashMap::new(),
             crtc_queue_sequence_unsupported_devices: HashSet::new(),
@@ -295,6 +341,7 @@ impl KmsBackend {
             &self.windows,
             &outputs,
             self.platform.fb_dimensions(),
+            self.pstate.tearing.is_on(),
         );
         match self.scene.tick(
             &input,
@@ -320,6 +367,7 @@ impl KmsBackend {
     /// Propagates the first per-output `drm::modeset::disable_output`
     /// failure; subsequent outputs still attempted.
     pub fn disable_output(&mut self) -> io::Result<()> {
+        self.exit_tearing("shutdown");
         // Stage 5 Task 6.1: explicitly flush open render batches
         // before drain_all walks the submitted queue. drain_all only
         // waits on already-submitted CBs; an open pending batch
@@ -389,6 +437,7 @@ impl KmsBackend {
     ///
     /// `drive_vt_event` on `BeginSuspend`.
     fn run_suspend(&mut self, state: &mut ServerState) {
+        self.exit_tearing("VT release");
         log::info!(
             "kms: run_suspend enter — down_keys={} button_mask=0x{:04x}",
             self.core.down_keys.len(),
@@ -530,7 +579,11 @@ impl KmsBackend {
         // outputs. A failed probe is fatal on resume: applying only a prefix
         // would create a fabricated combined topology.
         log::info!("kms: run_resume step 2 — probe connector snapshot");
-        let snapshot = match self.platform.probe_connector_snapshot() {
+        let snapshot = match self
+            .pstate
+            .vt_resume_executor
+            .probe_connector_snapshot(&self.platform)
+        {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 log::error!("kms: resume: connector probe failed: {error}; exiting");
@@ -637,7 +690,11 @@ impl KmsBackend {
         let cx = self.core.cursor_x as i32;
         #[allow(clippy::cast_possible_truncation)]
         let cy = self.core.cursor_y as i32;
-        self.platform.rearm_cursor(hot_x, hot_y, cx, cy);
+        if self.effective_cursor_hidden() {
+            <PlatformBackend as crate::kms::render::backend::seam::Platform>::recover_hidden_cursor_on_resume(self);
+        } else {
+            self.platform.rearm_cursor(hot_x, hot_y, cx, cy);
+        }
 
         // Input is resumed by `on_vt_acquire` after this returns; there is no
         // on-core libinput context to resume here.
@@ -789,8 +846,6 @@ impl KmsBackend {
         _input_inventory: &yserver_core::core_loop::input_inventory::InputInventory,
     ) {
         use crate::vt::state::VtEventKind;
-        use ::drm::Device as _;
-
         // Step logging is load-bearing: if a switch wedges, the last line
         // printed pinpoints which step stalled (kernel blocks the VT switch
         // until VT_RELDISP, so a stall here freezes the whole session).
@@ -798,7 +853,7 @@ impl KmsBackend {
         self.drive_vt_event(state, VtEventKind::Disable);
         log::info!("kms: VT release — suspended; drmDropMaster");
         for device in &self.platform.devices {
-            if let Err(err) = device.device.release_master_lock() {
+            if let Err(err) = self.pstate.vt_resume_executor.release_master(device) {
                 log::warn!("kms: drmDropMaster failed on {}: {err}", device.key);
             }
         }
@@ -892,6 +947,9 @@ impl KmsBackend {
             return Ok(()); // same binary state (e.g. Standby → Suspend)
         }
         self.bump_crtc_config_topology_epoch("DPMS output state changed");
+        if !want_active {
+            self.exit_tearing("DPMS off");
+        }
         log::info!(
             "kms: set_dpms_power(level={level}) — transition active={} → {want_active}",
             self.kms_outputs_active,
@@ -929,7 +987,11 @@ impl KmsBackend {
             #[allow(clippy::cast_possible_truncation)]
             let cy = self.core.cursor_y as i32;
             log::info!("kms: dpms wake — rearm_cursor hot=({hot_x},{hot_y}) pos=({cx},{cy})");
-            self.platform.rearm_cursor(hot_x, hot_y, cx, cy);
+            if self.effective_cursor_hidden() {
+                <PlatformBackend as crate::kms::render::backend::seam::Platform>::recover_hidden_cursor_on_resume(self);
+            } else {
+                self.platform.rearm_cursor(hot_x, hot_y, cx, cy);
+            }
             // Outputs were dark; any incremental damage tracking is
             // stale. Force a fresh full frame on the next composite tick.
             self.scene.wake_for_damage();
@@ -1000,8 +1062,6 @@ impl KmsBackend {
         state: &mut ServerState,
     ) {
         use crate::vt::state::VtEventKind;
-        use ::drm::Device as _;
-
         log::info!("kms: VT acquire — begin; VT_RELDISP(VT_ACKACQ)");
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if let Some(console_guard) = self.pstate.console_guard.as_ref()
@@ -1013,11 +1073,7 @@ impl KmsBackend {
 
         let mut acquired = true;
         for device in &self.platform.devices {
-            if let Err(err) = try_acquire_master_bounded(
-                || device.device.acquire_master_lock(),
-                10,
-                std::time::Duration::from_millis(5),
-            ) {
+            if let Err(err) = self.pstate.vt_resume_executor.acquire_master(device) {
                 log::error!(
                     "kms: drmSetMaster failed on {} after retries: {err}",
                     device.key
@@ -1030,7 +1086,7 @@ impl KmsBackend {
                 "kms: at least one DRM device did not regain master; keeping scanout closed and exiting"
             );
             for device in &self.platform.devices {
-                if let Err(error) = device.device.release_master_lock() {
+                if let Err(error) = self.pstate.vt_resume_executor.release_master(device) {
                     log::warn!(
                         "kms: cleanup drmDropMaster failed on {} after partial acquire: {error}",
                         device.key

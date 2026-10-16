@@ -19,7 +19,7 @@ pub(crate) struct PendingPresentSourceWait {
     pub(crate) prewaited_destination: Option<DrawableId>,
     /// Keeps an explicitly imported acquire syncobj alive until its timeline
     /// point signals. Implicit dma-buf waits leave this empty.
-    pub(crate) syncobj_pin: Option<Arc<super::imported_syncobj::ImportedSyncobj>>,
+    pub(crate) syncobj_pin: Option<Arc<dyn super::imported_syncobj::PresentSyncobj>>,
     /// Target acquire point. Set whenever an acquire syncobj is present —
     /// note `is_ready` checks it on every poll, not only when
     /// `DRM_SYNCOBJ_EVENTFD` was unavailable.

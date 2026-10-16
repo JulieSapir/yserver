@@ -1869,6 +1869,7 @@ impl<P: Platform> XBackend<P> {
         _origin: Option<OriginContext>,
         host_xid: u32,
     ) -> io::Result<()> {
+        P::exit_tearing_for_window(self, host_xid, "window_destroyed");
         // A direct frame may still scan a source whose Copy fallback targets
         // this window. Request the composed replacement before dropping that
         // storage ownership; the frame's pins deliberately remain alive until
@@ -1905,6 +1906,7 @@ impl<P: Platform> XBackend<P> {
         _origin: Option<OriginContext>,
         host_xid: u32,
     ) -> io::Result<()> {
+        P::exit_tearing_for_window(self, host_xid, "window_mapped");
         if P::direct_frame_references_host_drawable(self, host_xid) {
             P::request_direct_unflip(self, "map_direct_frame_drawable");
         }
@@ -1974,6 +1976,7 @@ impl<P: Platform> XBackend<P> {
         _origin: Option<OriginContext>,
         host_xid: u32,
     ) -> io::Result<()> {
+        P::exit_tearing_for_window(self, host_xid, "window_storage_released");
         if self.storage_lifecycle_exempt(host_xid) {
             return Ok(());
         }
@@ -1999,6 +2002,7 @@ impl<P: Platform> XBackend<P> {
         _origin: Option<OriginContext>,
         host_xid: u32,
     ) -> io::Result<()> {
+        P::exit_tearing_for_window(self, host_xid, "window_unmapped");
         if P::direct_frame_references_host_drawable(self, host_xid) {
             P::request_direct_unflip(self, "unmap_direct_frame_drawable");
         }
@@ -2018,6 +2022,7 @@ impl<P: Platform> XBackend<P> {
         host_xid: u32,
         config: HostSubwindowConfig,
     ) -> io::Result<()> {
+        P::exit_tearing_for_window(self, host_xid, "window_configured");
         // The compositor's root-stage Present remains authoritative while an
         // unrelated client window moves. The updated desktop arrives in its
         // next root Present, so replacing direct scanout for every

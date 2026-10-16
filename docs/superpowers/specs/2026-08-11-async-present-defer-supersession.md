@@ -50,7 +50,10 @@ A clocked immediate async request enters as `Some(current_msc)`. The existing
 is in flight. Ready requests consequently reach `try_present_direct`, where
 the backend retains one latest successor and immediately releases superseded
 buffers. Requests still waiting for their acquire/source fence remain in core
-and can be scrapped there once a same-target successor arrives.
+until that fence signals and are never scrapped while waiting. Core
+supersession scraps only requests parked for a future MSC. If a newer covered
+same-target Present has executed by then, the older request completes as Skip
+instead of being shown after it.
 
 Synced next-vblank requests remain `Some(clock_msc + 1)` and retain the
 existing in-flight-flip parking rule.

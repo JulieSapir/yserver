@@ -1140,6 +1140,7 @@ mod tests {
             PendingPresentEntry {
                 pending,
                 source_ready: false,
+                superseded_by_executed_present_id: None,
                 wait_id: Some(WAIT_ID),
                 pin: Some(PIN_ID),
             },

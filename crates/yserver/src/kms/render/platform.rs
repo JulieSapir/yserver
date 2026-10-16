@@ -53,14 +53,17 @@ use std::{
     os::fd::OwnedFd,
     rc::Rc,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use ash::vk;
 use yserver_core::backend::PresentClockSample;
 
 use crate::{
-    drm,
+    drm::{
+        self,
+        async_flip::{AsyncFlipLedger, FlipTiming},
+    },
     kms::{
         backend::{ActiveOutput, OutputKey},
         scanout_route::ScanoutRoute,
@@ -161,7 +164,18 @@ pub(crate) struct SequenceCompletion {
     pub(crate) sequence: u64,
 }
 
-type DrainedPageFlipEvents = (Vec<(usize, PresentClockSample)>, Vec<SequenceCompletion>);
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FlipEventTimestamps {
+    /// CLOCK_MONOTONIC receipt time used by async ioctl-to-event turnaround.
+    pub(crate) received_at_monotonic: Option<Duration>,
+    /// Kernel completion time converted to CLOCK_MONOTONIC for Present latency.
+    pub(crate) completion_at_monotonic: Option<Duration>,
+}
+
+type DrainedPageFlipEvents = (
+    Vec<(usize, PresentClockSample, FlipEventTimestamps)>,
+    Vec<SequenceCompletion>,
+);
 
 /// Process-local identity of one KMS CRTC.
 ///
@@ -379,6 +393,8 @@ struct TerminalDisposableProbeMarker {
 pub(crate) struct KmsDevice {
     pub(crate) key: crate::platform::drm::DrmDeviceKey,
     pub(crate) device: Rc<drm::Device>,
+    /// `DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP`, sampled once when this KMS device opens.
+    pub(crate) async_page_flip: bool,
     pub(crate) atomic_commit_sink: Rc<crate::drm::atomic::AtomicCommitSink>,
     pub(crate) page_flip_event_source: Rc<dyn flip_events::PageFlipEventSource>,
     #[cfg(test)]
@@ -416,6 +432,13 @@ pub struct PlatformBackend {
     initial_scanout_rollback_armed: bool,
     // DRM / output side
     pub(crate) devices: Vec<KmsDevice>,
+    /// Shared tearing state used by per-device commit telemetry and the
+    /// composed scene submit path.
+    pub(crate) tearing_on: bool,
+    /// Earliest backend-received Copy damage waiting for an async composed
+    /// commit. Retained across coalesced scene work.
+    pub(crate) tearing_copy_received_at: Option<Instant>,
+    pub(crate) tearing_copy_received_monotonic: Option<Duration>,
     pub(super) output_power_executor: Rc<dyn power::OutputPowerExecutor>,
     /// Cursor rollback outcomes raised while the scene owns the platform
     /// borrow. The backend drains this immediately after the submit pass to
@@ -461,6 +484,25 @@ pub struct PlatformBackend {
     /// report a real `frame > 0` this map stays empty (the real value
     /// is used directly).
     pub(crate) software_msc: std::collections::HashMap<CrtcKey, u64>,
+
+    /// Per-stream history for async page-flip EINVAL fallback. Cleared when
+    /// the backend leaves its active KMS session.
+    pub(crate) async_ledger: AsyncFlipLedger,
+    /// Most recent outcome per independently submitted stream. The scene
+    /// output contract does not carry flip timing, so retain the result here
+    /// for the Present policy and diagnostics that follow a synchronous submit.
+    pub(crate) async_outcomes:
+        HashMap<crate::drm::async_flip::AsyncStream, crate::drm::async_flip::AsyncOutcome>,
+    /// The submit timing selected by the caller. Production initializes this
+    /// to Vsync; the later Present policy may request Async for eligible work.
+    pub(crate) requested_flip_timing: FlipTiming,
+    /// Scene timing is selected per output for one `maybe_composite` pass.
+    /// `None` preserves the legacy test/caller override above; production sets
+    /// every output on every pass, starting with Vsync.
+    pub(crate) scene_flip_timings: Vec<Option<FlipTiming>>,
+    /// A scene retirement attempted to hide a hardware cursor and failed.
+    /// The backend consumes this to keep tearing's fallback diagnostic once.
+    pub(crate) scene_cursor_hide_failed: bool,
 
     // Input side
     input_ctx: Option<crate::input::SendContext>,
@@ -523,6 +565,67 @@ pub struct PlatformBackend {
     pub(crate) first_pageflip_logged: Vec<bool>,
 
     pub(crate) shutting_down: bool,
+}
+
+impl PlatformBackend {
+    pub(crate) fn set_tearing_on(&mut self, on: bool) {
+        self.tearing_on = on;
+        for device in &self.devices {
+            device.atomic_commit_sink.set_tearing_on(on);
+        }
+        if !on {
+            self.tearing_copy_received_at = None;
+            self.tearing_copy_received_monotonic = None;
+        }
+    }
+
+    pub(crate) fn note_tearing_copy_damage(
+        &mut self,
+        received_at: Instant,
+        received_monotonic: Option<Duration>,
+    ) {
+        if self.tearing_on && self.tearing_copy_received_at.is_none() {
+            self.tearing_copy_received_at = Some(received_at);
+            self.tearing_copy_received_monotonic = received_monotonic;
+        }
+    }
+
+    pub(crate) fn emit_tearing_summary_if_due(&self, on: bool, avg_gpu_render_ns: u64) {
+        for device in &self.devices {
+            device.atomic_commit_sink.emit_tearing_summary_if_due(
+                device.key,
+                on,
+                avg_gpu_render_ns,
+            );
+            device
+                .atomic_commit_sink
+                .emit_present_latency_summary_if_due(device.key);
+        }
+    }
+
+    pub(crate) fn note_tearing_async_flip_event(
+        &self,
+        output_idx: usize,
+        timestamps: FlipEventTimestamps,
+    ) {
+        let Some(output) = self.outputs.get(output_idx) else {
+            return;
+        };
+        if let Some(device) = self.device_for_output(&output.key) {
+            device
+                .atomic_commit_sink
+                .note_async_flip_event(output.output.crtc, timestamps);
+        }
+    }
+
+    pub(crate) fn note_direct_present_received(&self, output_idx: usize) {
+        let Some(output) = self.outputs.get(output_idx) else {
+            return;
+        };
+        if let Some(device) = self.device_for_output(&output.key) {
+            device.atomic_commit_sink.note_direct_present_received();
+        }
+    }
 }
 
 /// One live scanout route a connector snapshot removed, with the layout

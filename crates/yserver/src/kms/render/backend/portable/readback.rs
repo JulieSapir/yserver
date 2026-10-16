@@ -162,6 +162,7 @@ impl<P: Platform> XBackend<P> {
             &self.windows,
             &outputs,
             self.platform.fb_size(),
+            P::tearing_active(self),
         );
         match self.scene.root_readback(
             &input,
@@ -210,6 +211,7 @@ impl<P: Platform> XBackend<P> {
             &self.windows,
             &outputs,
             self.platform.fb_size(),
+            P::tearing_active(self),
         );
         if let Err(e) = self.scene.prime_transform_intermediates(
             &input,

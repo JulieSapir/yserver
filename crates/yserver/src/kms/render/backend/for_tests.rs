@@ -3,7 +3,7 @@ use crate::kms::{
     render::{
         backend::{
             ConnectorConfig, KmsBackend, KmsBackendState, PaintTargetShape, RandrIdAllocator,
-            ScanoutM0Telemetry, ScanoutM1ProbeCache, ScanoutM2State, ScenePlacement,
+            ScanoutM0Telemetry, ScanoutM1ProbeCache, ScanoutM2State, ScenePlacement, Tearing,
         },
         engine::{RenderEngine, decode_x11_pixel_for_storage},
         gpu::GpuCore,
@@ -21,7 +21,18 @@ use std::{
 };
 use yserver_core::{backend::Backend as _, server::ServerState};
 
+#[cfg(test)]
+use crate::kms::render::backend::DirectFrameSubmitter;
+
 impl KmsBackend {
+    #[cfg(test)]
+    pub(crate) fn for_tests_set_monotonic_clock(
+        &mut self,
+        clock: Rc<dyn Fn() -> std::time::Instant>,
+    ) {
+        self.pstate.monotonic_clock = clock;
+    }
+
     /// Test-only entry point: drives the production `get_image` path
     /// but returns just the pixel bytes (header stripped). Acceptance
     /// tests use this so they can index into the result starting at
@@ -99,6 +110,7 @@ impl KmsBackend {
                 &self.windows,
                 &outputs,
                 self.platform.fb_dimensions(),
+                self.pstate.tearing.is_on(),
             ),
             &mut self.store,
             0,
@@ -129,6 +141,7 @@ impl KmsBackend {
                 &self.windows,
                 &outputs,
                 self.platform.fb_dimensions(),
+                self.pstate.tearing.is_on(),
             ),
             &mut self.store,
             0,
@@ -273,6 +286,13 @@ impl KmsBackend {
     /// back to headless use `for_tests` directly.
     #[doc(hidden)]
     pub fn for_tests_with_vk() -> Result<Self, io::Error> {
+        Self::for_tests_with_vk_dimensions(800, 600)
+    }
+
+    /// Vk-backed fixture with a caller-selected virtual-screen size.
+    /// Used by scene tests that install synthetic outputs without a DRM node.
+    #[doc(hidden)]
+    pub fn for_tests_with_vk_dimensions(width: u16, height: u16) -> Result<Self, io::Error> {
         use std::sync::Arc;
         // Build the test seed WITHOUT the root drawable. If
         // `for_tests()` were used, `init_root_storage` would have
@@ -284,6 +304,8 @@ impl KmsBackend {
         // `set_container_background_pixmap`) segfaults inside the
         // descriptor-set bind.
         let mut base = Self::for_tests_seed();
+        base.platform.fb_w = width.max(1);
+        base.platform.fb_h = height.max(1);
         let vk = crate::kms::vk::device::VkContext::new()
             .map_err(|e| io::Error::other(format!("render for_tests_with_vk: VkContext: {e:?}")))?;
         let ops_pool = crate::kms::vk::ops::OpsCommandPool::new(Arc::clone(&vk)).map_err(|e| {
@@ -536,6 +558,21 @@ impl KmsBackend {
         b
     }
 
+    /// Test fixture with a caller supplied direct-frame submitter. The
+    /// ordinary fixture uses the live KMS submitter; focused tests can inject
+    /// a recording submitter at construction without a production test branch.
+    #[doc(hidden)]
+    #[cfg(test)]
+    pub(in crate::kms::render::backend) fn for_tests_with_direct_submitter(
+        submitter: DirectFrameSubmitter,
+    ) -> Self {
+        let mut b = Self::for_tests_seed();
+        b.pstate.direct_frame_submitter = submitter;
+        b.init_root_storage();
+        let _ = b.init_cursor_sprite();
+        b
+    }
+
     /// Construct the test fixture **without** initialising root
     /// storage. Used by `for_tests_with_vk` so root allocation
     /// happens after the Vk context is attached.
@@ -544,6 +581,12 @@ impl KmsBackend {
             scanout_m0: ScanoutM0Telemetry::default(),
             scanout_m1: ScanoutM1ProbeCache::new(),
             scanout_m2: ScanoutM2State::new(),
+            tearing: Tearing::new(),
+            direct_frame_submitter: KmsBackend::submit_direct_frame_live,
+            vt_resume_executor: std::rc::Rc::new(
+                crate::kms::render::backend::kms::session::DrmVtResumeExecutor,
+            ),
+            monotonic_clock: Rc::new(std::time::Instant::now),
             armed_vblank_targets: std::collections::HashMap::new(),
             absolute_vblank_targets: std::collections::HashMap::new(),
             crtc_queue_sequence_unsupported_devices: HashSet::new(),

@@ -188,7 +188,36 @@ pub(crate) fn submit_scene_flip_with_fences(
     in_fence_fd: i32,
     out_fence_holder: &mut i32,
     cursor_positions: &[CursorPlanePosition],
+    timing: crate::drm::async_flip::FlipTiming,
 ) -> io::Result<()> {
+    submit_scene_flip_with_fences_tearing(
+        device,
+        atomic_commit_sink,
+        output,
+        fb_id,
+        in_fence_fd,
+        out_fence_holder,
+        cursor_positions,
+        timing,
+        crate::drm::atomic::TearingCommitContext::NONE,
+    )
+}
+
+pub(crate) fn submit_scene_flip_with_fences_tearing(
+    device: &Device,
+    atomic_commit_sink: &AtomicCommitSink,
+    output: &Output,
+    fb_id: framebuffer::Handle,
+    in_fence_fd: i32,
+    out_fence_holder: &mut i32,
+    cursor_positions: &[CursorPlanePosition],
+    timing: crate::drm::async_flip::FlipTiming,
+    tearing_context: crate::drm::atomic::TearingCommitContext,
+) -> io::Result<()> {
+    let cursor_positions = match timing {
+        crate::drm::async_flip::FlipTiming::Vsync => cursor_positions,
+        crate::drm::async_flip::FlipTiming::Async => &[],
+    };
     let mut request = AtomicCommitRequest::new();
     request.add_raw_property(
         output.plane.into(),
@@ -209,12 +238,16 @@ pub(crate) fn submit_scene_flip_with_fences(
         in_fence_prop,
         in_fence_fd as i64 as u64,
     );
-    let out_fence_prop = match output.crtc_out_fence_ptr_prop {
-        Some(prop) => prop,
-        None => PropMap::for_object(device, output.crtc)?.id("OUT_FENCE_PTR")?,
-    };
-    let out_fence_ptr = (out_fence_holder as *mut i32) as usize as u64;
-    request.add_raw_property(output.crtc.into(), out_fence_prop, out_fence_ptr);
+    if timing == crate::drm::async_flip::FlipTiming::Async {
+        *out_fence_holder = -1;
+    } else {
+        let out_fence_prop = match output.crtc_out_fence_ptr_prop {
+            Some(prop) => prop,
+            None => PropMap::for_object(device, output.crtc)?.id("OUT_FENCE_PTR")?,
+        };
+        let out_fence_ptr = (out_fence_holder as *mut i32) as usize as u64;
+        request.add_raw_property(output.crtc.into(), out_fence_prop, out_fence_ptr);
+    }
     for position in cursor_positions {
         request.add_cursor_position(*position);
     }
@@ -225,18 +258,20 @@ pub(crate) fn submit_scene_flip_with_fences(
             .find(|position| position.crtc == output.crtc)
             .and_then(|position| position.motion_timestamp),
     };
-    let kind = if cursor_positions.is_empty() {
-        AtomicCommitKind::Scene
-    } else {
-        AtomicCommitKind::SceneWithCursor
+    let kind = match timing {
+        crate::drm::async_flip::FlipTiming::Vsync if cursor_positions.is_empty() => {
+            AtomicCommitKind::Scene
+        }
+        crate::drm::async_flip::FlipTiming::Vsync => AtomicCommitKind::SceneWithCursor,
+        crate::drm::async_flip::FlipTiming::Async => AtomicCommitKind::Async,
     };
-    atomic_commit_sink.submit(
-        device,
-        AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
-        kind,
-        request,
-        &[event],
-    )
+    let flags = AtomicCommitFlags::PAGE_FLIP_EVENT
+        | AtomicCommitFlags::NONBLOCK
+        | match timing {
+            crate::drm::async_flip::FlipTiming::Vsync => AtomicCommitFlags::empty(),
+            crate::drm::async_flip::FlipTiming::Async => AtomicCommitFlags::PAGE_FLIP_ASYNC,
+        };
+    atomic_commit_sink.submit_tearing(device, flags, kind, request, &[event], tearing_context)
 }
 
 fn submit_flip_inner(

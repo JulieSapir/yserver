@@ -442,6 +442,9 @@ pub struct Telemetry {
     /// current value, so paint events recorded between ticks
     /// share the surrounding tick's id.
     frame_id: u64,
+    /// Most recently closed render window's existing GPU average, reused by
+    /// the KMS tearing summary without deriving a second GPU metric.
+    last_avg_gpu_render_ns: u64,
 }
 
 impl Telemetry {
@@ -465,6 +468,7 @@ impl Telemetry {
             lifetime: Bucket::default(),
             submit_trace: SubmitTrace::from_env(),
             frame_id: 0,
+            last_avg_gpu_render_ns: 0,
         }
     }
 
@@ -519,19 +523,20 @@ impl Telemetry {
         if dt < std::time::Duration::from_secs(1) {
             return;
         }
+        let b = std::mem::take(&mut self.bucket);
+        self.last_avg_gpu_render_ns = b.gpu_render_ns / b.frames_with_compose.max(1);
         // 1Hz periodic flush of the submit trace — runs whether or
         // not the per-second log line is enabled.
         if let Some(trace) = self.submit_trace.as_mut() {
             trace.flush();
         }
         if !self.enabled {
-            // Advance the timer so the next flush also runs at 1Hz.
-            // The per-second `bucket` keeps accumulating when
-            // disabled — only the log emission + reset are gated.
+            // Advance the timer so the next flush also runs at 1Hz. The
+            // window was already sampled and reset above; GPU cost feeds
+            // tearing telemetry even when the render log is disabled.
             self.last_emit = now;
             return;
         }
-        let b = self.bucket;
         let denom = b.frames_with_compose.max(1);
         let avg_compose_cb_ns = b.compose_cb_record_ns / denom;
         let avg_gpu_render_ns = b.gpu_render_ns / denom;
@@ -762,7 +767,6 @@ impl Telemetry {
             b.frame_builder_close_reason_damage_boundary,
             b.frame_builder_close_reason_glyph_atlas_full,
         );
-        self.bucket = Bucket::default();
         self.last_emit = now;
     }
 
@@ -770,6 +774,14 @@ impl Telemetry {
     /// whether to assert lifetime counts.
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Existing per-window GPU render average used in `render_telemetry`.
+    /// The tearing summary samples this value after `maybe_emit` closes the
+    /// render window.
+    #[must_use]
+    pub fn avg_gpu_render_ns(&self) -> u64 {
+        self.last_avg_gpu_render_ns
     }
 
     /// Explicit flush of the active [`SubmitTrace`]. Called from
@@ -1651,6 +1663,27 @@ mod tests {
         assert_eq!(t.bucket.compose_cb_record_ns, 0);
         // Lifetime preserved.
         assert_eq!(t.lifetime.paint_submits, 1);
+    }
+
+    #[test]
+    // Mutation: keep the GPU bucket accumulated when render telemetry logging is disabled.
+    fn disabled_telemetry_keeps_gpu_average_per_window() {
+        let mut t = Telemetry::new();
+        t.enabled = false;
+
+        t.record_gpu_render_ns(100);
+        t.record_composite_submit();
+        t.last_emit = Instant::now() - std::time::Duration::from_secs(2);
+        t.maybe_emit(0);
+        assert_eq!(t.avg_gpu_render_ns(), 100);
+        assert_eq!(t.bucket.gpu_render_ns, 0);
+
+        t.record_gpu_render_ns(200);
+        t.record_composite_submit();
+        t.last_emit = Instant::now() - std::time::Duration::from_secs(2);
+        t.maybe_emit(0);
+        assert_eq!(t.avg_gpu_render_ns(), 200);
+        assert_eq!(t.bucket.gpu_render_ns, 0);
     }
 
     #[test]

@@ -99,6 +99,45 @@ impl OutputScanout {
 }
 
 impl ScanoutBoPool {
+    /// Scanout pool for a live scene paired with a recording atomic sink.
+    /// The BO images are ordinary Vulkan test targets and their framebuffer
+    /// handles are synthetic, so this fixture never probes or opens DRM.
+    #[cfg(test)]
+    pub(crate) fn for_tests_recording_pool(
+        route: ScanoutRoute,
+        width: u32,
+        height: u32,
+        bos: Vec<ScanoutBo>,
+    ) -> Self {
+        let unknown_direction = || DmabufDirectionMetadata {
+            kms_prime: ScanoutMetadataSupport::Unknown,
+            vulkan_modifiers: ScanoutMetadataSupport::Unknown,
+            modifiers: Vec::new(),
+            modifier_path: ScanoutMetadataSupport::Unknown,
+            linear: DmabufLinearMetadata {
+                vulkan: ScanoutMetadataSupport::Unknown,
+                kms_layout: KmsLinearLayout::LegacyAddfb,
+                path: ScanoutMetadataSupport::Unknown,
+            },
+        };
+        let metadata = DmabufScanoutMetadata {
+            vulkan_external_memory_fd: ScanoutMetadataSupport::Unknown,
+            output_owned: unknown_direction(),
+            renderer_owned: unknown_direction(),
+        };
+        Self {
+            bos,
+            width,
+            height,
+            route,
+            ownership: ScanoutOwnership::Renderer,
+            allocation_plan: ScanoutAllocationPlan::LegacyLinear,
+            metadata,
+            verdict: DmabufScanoutVerdict::Unknown(Vec::new()),
+            gbm_device: None,
+        }
+    }
+
     /// Small pool fixture for backend tests that exercise the real grouped
     /// unflip caller through a recording commit sink. Its framebuffer handle
     /// is synthetic and is never submitted to a DRM ioctl.

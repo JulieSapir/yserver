@@ -11,6 +11,7 @@ use std::panic::Location;
 impl SceneCompositor {
     pub(super) fn note_structure_change(&mut self) {
         self.scene_structure_dirty = true;
+        self.cursor_only_wake = false;
         self.structure_generation = self.structure_generation.wrapping_add(1);
     }
 
@@ -22,11 +23,31 @@ impl SceneCompositor {
     /// projected by `build_scene`.
     #[track_caller]
     pub fn wake_for_damage(&mut self) {
+        self.cursor_only_wake = false;
         if self.damage_audit_active() {
             self.record_damage_audit_event(Location::caller(), self.full_output_audit_area());
         }
         // A paint's own presentation damage tells a root readback it changed.
         self.scene_structure_dirty = true;
+    }
+
+    /// Mark a redraw caused only by the software cursor footprint. Preserve
+    /// an existing ordinary scene wake so cursor motion cannot hide client or
+    /// structural damage that was already waiting to be composed.
+    #[track_caller]
+    pub fn wake_for_cursor_damage(&mut self) {
+        if !self.scene_structure_dirty {
+            self.cursor_only_wake = true;
+        }
+        if self.damage_audit_active() {
+            self.record_damage_audit_event(Location::caller(), self.full_output_audit_area());
+        }
+        self.scene_structure_dirty = true;
+    }
+
+    /// Whether the current dirty bit is attributable only to cursor motion.
+    pub fn cursor_only_wake_pending(&self) -> bool {
+        self.scene_structure_dirty && self.cursor_only_wake
     }
 
     /// Mark scene structure as changed. This is the coarse fallback

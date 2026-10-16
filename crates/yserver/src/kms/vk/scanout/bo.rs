@@ -138,6 +138,61 @@ impl PartialScanoutBoAllocation {
 }
 
 impl ScanoutBo {
+    /// Scanout-shaped target backed by an ordinary test drawable image. The
+    /// framebuffer is consumed only by a recording atomic sink; the image,
+    /// view, and transfer resources exist so `Backend::maybe_composite` can
+    /// exercise the real scene and shared-submit entries without a DRM node.
+    #[cfg(test)]
+    pub(crate) fn for_tests_compose_target(
+        vk: Arc<VkContext>,
+        drm: Rc<crate::drm::Device>,
+        framebuffer: drm::control::framebuffer::Handle,
+        width: u32,
+        height: u32,
+        image: vk::Image,
+        image_view: vk::ImageView,
+    ) -> io::Result<Self> {
+        let pitch = width
+            .checked_mul(4)
+            .ok_or_else(|| io::Error::other("test compose target pitch overflow"))?;
+        let mut vk_transfer = allocate_transfer_resources(&vk, width, height).map_err(|error| {
+            io::Error::other(format!("test compose transfer resources: {error:?}"))
+        })?;
+        let vk_semaphore = match create_export_semaphore(&vk) {
+            Ok(semaphore) => semaphore,
+            Err(error) => {
+                destroy_transfer_resources(&vk, &mut vk_transfer);
+                return Err(io::Error::other(format!(
+                    "test compose semaphore: {error:?}"
+                )));
+            }
+        };
+        Ok(Self {
+            state: BoState::default(),
+            width,
+            height,
+            is_alien: false,
+            pitch,
+            last_gpu_render_ns: None,
+            vk_image: image,
+            vk_memory: vk::DeviceMemory::null(),
+            vk_image_view: image_view,
+            vk_semaphore,
+            export_semaphore_reuse: ExportSemaphoreReuseState::Reusable,
+            fb_handle: Some(framebuffer),
+            gem_handle: None,
+            vk_transfer,
+            drm,
+            vk,
+            // The image and view are borrowed from a test drawable; teardown
+            // of the test Vk device owns these synthetic resources.
+            disarmed: true,
+            gbm_bo: None,
+            #[cfg(test)]
+            test_compose_target: true,
+        })
+    }
+
     /// Minimal on-screen BO whose framebuffer value is consumed only by a
     /// recording atomic-commit sink. All owned GPU/KMS handles are null and
     /// `disarmed` keeps teardown from treating the synthetic framebuffer as a
@@ -181,6 +236,8 @@ impl ScanoutBo {
             vk,
             disarmed: true,
             gbm_bo: None,
+            #[cfg(test)]
+            test_compose_target: false,
         }
     }
 
@@ -471,6 +528,8 @@ impl ScanoutBo {
             vk,
             disarmed: false,
             gbm_bo,
+            #[cfg(test)]
+            test_compose_target: false,
         })
     }
 
@@ -671,8 +730,8 @@ impl ScanoutBo {
     }
 }
 
-impl Drop for ScanoutBo {
-    fn drop(&mut self) {
+impl ScanoutBo {
+    fn drop_owned_resources(&mut self) {
         if self.disarmed {
             // Disarmed by shutdown-failed-disable path; let DRM-fd
             // close (process exit) reap GEM/FB and VkDevice teardown
@@ -755,6 +814,41 @@ impl Drop for ScanoutBo {
             if self.vk_semaphore != vk::Semaphore::null() {
                 self.vk.device.destroy_semaphore(self.vk_semaphore, None);
             }
+        }
+    }
+
+    #[cfg(test)]
+    fn drop_test_compose_resources(&mut self) {
+        // These BOs are retired through a recording atomic sink. Wait for the
+        // scene queue before releasing the borrowed drawable images, then
+        // destroy only the resources this fixture allocated itself.
+        let _ = unsafe { self.vk.device.device_wait_idle() };
+        let released = self.state.transition_to_free_after_modeset_reset();
+        if let Some(fd) = released.in_fence {
+            drop(unsafe { OwnedFd::from_raw_fd(fd) });
+        }
+        if let Some(fd) = released.release_fence {
+            drop(unsafe { OwnedFd::from_raw_fd(fd) });
+        }
+        unsafe { self.vk.device.destroy_semaphore(self.vk_semaphore, None) };
+        destroy_transfer_resources(&self.vk, &mut self.vk_transfer);
+    }
+}
+
+#[cfg(not(test))]
+impl Drop for ScanoutBo {
+    fn drop(&mut self) {
+        self.drop_owned_resources();
+    }
+}
+
+#[cfg(test)]
+impl Drop for ScanoutBo {
+    fn drop(&mut self) {
+        if self.test_compose_target {
+            self.drop_test_compose_resources();
+        } else {
+            self.drop_owned_resources();
         }
     }
 }

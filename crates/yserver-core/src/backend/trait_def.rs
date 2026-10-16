@@ -176,6 +176,9 @@ pub struct PresentCaps {
     /// false, the path selector short-circuits to `Copy` regardless
     /// of pixmap/window match per design §3.3.1.
     pub flip_path: bool,
+    /// The window's KMS device supports `DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP`.
+    /// Advertises Present's Async capability independently of `flip_path`.
+    pub async_flip: bool,
     /// `DRM_MODE_ATOMIC_NONBLOCK` accepted by the kernel — the
     /// `PresentOptionAsyncMayTear` bit is honourable. When false,
     /// the bit is **silently cleared** on incoming requests (per
@@ -191,7 +194,7 @@ pub struct PresentCaps {
 impl PresentCaps {
     /// Encode as a `u32` for the `QueryCapabilities` reply.
     /// `presentproto` bit assignments:
-    ///  - `Async` (0x1)        — Phase 4.2 advertises if `flip_path`.
+    ///  - `Async` (0x1)        — advertised if `flip_path` or `async_flip`.
     ///  - `Fence` (0x2)        — XSync `Fence` always supported once
     ///    DRI3 fence_fd cap is true; Phase 4.2 always advertises.
     ///  - `UST` (0x4)          — vblank UST timestamps; Phase 4.1's
@@ -206,7 +209,7 @@ impl PresentCaps {
         const ASYNC_MAY_TEAR: u32 = 0x8;
         const SYNCOBJ: u32 = 0x10;
         let mut out = FENCE | UST;
-        if self.flip_path {
+        if self.flip_path || self.async_flip {
             out |= ASYNC;
         }
         if self.async_may_tear {
@@ -331,10 +334,25 @@ mod present_caps_tests {
     fn full_caps_set_all_bits() {
         let caps = PresentCaps {
             flip_path: true,
+            async_flip: true,
             async_may_tear: true,
             syncobj: true,
         };
         assert_eq!(caps.encode(), 0x1 | 0x2 | 0x4 | 0x8 | 0x10);
+    }
+
+    #[test]
+    fn present_caps_encode_async_bit_from_async_flip() {
+        // Mutation killed: dropping `async_flip` from `encode` leaves Async unset.
+        let caps = PresentCaps {
+            flip_path: false,
+            async_flip: true,
+            async_may_tear: false,
+            syncobj: false,
+        };
+
+        assert_eq!(caps.encode() & 0x1, 0x1, "Async advertised for async flip");
+        assert_eq!(caps.encode() & 0x8, 0, "AsyncMayTear stays unset");
     }
 }
 
@@ -2599,8 +2617,9 @@ pub trait Backend {
 
     /// Per-window Present capability surface. Default impl: all-false
     /// (Copy-only, no syncobj). KmsBackend overrides;
-    /// `HostX11Backend` and `RecordingBackend` keep the default.
-    fn present_capabilities(&self, _window: u32) -> PresentCaps {
+    /// `HostX11Backend` and `RecordingBackend` keep the default. Non-KMS
+    /// backends ignore `crtc_id`.
+    fn present_capabilities(&self, _window: u32, _crtc_id: u32) -> PresentCaps {
         PresentCaps::default()
     }
 

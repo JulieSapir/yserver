@@ -1258,11 +1258,14 @@ fn grouped_direct_waits_all_outputs_and_uses_selected_reference_sample() {
         fallback_target_pin: 2,
         source_id,
         candidate,
+        present_received_at: std::time::Instant::now(),
+        present_received_monotonic: None,
         fallback_target: PaintTarget::new(fallback_id, (0, 0), None, 24),
         event,
         completion_output_idx: 0,
         completion_clock: None,
         awaiting_outputs: std::collections::HashSet::from([0, 1]),
+        async_outcome: crate::drm::async_flip::AsyncOutcome::NotRequested,
     });
 
     let reference = PresentClockSample {
@@ -1309,8 +1312,9 @@ fn grouped_direct_waits_all_outputs_and_uses_selected_reference_sample() {
 fn async_fullscreen_direct_successors_coalesce_until_flip_retirement() {
     use yserver_core::backend::{PresentClockSample, PresentClockSource};
 
-    let mut b = crate::kms::render::backend::KmsBackend::for_tests();
-    b.pstate.scanout_m2.test_submit_direct_without_drm = true;
+    let mut b = crate::kms::render::backend::KmsBackend::for_tests_with_direct_submitter(
+        crate::kms::render::backend::KmsBackend::submit_direct_frame_for_tests,
+    );
     b.pstate.scanout_m2.cursor_bound_all = true;
     let fallback_id = seed_window(&mut b, 0x6a00, None, 0, 0);
 
@@ -2123,7 +2127,8 @@ fn scanout_m2_ineligible_root_resets_short_eligible_bursts() {
 #[test]
 fn active_direct_scanout_unflips_on_cursor_output_fallback() {
     let mut backend = crate::kms::render::backend::KmsBackend::for_tests();
-    backend.pstate.scanout_m2.test_force_active = true;
+    let fallback_id = seed_window(&mut backend, 0x6e00, None, 0, 0);
+    install_direct_frame_for_target_test(&mut backend, 0x6e10, fallback_id, true);
     backend.handle_cursor_move_outcome(crate::kms::render::platform::CursorMoveOutcome {
         ebusy_count: 0,
         fallback_changed: true,
@@ -2136,8 +2141,9 @@ fn active_direct_scanout_unflips_on_cursor_output_fallback() {
 #[test]
 fn active_direct_scanout_unflips_and_wakes_for_cursor_rollback_retry() {
     let mut backend = crate::kms::render::backend::KmsBackend::for_tests();
+    let fallback_id = seed_window(&mut backend, 0x6e20, None, 0, 0);
+    install_direct_frame_for_target_test(&mut backend, 0x6e30, fallback_id, true);
     backend.scene.scene_structure_dirty = false;
-    backend.pstate.scanout_m2.test_force_active = true;
     backend.handle_cursor_move_outcome(crate::kms::render::platform::CursorMoveOutcome {
         ebusy_count: 0,
         fallback_changed: false,
@@ -2398,6 +2404,13 @@ fn atomic_cursor_scanout_backend_with_hidden_cursor(hidden: bool) -> Option<KmsB
     backend.scene = crate::kms::render::scene::SceneCompositor::new(&backend.platform, &layouts)
         .expect("construct live two-output scene");
     if !hidden {
+        let cursor_xid = 0x7f10;
+        backend.insert_cursor_record(cursor_xid, 1, 1, 0, 0, vec![0xff; 4]);
+        let root = backend.core.window_id;
+        yserver_core::backend::Backend::define_cursor(&mut backend, None, root, cursor_xid)
+            .expect("select the fixture's visible root cursor");
+        assert_eq!(backend.effective_cursor_xid, Some(cursor_xid));
+        assert!(!backend.effective_cursor_hidden());
         backend.scene.for_tests_set_hw_cursor_mode();
     }
     backend.scene.scene_structure_dirty = false;
@@ -3743,6 +3756,13 @@ fn eligible_fullscreen_present_records_cursor_positions_for_both_outputs() {
     let layouts = backend.platform.scene_output_layouts();
     backend.scene = crate::kms::render::scene::SceneCompositor::new(&backend.platform, &layouts)
         .expect("live SceneCompositor");
+    let cursor_xid = 0x7f10;
+    backend.insert_cursor_record(cursor_xid, 1, 1, 0, 0, vec![0xff; 4]);
+    let root = backend.core.window_id;
+    Backend::define_cursor(&mut backend, None, root, cursor_xid)
+        .expect("select the fixture's visible root cursor");
+    assert_eq!(backend.effective_cursor_xid, Some(cursor_xid));
+    assert!(!backend.effective_cursor_hidden());
     backend.scene.for_tests_set_hw_cursor_mode();
 
     let recorder = atomic_cursor_recording_sink(&mut backend);

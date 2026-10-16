@@ -83,7 +83,13 @@ fn compose_right(b: &mut KmsBackend) -> Vec<u8> {
         .flush_submit_group(&mut b.store, &mut b.platform.gpu, FlushReason::SceneCompose)
         .expect("flush");
     let outputs = b.platform.scene_output_layouts();
-    let input = scene_input(&b.core, &b.windows, &outputs, b.platform.fb_dimensions());
+    let input = scene_input(
+        &b.core,
+        &b.windows,
+        &outputs,
+        b.platform.fb_dimensions(),
+        b.pstate.tearing.is_on(),
+    );
     b.scene
         .compose_transformed_for_tests(&input, &mut b.store, &b.platform, 1)
 }
@@ -394,7 +400,13 @@ fn the_cursor_is_software_on_every_output_and_scales_with_the_content() {
     for (output_idx, at) in [(0, (10.0, 10.0)), (1, (72.0, 8.0))] {
         (b.core.cursor_x, b.core.cursor_y) = at;
         let outputs = b.platform.scene_output_layouts();
-        let input = scene_input(&b.core, &b.windows, &outputs, b.platform.fb_dimensions());
+        let input = scene_input(
+            &b.core,
+            &b.windows,
+            &outputs,
+            b.platform.fb_dimensions(),
+            b.pstate.tearing.is_on(),
+        );
         let assignment =
             b.scene
                 .cursor_assignment_for_tests(&input, &mut b.store, &b.platform, output_idx);
@@ -455,7 +467,13 @@ fn root_reads_never_see_the_software_cursor() {
     // Identity: the BO shows it at (10, 10); a read of the BO does not.
     (b.core.cursor_x, b.core.cursor_y) = (10.0, 10.0);
     let outputs = b.platform.scene_output_layouts();
-    let input = scene_input(&b.core, &b.windows, &outputs, b.platform.fb_dimensions());
+    let input = scene_input(
+        &b.core,
+        &b.windows,
+        &outputs,
+        b.platform.fb_dimensions(),
+        b.pstate.tearing.is_on(),
+    );
     let (bo, read) = b
         .scene
         .compose_identity_for_tests(&input, &mut b.store, &b.platform, 0);

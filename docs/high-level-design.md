@@ -11,7 +11,8 @@ Linux (with planned FreeBSD support).
   with no driver ABI for third-party hardware modules. Primary
   target is Linux; FreeBSD (incl. GhostBSD) support landed in 11d87ba.
 - Compositor-native architecture with tear-free presentation by
-  default.
+  default. An eligible fullscreen client requesting asynchronous
+  presentation (Present `Async`) may tear.
 - Per-output presentation (refresh rate, modes) with multiple
   physical outputs as first-class.
 - Implement the modern X11 desktop contract that GTK, Qt, SDL,
@@ -211,9 +212,13 @@ composited, marco) draw to it and see their output on
 screen.
 
 Per-output presentation scheduling is in place. Tear-free is the
-default. VRR, fullscreen direct-scanout bypass, and color
-management / HDR are valid future directions but not yet
-implemented.
+default. Fullscreen direct scanout is implemented; a fullscreen,
+direct-scanout-eligible client that presents with
+`PresentOptionAsync` is flipped asynchronously and may tear, as
+under Xorg's modesetting driver (yserver advertises
+`PresentCapabilityAsync`, not `PresentCapabilityAsyncMayTear`).
+VRR and color management / HDR are valid future directions but not
+yet implemented.
 
 ## What's not in this document
 

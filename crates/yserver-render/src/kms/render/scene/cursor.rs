@@ -74,6 +74,63 @@ impl SceneBuild {
 }
 
 impl SceneCompositor {
+    /// Whether any submitted, unretired frame still carries a cursor-plane
+    /// action. Tearing entry waits for these actions to retire first.
+    pub fn cursor_transition_pending(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            inner.outputs.iter().any(|output| {
+                output
+                    .pending_acks
+                    .iter()
+                    .any(|ack| ack.cursor_transition.is_some())
+            })
+        })
+    }
+
+    /// Retire the cursor half of a grouped external scene replacement.
+    ///
+    /// The direct-scanout handoff replaces every CRTC with a retained scene
+    /// framebuffer without creating normal per-output scene acknowledgements.
+    /// Apply the same cursorless HW→SW phase that a scene acknowledgement would
+    /// have applied at this retirement, so the following scene tick can reveal
+    /// the software cursor.
+    pub fn retire_external_cursor_handoff(
+        &mut self,
+        output_idx: usize,
+        sink: &mut dyn OutputSink,
+    ) -> bool {
+        let Some(inner) = self.inner.as_mut() else {
+            return false;
+        };
+        if output_idx >= inner.outputs.len() {
+            return false;
+        }
+
+        let transition = Some(CursorTransition::HideOnRetire {
+            reveal_sw_after: true,
+        });
+        let result = apply_cursor_transition_on_retire(inner, output_idx, sink, transition);
+        let desired_mode = OutputCursorMode::SwPending;
+        let resolution = resolve_retired_cursor_state(result, desired_mode);
+        let state = &mut inner.outputs[output_idx];
+        state.force_show_retry_version = update_force_show_retry_version(
+            state.force_show_retry_version,
+            transition,
+            result,
+            desired_mode,
+        );
+        state.last_frame_cursor_mode = resolution.actual_mode;
+        if resolution.commit_desired_metadata || resolution.clear_presented_metadata {
+            state.cursor_prev_pos = None;
+            state.last_present_cursor_rect = None;
+            state.last_present_cursor_version = None;
+        }
+        if resolution.force_repaint {
+            force_cursor_retry_repaint(state);
+        }
+        true
+    }
+
     /// Put the pixels a software cursor covers back into `bytes`, a tight
     /// BGRA8 read of `read` from compose image `image` (`cursor_save`).
     pub fn restore_under_cursor(&self, image: vk::Image, read: vk::Rect2D, bytes: &mut [u8]) {
@@ -135,6 +192,48 @@ impl SceneCompositor {
             }
         }
         classify_cursor_mode_from_per_output(inner.outputs.iter().map(|o| o.last_frame_cursor_mode))
+    }
+
+    /// Record cursor-plane ownership after an external scanout transaction
+    /// binds or hides the physical planes without a scene retirement.
+    ///
+    /// `visible_by_output` is the observed plane state in scene output order.
+    /// Pending scene acknowledgements own their own retirement state, so they
+    /// must drain before an external observation can become authoritative.
+    pub fn record_external_cursor_plane_bindings(&mut self, visible_by_output: &[bool]) -> bool {
+        let Some(inner) = self.inner.as_mut() else {
+            return false;
+        };
+        if visible_by_output.len() != inner.outputs.len()
+            || inner
+                .outputs
+                .iter()
+                .any(|output| !output.pending_acks.is_empty())
+        {
+            return false;
+        }
+        for (output, visible) in inner.outputs.iter_mut().zip(visible_by_output) {
+            output.last_frame_cursor_mode = if *visible {
+                OutputCursorMode::Hw
+            } else {
+                OutputCursorMode::Hidden
+            };
+            output.force_show_retry_version = None;
+            output.cursor_prev_pos = None;
+        }
+        true
+    }
+
+    /// Whether a visible cursor footprint was committed by the last retired
+    /// scene frame on this output. Test fixtures use this to distinguish a
+    /// software cursor draw from a mode-only cursor transition.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn for_tests_cursor_footprint_was_presented(&self, output_idx: usize) -> bool {
+        self.inner
+            .as_ref()
+            .and_then(|inner| inner.outputs.get(output_idx))
+            .is_some_and(|output| output.last_present_cursor_rect.is_some())
     }
 
     /// Set up the already-retired hardware-cursor state needed by direct

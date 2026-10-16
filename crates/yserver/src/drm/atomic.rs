@@ -2,7 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io,
     rc::Rc,
     time::{Duration, Instant},
@@ -21,6 +21,56 @@ pub(crate) enum AtomicCommitKind {
     CursorOnly,
     SceneWithCursor,
     Scene,
+    Async,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TearingCommitPath {
+    Direct,
+    Composed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TearingCommitContext {
+    pub(crate) path: Option<TearingCommitPath>,
+    pub(crate) present_received_at: Option<Instant>,
+    pub(crate) present_received_monotonic: Option<Duration>,
+    /// The retry is a Vsync commit after an attempted async ioctl.
+    pub(crate) async_fallback: bool,
+}
+
+impl TearingCommitContext {
+    pub(crate) const NONE: Self = Self {
+        path: None,
+        present_received_at: None,
+        present_received_monotonic: None,
+        async_fallback: false,
+    };
+
+    pub(crate) const fn direct(
+        present_received_at: Option<Instant>,
+        present_received_monotonic: Option<Duration>,
+        async_fallback: bool,
+    ) -> Self {
+        Self {
+            path: Some(TearingCommitPath::Direct),
+            present_received_at,
+            present_received_monotonic,
+            async_fallback,
+        }
+    }
+
+    pub(crate) const fn composed(
+        present_received_at: Option<Instant>,
+        present_received_monotonic: Option<Duration>,
+    ) -> Self {
+        Self {
+            path: Some(TearingCommitPath::Composed),
+            present_received_at,
+            present_received_monotonic,
+            async_fallback: false,
+        }
+    }
 }
 
 impl AtomicCommitKind {
@@ -29,6 +79,7 @@ impl AtomicCommitKind {
             Self::CursorOnly => "cursor-only",
             Self::SceneWithCursor => "scene-with-cursor",
             Self::Scene => "scene",
+            Self::Async => "async",
         }
     }
 
@@ -37,6 +88,7 @@ impl AtomicCommitKind {
             Self::CursorOnly => 0,
             Self::SceneWithCursor => 1,
             Self::Scene => 2,
+            Self::Async => 3,
         }
     }
 }
@@ -202,6 +254,11 @@ pub(crate) trait AtomicCommitExecutor {
         request: AtomicCommitRequest,
         events: &[AtomicCommitEvent],
     ) -> io::Result<()>;
+
+    #[cfg(test)]
+    fn for_tests_record_count(&self) -> Option<usize> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -224,18 +281,44 @@ impl AtomicCommitExecutor for DrmAtomicCommitExecutor {
 /// ioctl and pointer latency samples for the existing loop telemetry.
 pub(crate) struct AtomicCommitSink {
     executor: Rc<dyn AtomicCommitExecutor>,
+    monotonic_clock: Rc<dyn Fn() -> Option<Duration>>,
     metrics: RefCell<CommitWindow>,
     last_rejection_was_cursor: Cell<bool>,
+    tearing_on: Cell<bool>,
+    tearing_generation: Cell<u64>,
 }
 
 impl AtomicCommitSink {
     /// `executor` is normally `DrmAtomicCommitExecutor`; tests can inject the
     /// cfg(test) request recorder through the same constructor.
     pub(crate) fn new(executor: Rc<dyn AtomicCommitExecutor>) -> Self {
+        Self::new_with_clock(executor, Rc::new(monotonic_timestamp))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_record_count(&self) -> Option<usize> {
+        self.executor.for_tests_record_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_monotonic_clock(
+        executor: Rc<dyn AtomicCommitExecutor>,
+        clock: Rc<dyn Fn() -> Option<Duration>>,
+    ) -> Self {
+        Self::new_with_clock(executor, clock)
+    }
+
+    fn new_with_clock(
+        executor: Rc<dyn AtomicCommitExecutor>,
+        monotonic_clock: Rc<dyn Fn() -> Option<Duration>>,
+    ) -> Self {
         Self {
             executor,
+            monotonic_clock,
             metrics: RefCell::new(CommitWindow::new(Instant::now())),
             last_rejection_was_cursor: Cell::new(false),
+            tearing_on: Cell::new(false),
+            tearing_generation: Cell::new(0),
         }
     }
 
@@ -249,6 +332,37 @@ impl AtomicCommitSink {
         request: AtomicCommitRequest,
         events: &[AtomicCommitEvent],
     ) -> io::Result<()> {
+        self.submit_with_tearing_context(
+            device,
+            flags,
+            kind,
+            request,
+            events,
+            TearingCommitContext::NONE,
+        )
+    }
+
+    pub(crate) fn submit_tearing(
+        &self,
+        device: &Device,
+        flags: AtomicCommitFlags,
+        kind: AtomicCommitKind,
+        request: AtomicCommitRequest,
+        events: &[AtomicCommitEvent],
+        context: TearingCommitContext,
+    ) -> io::Result<()> {
+        self.submit_with_tearing_context(device, flags, kind, request, events, context)
+    }
+
+    fn submit_with_tearing_context(
+        &self,
+        device: &Device,
+        flags: AtomicCommitFlags,
+        kind: AtomicCommitKind,
+        request: AtomicCommitRequest,
+        events: &[AtomicCommitEvent],
+        context: TearingCommitContext,
+    ) -> io::Result<()> {
         let attribution =
             (kind == AtomicCommitKind::SceneWithCursor).then(|| request.attribution_snapshot());
         let started = Instant::now();
@@ -256,6 +370,9 @@ impl AtomicCommitSink {
             .executor
             .atomic_commit(device, flags, kind, request, events);
         let finished = Instant::now();
+        let finished_monotonic = (kind == AtomicCommitKind::Async && result.is_ok())
+            .then(|| (self.monotonic_clock)())
+            .flatten();
         let cursor_rejected = match (&result, attribution) {
             (Ok(()), _) => false,
             (Err(_), None) => kind == AtomicCommitKind::CursorOnly,
@@ -269,6 +386,10 @@ impl AtomicCommitSink {
             elapsed,
             result.as_ref().err(),
             finished,
+            context,
+            self.tearing_on.get(),
+            self.tearing_generation.get(),
+            finished_monotonic,
         );
 
         let result_text = result
@@ -294,6 +415,153 @@ impl AtomicCommitSink {
         }
         self.emit_telemetry_if_due();
         result
+    }
+
+    pub(crate) fn set_tearing_on(&self, on: bool) {
+        let was_on = self.tearing_on.replace(on);
+        if was_on != on {
+            self.tearing_generation
+                .set(self.tearing_generation.get().saturating_add(1));
+        }
+        if was_on && !on {
+            self.metrics
+                .borrow_mut()
+                .reset_tearing_window(Instant::now());
+        }
+    }
+
+    /// Forget accepted-commit associations when the owning CRTC event stream
+    /// is explicitly discarded at an all-off lifecycle boundary.
+    pub(crate) fn discard_pending_page_flip_telemetry(&self) {
+        self.metrics.borrow_mut().pending_page_flips.clear();
+    }
+
+    pub(crate) fn note_async_flip_event(
+        &self,
+        crtc: crtc::Handle,
+        timestamps: crate::kms::render::platform::FlipEventTimestamps,
+    ) {
+        self.metrics.borrow_mut().record_page_flip_event(
+            crtc,
+            timestamps.received_at_monotonic,
+            timestamps.completion_at_monotonic,
+            self.tearing_on.get(),
+            self.tearing_generation.get(),
+        );
+    }
+
+    pub(crate) fn note_skip_completion(&self) {
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.present_latency_skip_completions =
+            metrics.present_latency_skip_completions.saturating_add(1);
+        if self.tearing_on.get() {
+            metrics.tearing_skips = metrics.tearing_skips.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn note_direct_present_received(&self) {
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.present_latency_direct_presents =
+            metrics.present_latency_direct_presents.saturating_add(1);
+        if self.tearing_on.get() {
+            metrics.client_present_direct = metrics.client_present_direct.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn emit_tearing_summary_if_due(
+        &self,
+        device_key: crate::platform::drm::DrmDeviceKey,
+        on: bool,
+        avg_gpu_render_ns: u64,
+    ) {
+        let now = Instant::now();
+        let Some(snapshot) = self
+            .metrics
+            .borrow_mut()
+            .take_tearing_summary_if_due(now, on)
+        else {
+            return;
+        };
+        let direct_submit = latency_percentiles(&snapshot.direct_present_to_submit_us);
+        let composed_submit = latency_percentiles(&snapshot.composed_present_to_submit_us);
+        let direct_turnaround = latency_percentiles(&snapshot.direct_async_turnaround_us);
+        let composed_turnaround = latency_percentiles(&snapshot.composed_async_turnaround_us);
+        let direct_present_to_flip =
+            flip_latency_percentiles(&snapshot.direct_present_to_flip_event_us);
+        let composed_present_to_flip =
+            flip_latency_percentiles(&snapshot.composed_present_to_flip_event_us);
+        log::info!(
+            target: "yserver::kms::render::backend::kms",
+            "tearing_summary device={}:{} async={} async_direct_flips/s={} async_composed_flips/s={} \
+             client_present_direct/s={} vsync_while_on/s={} async_einval_direct={} \
+             async_einval_composed={} skip_completions/s={} \
+             present_to_submit_us_direct_p50/p99/max={}/{}/{} \
+             present_to_submit_us_composed_p50/p99/max={}/{}/{} \
+             async_flip_turnaround_us_direct_p50/p99/max={}/{}/{} \
+             async_flip_turnaround_us_composed_p50/p99/max={}/{}/{} \
+             present_to_flip_event_us_direct_p50/p99/max={}/{}/{} \
+             present_to_flip_event_us_composed_p50/p99/max={}/{}/{} avg_gpu_render_ns={}",
+            device_key.major,
+            device_key.minor,
+            snapshot.async_direct.saturating_add(snapshot.async_composed),
+            snapshot.async_direct,
+            snapshot.async_composed,
+            snapshot.client_present_direct,
+            snapshot.vsync_while_on,
+            snapshot.async_einval_direct,
+            snapshot.async_einval_composed,
+            snapshot.tearing_skips,
+            direct_submit.0,
+            direct_submit.1,
+            direct_submit.2,
+            composed_submit.0,
+            composed_submit.1,
+            composed_submit.2,
+            direct_turnaround.0,
+            direct_turnaround.1,
+            direct_turnaround.2,
+            composed_turnaround.0,
+            composed_turnaround.1,
+            composed_turnaround.2,
+            direct_present_to_flip.0,
+            direct_present_to_flip.1,
+            direct_present_to_flip.2,
+            composed_present_to_flip.0,
+            composed_present_to_flip.1,
+            composed_present_to_flip.2,
+            avg_gpu_render_ns,
+        );
+    }
+
+    pub(crate) fn emit_present_latency_summary_if_due(
+        &self,
+        device_key: crate::platform::drm::DrmDeviceKey,
+    ) {
+        let now = Instant::now();
+        let Some(snapshot) = self
+            .metrics
+            .borrow_mut()
+            .take_present_latency_summary_if_due(now)
+        else {
+            return;
+        };
+        log::info!(
+            target: "yserver::kms::render::backend::kms",
+            "present_latency_summary device={}:{} eligible_presents/s={} flips/s={} \
+             skip_completions/s={} present_to_submit_us_p50/p99/max={}/{}/{} \
+             present_to_flip_event_us_p50/p99/max={}/{}/{}",
+            device_key.major,
+            device_key.minor,
+            snapshot.direct_presents,
+            snapshot.direct_flips,
+            snapshot.skip_completions,
+            latency_percentiles(&snapshot.present_to_submit_us).0,
+            latency_percentiles(&snapshot.present_to_submit_us).1,
+            latency_percentiles(&snapshot.present_to_submit_us).2,
+            flip_latency_percentiles(&snapshot.present_to_flip_event_us).0,
+            flip_latency_percentiles(&snapshot.present_to_flip_event_us).1,
+            flip_latency_percentiles(&snapshot.present_to_flip_event_us).2,
+        );
     }
 
     /// Validate a request with `TEST_ONLY`; nothing is committed, no event is
@@ -372,10 +640,11 @@ impl AtomicCommitSink {
         let visible = percentile(&snapshot.motion_to_visible_us);
         log::info!(
             target: "yserver::kms::render::backend::kms",
-            "atomic commits/s cursor_only={} scene_with_cursor={} scene={} ebusy={} ioctl_us_max/p99 cursor_only={}/{} scene_with_cursor={}/{} scene={}/{} motion_to_accept_us_max/p99={}/{} motion_to_visible_us_max/p99={}/{}",
+            "atomic commits/s cursor_only={} scene_with_cursor={} scene={} async={} ebusy={} ioctl_us_max/p99 cursor_only={}/{} scene_with_cursor={}/{} scene={}/{} async={}/{} motion_to_accept_us_max/p99={}/{} motion_to_visible_us_max/p99={}/{}",
             counts[0],
             counts[1],
             counts[2],
+            counts[3],
             snapshot.ebusy,
             summaries[0].0,
             summaries[0].1,
@@ -383,6 +652,8 @@ impl AtomicCommitSink {
             summaries[1].1,
             summaries[2].0,
             summaries[2].1,
+            summaries[3].0,
+            summaries[3].1,
             accept.0,
             accept.1,
             visible.0,
@@ -411,19 +682,136 @@ impl AtomicCommitSink {
     pub(crate) fn for_tests_ebusy_count(&self) -> u64 {
         self.metrics.borrow().ebusy
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_tearing_counts(&self) -> TearingCounts {
+        let metrics = self.metrics.borrow();
+        TearingCounts {
+            async_direct: metrics.async_direct,
+            async_composed: metrics.async_composed,
+            async_einval_direct: metrics.async_einval_direct,
+            async_einval_composed: metrics.async_einval_composed,
+            vsync_while_on: metrics.vsync_while_on,
+            client_present_direct: metrics.client_present_direct,
+            direct_turnarounds: metrics.direct_async_turnaround_us.len(),
+            composed_turnarounds: metrics.composed_async_turnaround_us.len(),
+            direct_present_to_flip_events: metrics.direct_present_to_flip_event_us.len(),
+            composed_present_to_flip_events: metrics.composed_present_to_flip_event_us.len(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_composed_turnaround_samples(&self) -> Vec<u64> {
+        self.metrics.borrow().composed_async_turnaround_us.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_direct_present_to_flip_summary(&self) -> (String, String, String) {
+        let metrics = self.metrics.borrow();
+        flip_latency_percentiles(&metrics.direct_present_to_flip_event_us)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_direct_present_to_flip_samples(&self) -> Vec<u64> {
+        self.metrics
+            .borrow()
+            .direct_present_to_flip_event_us
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_direct_turnaround_samples(&self) -> Vec<u64> {
+        self.metrics.borrow().direct_async_turnaround_us.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_pending_direct_present_received_at(
+        &self,
+        crtc: crtc::Handle,
+    ) -> Option<Duration> {
+        self.metrics
+            .borrow()
+            .pending_page_flips
+            .get(&crtc)?
+            .front()?
+            .direct_present_received_at
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_present_latency_state(&self) -> (u64, u64, u64, Vec<u64>, Vec<u64>) {
+        let metrics = self.metrics.borrow();
+        (
+            metrics.present_latency_direct_presents,
+            metrics.present_latency_direct_flips,
+            metrics.present_latency_skip_completions,
+            metrics.present_latency_present_to_submit_us.clone(),
+            metrics.present_latency_present_to_flip_event_us.clone(),
+        )
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TearingCounts {
+    pub(crate) async_direct: u64,
+    pub(crate) async_composed: u64,
+    pub(crate) async_einval_direct: u64,
+    pub(crate) async_einval_composed: u64,
+    pub(crate) vsync_while_on: u64,
+    pub(crate) client_present_direct: u64,
+    pub(crate) direct_turnarounds: usize,
+    pub(crate) composed_turnarounds: usize,
+    pub(crate) direct_present_to_flip_events: usize,
+    pub(crate) composed_present_to_flip_events: usize,
+}
+
+#[derive(Clone, Copy)]
+struct PendingPageFlip {
+    commit_id: u64,
+    async_path: Option<TearingCommitPath>,
+    async_accepted_at: Option<Duration>,
+    async_present_received_at: Option<Duration>,
+    tearing_generation: Option<u64>,
+    direct_present_received_at: Option<Duration>,
 }
 
 struct CommitWindow {
     started: Instant,
-    ioctl_us: [Vec<u64>; 3],
+    tearing_started: Instant,
+    present_latency_started: Instant,
+    ioctl_us: [Vec<u64>; 4],
     ebusy: u64,
     motion_to_accept_us: Vec<u64>,
     motion_to_visible_us: Vec<u64>,
     pending_motion_to_visible: HashMap<crtc::Handle, Instant>,
+    async_direct: u64,
+    async_composed: u64,
+    vsync_while_on: u64,
+    async_einval_direct: u64,
+    async_einval_composed: u64,
+    client_present_direct: u64,
+    tearing_skips: u64,
+    direct_present_to_submit_us: Vec<u64>,
+    composed_present_to_submit_us: Vec<u64>,
+    /// Accepted async ioctl (CLOCK_MONOTONIC) to page-flip event receipt by
+    /// yserver (CLOCK_MONOTONIC), including event-delivery delay.
+    direct_async_turnaround_us: Vec<u64>,
+    composed_async_turnaround_us: Vec<u64>,
+    /// Present receipt (CLOCK_MONOTONIC) to kernel completion timestamp
+    /// normalized into CLOCK_MONOTONIC. Invalid kernel timestamps are omitted.
+    direct_present_to_flip_event_us: Vec<u64>,
+    composed_present_to_flip_event_us: Vec<u64>,
+    present_latency_direct_presents: u64,
+    present_latency_direct_flips: u64,
+    present_latency_skip_completions: u64,
+    present_latency_present_to_submit_us: Vec<u64>,
+    present_latency_present_to_flip_event_us: Vec<u64>,
+    pending_page_flips: HashMap<crtc::Handle, VecDeque<PendingPageFlip>>,
+    next_commit_id: u64,
 }
 
 struct CommitWindowSnapshot {
-    ioctl_us: [Vec<u64>; 3],
+    ioctl_us: [Vec<u64>; 4],
     ebusy: u64,
     motion_to_accept_us: Vec<u64>,
     motion_to_visible_us: Vec<u64>,
@@ -433,11 +821,33 @@ impl CommitWindow {
     fn new(started: Instant) -> Self {
         Self {
             started,
+            tearing_started: started,
+            present_latency_started: started,
             ioctl_us: std::array::from_fn(|_| Vec::new()),
             ebusy: 0,
             motion_to_accept_us: Vec::new(),
             motion_to_visible_us: Vec::new(),
             pending_motion_to_visible: HashMap::new(),
+            async_direct: 0,
+            async_composed: 0,
+            vsync_while_on: 0,
+            async_einval_direct: 0,
+            async_einval_composed: 0,
+            client_present_direct: 0,
+            tearing_skips: 0,
+            direct_present_to_submit_us: Vec::new(),
+            composed_present_to_submit_us: Vec::new(),
+            direct_async_turnaround_us: Vec::new(),
+            composed_async_turnaround_us: Vec::new(),
+            direct_present_to_flip_event_us: Vec::new(),
+            composed_present_to_flip_event_us: Vec::new(),
+            present_latency_direct_presents: 0,
+            present_latency_direct_flips: 0,
+            present_latency_skip_completions: 0,
+            present_latency_present_to_submit_us: Vec::new(),
+            present_latency_present_to_flip_event_us: Vec::new(),
+            pending_page_flips: HashMap::new(),
+            next_commit_id: 1,
         }
     }
 
@@ -448,6 +858,10 @@ impl CommitWindow {
         elapsed: Duration,
         error: Option<&io::Error>,
         finished: Instant,
+        context: TearingCommitContext,
+        tearing_on: bool,
+        tearing_generation: u64,
+        finished_monotonic: Option<Duration>,
     ) {
         let ioctl_us = duration_us(elapsed);
         self.ioctl_us[kind.index()].push(ioctl_us);
@@ -464,6 +878,230 @@ impl CommitWindow {
         if error.is_some_and(|error| error.raw_os_error() == Some(libc::EBUSY)) {
             self.ebusy = self.ebusy.saturating_add(1);
         }
+
+        if error.is_none() {
+            if context.path == Some(TearingCommitPath::Direct)
+                && let Some(received_at) = context.present_received_at
+            {
+                self.present_latency_present_to_submit_us
+                    .push(elapsed_us(received_at, finished));
+            }
+
+            if !events.is_empty() {
+                let commit_id = self.next_commit_id;
+                self.next_commit_id = self.next_commit_id.saturating_add(1);
+                for event in events {
+                    self.pending_page_flips
+                        .entry(event.crtc)
+                        .or_default()
+                        .push_back(PendingPageFlip {
+                            commit_id,
+                            async_path: (kind == AtomicCommitKind::Async)
+                                .then_some(context.path)
+                                .flatten(),
+                            async_accepted_at: (kind == AtomicCommitKind::Async)
+                                .then_some(finished_monotonic)
+                                .flatten(),
+                            async_present_received_at: (kind == AtomicCommitKind::Async)
+                                .then_some(context.present_received_monotonic)
+                                .flatten(),
+                            tearing_generation: tearing_on.then_some(tearing_generation),
+                            direct_present_received_at: (context.path
+                                == Some(TearingCommitPath::Direct))
+                            .then_some(context.present_received_monotonic)
+                            .flatten(),
+                        });
+                }
+            }
+        }
+
+        if !tearing_on {
+            return;
+        }
+        if kind == AtomicCommitKind::Async {
+            match (error, context.path) {
+                (None, Some(TearingCommitPath::Direct)) => {
+                    self.async_direct = self
+                        .async_direct
+                        .saturating_add(u64::try_from(events.len()).unwrap_or(u64::MAX));
+                    if let Some(received_at) = context.present_received_at {
+                        self.direct_present_to_submit_us
+                            .push(elapsed_us(received_at, finished));
+                    }
+                }
+                (None, Some(TearingCommitPath::Composed)) => {
+                    self.async_composed = self
+                        .async_composed
+                        .saturating_add(u64::try_from(events.len()).unwrap_or(u64::MAX));
+                    if let Some(received_at) = context.present_received_at {
+                        self.composed_present_to_submit_us
+                            .push(elapsed_us(received_at, finished));
+                    }
+                }
+                (Some(error), Some(TearingCommitPath::Direct))
+                    if error.raw_os_error() == Some(libc::EINVAL) =>
+                {
+                    self.async_einval_direct = self.async_einval_direct.saturating_add(1);
+                }
+                (Some(error), Some(TearingCommitPath::Composed))
+                    if error.raw_os_error() == Some(libc::EINVAL) =>
+                {
+                    self.async_einval_composed = self.async_einval_composed.saturating_add(1);
+                }
+                _ => {}
+            }
+        } else if error.is_none()
+            && (matches!(
+                kind,
+                AtomicCommitKind::Scene | AtomicCommitKind::SceneWithCursor
+            ) || context.async_fallback)
+        {
+            self.vsync_while_on = self.vsync_while_on.saturating_add(1);
+        }
+    }
+
+    fn record_page_flip_event(
+        &mut self,
+        crtc: crtc::Handle,
+        event_received_at_monotonic: Option<Duration>,
+        completion_at_monotonic: Option<Duration>,
+        tearing_on: bool,
+        tearing_generation: u64,
+    ) {
+        let Some(queue) = self.pending_page_flips.get_mut(&crtc) else {
+            return;
+        };
+        let Some(pending) = queue.pop_front() else {
+            return;
+        };
+        if queue.is_empty() {
+            self.pending_page_flips.remove(&crtc);
+        }
+
+        log::trace!(
+            target: "yserver::kms::render::backend::kms",
+            "pageflip telemetry matched commit={} crtc={crtc:?}",
+            pending.commit_id,
+        );
+        if let Some(present_received_at) = pending.direct_present_received_at {
+            self.present_latency_direct_flips = self.present_latency_direct_flips.saturating_add(1);
+            if let Some(completion_at_monotonic) = completion_at_monotonic {
+                self.present_latency_present_to_flip_event_us
+                    .push(duration_us(
+                        completion_at_monotonic.saturating_sub(present_received_at),
+                    ));
+            }
+        }
+        if !tearing_on {
+            return;
+        }
+        if pending.tearing_generation != Some(tearing_generation) {
+            return;
+        }
+        let Some(path) = pending.async_path else {
+            return;
+        };
+        if let (Some(accepted_at), Some(event_received_at_monotonic)) =
+            (pending.async_accepted_at, event_received_at_monotonic)
+        {
+            // This deliberately ends at userspace receipt: event-delivery delay
+            // bounds when the next flip can be submitted.
+            let elapsed = duration_us(event_received_at_monotonic.saturating_sub(accepted_at));
+            match path {
+                TearingCommitPath::Direct => self.direct_async_turnaround_us.push(elapsed),
+                TearingCommitPath::Composed => self.composed_async_turnaround_us.push(elapsed),
+            }
+        }
+        if let (Some(present_received_at), Some(completion_at_monotonic)) =
+            (pending.async_present_received_at, completion_at_monotonic)
+        {
+            // Present receipt and the normalized kernel completion timestamp
+            // are both CLOCK_MONOTONIC. Unusable kernel timestamps add no sample.
+            let elapsed = duration_us(completion_at_monotonic.saturating_sub(present_received_at));
+            match path {
+                TearingCommitPath::Direct => self.direct_present_to_flip_event_us.push(elapsed),
+                TearingCommitPath::Composed => {
+                    self.composed_present_to_flip_event_us.push(elapsed);
+                }
+            }
+        }
+    }
+
+    fn take_tearing_summary_if_due(
+        &mut self,
+        now: Instant,
+        on: bool,
+    ) -> Option<TearingSummarySnapshot> {
+        if !on {
+            self.tearing_started = now;
+            self.reset_tearing_counters();
+            return None;
+        }
+        if now.saturating_duration_since(self.tearing_started) < Duration::from_secs(1) {
+            return None;
+        }
+        self.tearing_started = now;
+        Some(TearingSummarySnapshot {
+            async_direct: std::mem::take(&mut self.async_direct),
+            async_composed: std::mem::take(&mut self.async_composed),
+            vsync_while_on: std::mem::take(&mut self.vsync_while_on),
+            async_einval_direct: std::mem::take(&mut self.async_einval_direct),
+            async_einval_composed: std::mem::take(&mut self.async_einval_composed),
+            client_present_direct: std::mem::take(&mut self.client_present_direct),
+            tearing_skips: std::mem::take(&mut self.tearing_skips),
+            direct_present_to_submit_us: std::mem::take(&mut self.direct_present_to_submit_us),
+            composed_present_to_submit_us: std::mem::take(&mut self.composed_present_to_submit_us),
+            direct_async_turnaround_us: std::mem::take(&mut self.direct_async_turnaround_us),
+            composed_async_turnaround_us: std::mem::take(&mut self.composed_async_turnaround_us),
+            direct_present_to_flip_event_us: std::mem::take(
+                &mut self.direct_present_to_flip_event_us,
+            ),
+            composed_present_to_flip_event_us: std::mem::take(
+                &mut self.composed_present_to_flip_event_us,
+            ),
+        })
+    }
+
+    fn take_present_latency_summary_if_due(
+        &mut self,
+        now: Instant,
+    ) -> Option<PresentLatencySummarySnapshot> {
+        if now.saturating_duration_since(self.present_latency_started) < Duration::from_secs(1) {
+            return None;
+        }
+        self.present_latency_started = now;
+        let snapshot = PresentLatencySummarySnapshot {
+            direct_presents: std::mem::take(&mut self.present_latency_direct_presents),
+            direct_flips: std::mem::take(&mut self.present_latency_direct_flips),
+            skip_completions: std::mem::take(&mut self.present_latency_skip_completions),
+            present_to_submit_us: std::mem::take(&mut self.present_latency_present_to_submit_us),
+            present_to_flip_event_us: std::mem::take(
+                &mut self.present_latency_present_to_flip_event_us,
+            ),
+        };
+        (snapshot.direct_presents > 0 || snapshot.direct_flips > 0 || snapshot.skip_completions > 0)
+            .then_some(snapshot)
+    }
+
+    fn reset_tearing_counters(&mut self) {
+        self.async_direct = 0;
+        self.async_composed = 0;
+        self.vsync_while_on = 0;
+        self.async_einval_direct = 0;
+        self.async_einval_composed = 0;
+        self.client_present_direct = 0;
+        self.tearing_skips = 0;
+        self.direct_present_to_submit_us.clear();
+        self.composed_present_to_submit_us.clear();
+        self.direct_async_turnaround_us.clear();
+        self.composed_async_turnaround_us.clear();
+        self.direct_present_to_flip_event_us.clear();
+        self.composed_present_to_flip_event_us.clear();
+    }
+
+    fn reset_tearing_window(&mut self, now: Instant) {
+        self.tearing_started = now;
+        self.reset_tearing_counters();
     }
 
     fn record_legacy_move(&mut self, motion_timestamp: Instant, returned_at: Instant) {
@@ -493,6 +1131,67 @@ impl CommitWindow {
     }
 }
 
+struct TearingSummarySnapshot {
+    async_direct: u64,
+    async_composed: u64,
+    vsync_while_on: u64,
+    async_einval_direct: u64,
+    async_einval_composed: u64,
+    client_present_direct: u64,
+    tearing_skips: u64,
+    direct_present_to_submit_us: Vec<u64>,
+    composed_present_to_submit_us: Vec<u64>,
+    /// Accepted async ioctl (CLOCK_MONOTONIC) to event receipt by yserver
+    /// (CLOCK_MONOTONIC); includes event-delivery delay.
+    direct_async_turnaround_us: Vec<u64>,
+    composed_async_turnaround_us: Vec<u64>,
+    /// Present receipt (CLOCK_MONOTONIC) to kernel completion converted into
+    /// CLOCK_MONOTONIC. Unusable event timestamps are omitted.
+    direct_present_to_flip_event_us: Vec<u64>,
+    composed_present_to_flip_event_us: Vec<u64>,
+}
+
+struct PresentLatencySummarySnapshot {
+    direct_presents: u64,
+    direct_flips: u64,
+    skip_completions: u64,
+    present_to_submit_us: Vec<u64>,
+    present_to_flip_event_us: Vec<u64>,
+}
+
+pub(crate) fn monotonic_timestamp() -> Option<Duration> {
+    clock_timestamp(libc::CLOCK_MONOTONIC)
+}
+
+/// Read CLOCK_BOOTTIME at page-flip event receipt where the platform exposes
+/// it. Linux DRM drivers may use this suspend-inclusive domain for event UST.
+pub(crate) fn boottime_timestamp() -> Option<Duration> {
+    #[cfg(target_os = "linux")]
+    {
+        clock_timestamp(libc::CLOCK_BOOTTIME)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+fn clock_timestamp(clock: libc::clockid_t) -> Option<Duration> {
+    let mut timestamp = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `timestamp` is initialized writable storage for clock_gettime.
+    let result = unsafe { libc::clock_gettime(clock, &mut timestamp) };
+    if result != 0 {
+        return None;
+    }
+    Some(Duration::new(
+        u64::try_from(timestamp.tv_sec).ok()?,
+        u32::try_from(timestamp.tv_nsec).ok()?,
+    ))
+}
+
 fn duration_us(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
@@ -511,6 +1210,33 @@ fn percentile(values: &[u64]) -> (u64, u64) {
         .div_ceil(100)
         .saturating_sub(1);
     (max, sorted.get(p99_index).copied().unwrap_or(0))
+}
+
+fn latency_percentiles(values: &[u64]) -> (u64, u64, u64) {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    if sorted.is_empty() {
+        return (0, 0, 0);
+    }
+    let p50_index = sorted.len().div_ceil(2).saturating_sub(1);
+    let p99_index = sorted
+        .len()
+        .saturating_mul(99)
+        .div_ceil(100)
+        .saturating_sub(1);
+    (
+        sorted[p50_index],
+        sorted[p99_index],
+        sorted.last().copied().unwrap_or(0),
+    )
+}
+
+fn flip_latency_percentiles(values: &[u64]) -> (String, String, String) {
+    if values.is_empty() {
+        return ("n/a".to_owned(), "n/a".to_owned(), "n/a".to_owned());
+    }
+    let (p50, p99, max) = latency_percentiles(values);
+    (p50.to_string(), p99.to_string(), max.to_string())
 }
 
 #[cfg(test)]
@@ -574,6 +1300,10 @@ pub(crate) mod tests_support {
             self.records.borrow().clone()
         }
 
+        pub(crate) fn clear_records(&self) {
+            self.records.borrow_mut().clear();
+        }
+
         pub(crate) fn script_result(&self, result: io::Result<()>) {
             self.scripted_results
                 .borrow_mut()
@@ -582,6 +1312,11 @@ pub(crate) mod tests_support {
     }
 
     impl AtomicCommitExecutor for RecordingAtomicCommitExecutor {
+        #[cfg(test)]
+        fn for_tests_record_count(&self) -> Option<usize> {
+            Some(self.records.borrow().len())
+        }
+
         fn atomic_commit(
             &self,
             _device: &Device,

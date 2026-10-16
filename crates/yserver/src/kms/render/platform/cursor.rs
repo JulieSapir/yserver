@@ -1328,6 +1328,12 @@ impl PlatformBackend {
             .is_some_and(|plane| plane.is_visible_on(crtc))
     }
 
+    /// Physical cursor-plane state across the current output inventory.
+    #[must_use]
+    pub(crate) fn any_cursor_plane_visible(&self) -> bool {
+        (0..self.outputs.len()).any(|output_idx| self.cursor_plane_visible_for_output(output_idx))
+    }
+
     /// Advance only this output's EINVAL retry budget after its own successful
     /// software-composed retirement. Returns true when another repaint is
     /// needed either to consume more backoff or to perform the now-eligible HW

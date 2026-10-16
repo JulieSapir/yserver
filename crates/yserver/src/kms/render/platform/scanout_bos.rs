@@ -133,6 +133,7 @@ impl PlatformBackend {
                 in_fence_fd,
                 &mut out_fence_fd,
                 &cursor_positions,
+                crate::drm::async_flip::FlipTiming::Vsync,
             ) {
                 Ok(()) => {
                     if let Some(fd) = destination.state.transition_to_pending(out_fence_fd) {

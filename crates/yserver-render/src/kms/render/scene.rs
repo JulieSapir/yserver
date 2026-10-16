@@ -127,6 +127,9 @@ pub struct SceneInput<'a> {
     pub outputs: &'a [OutputLayout],
     /// The logical screen size.
     pub fb_size: (u16, u16),
+    /// Disable hardware-cursor assignment while a direct tearing stream owns
+    /// cursor visibility policy.
+    pub hw_cursor_suppressed: bool,
 }
 
 /// The transform of output `idx`, `None` at identity or past the end.
@@ -575,6 +578,9 @@ pub struct SceneCompositor {
     /// change. Cleared at tick end. Stage 2e narrows to a
     /// per-region scene_structure_damage `RegionSet`.
     pub scene_structure_dirty: bool,
+    /// True when the outstanding structure-dirty wake was caused only by a
+    /// software-cursor position change. Any ordinary scene wake clears it.
+    cursor_only_wake: bool,
     /// Counts the changes that set `scene_structure_dirty`: with the
     /// store's [`DrawableStore::scene_damage_generation`], what a root
     /// readback was composed at ([`Self::root_readback`]).

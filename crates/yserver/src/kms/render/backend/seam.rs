@@ -44,6 +44,33 @@ pub trait Platform: OutputSink + Sized + 'static {
     fn direct_scanout_owns_frame(_b: &XBackend<Self>) -> bool {
         false
     }
+    /// Whether KMS tearing owns the cursor policy for the current frame.
+    fn tearing_active(_b: &XBackend<Self>) -> bool {
+        false
+    }
+    /// Whether the effective cursor sprite overlaps any live output.
+    fn cursor_intersects_outputs(
+        _b: &XBackend<Self>,
+        _cursor_x: i64,
+        _cursor_y: i64,
+        _hot_x: i64,
+        _hot_y: i64,
+        _width: i64,
+        _height: i64,
+    ) -> bool {
+        false
+    }
+    /// Route pointer motion while KMS tearing owns cursor composition.
+    fn cursor_motion_during_tearing(_b: &mut XBackend<Self>, _cursor_visible: bool) {}
+    /// Whether generic request wakeups should leave a cursor-only tearing cap
+    /// intact instead of converting them into scene damage.
+    fn tearing_cursor_compose_cap_applies(_b: &XBackend<Self>) -> bool {
+        false
+    }
+    /// Record copy damage relevant to an active tearing stream.
+    fn note_tearing_copy_damage(_b: &mut XBackend<Self>, _dst_window_xid: u32) {}
+    /// Leave tearing when a portable window lifecycle change affects its owner.
+    fn exit_tearing_for_window(_b: &mut XBackend<Self>, _host_xid: u32, _reason: &'static str) {}
     /// Leave direct scanout for the composed scene.
     fn request_direct_unflip(_b: &mut XBackend<Self>, _reason: &'static str) {}
     /// Whether every direct frame is the COW or one of its descendants.
@@ -68,6 +95,9 @@ pub trait Platform: OutputSink + Sized + 'static {
     }
     /// XFIXES HideCursor while no compose runs: detach the cursor planes.
     fn hide_cursor_under_direct_scanout(_b: &mut XBackend<Self>) {}
+    /// Reapply a hidden cursor policy after output resume, including stale
+    /// plane bindings left by a failed best-effort suspend hide.
+    fn recover_hidden_cursor_on_resume(_b: &mut XBackend<Self>) {}
     /// The cursor sprite's size or hotspot changed.
     fn note_cursor_sprite(
         _b: &mut XBackend<Self>,
@@ -566,7 +596,7 @@ pub trait Platform: OutputSink + Sized + 'static {
         Ok(0)
     }
 
-    fn present_capabilities(_b: &XBackend<Self>, _window: u32) -> PresentCaps {
+    fn present_capabilities(_b: &XBackend<Self>, _window: u32, _crtc_id: u32) -> PresentCaps {
         PresentCaps::default()
     }
 

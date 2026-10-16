@@ -65,6 +65,12 @@ pub struct FenceTicket {
     inner: Rc<FenceTicketInner>,
 }
 
+#[derive(Debug)]
+enum TicketReadiness {
+    Fence,
+    Manual(Rc<Cell<bool>>),
+}
+
 struct FenceTicketInner {
     fence: vk::Fence,
     /// Set on the first `poll_signaled` that observes
@@ -101,6 +107,7 @@ struct FenceTicketInner {
     /// submission fence's lifetime rather than being destroyed
     /// immediately after submit.
     imported_wait_semaphores: RefCell<Vec<vk::Semaphore>>,
+    readiness: TicketReadiness,
 }
 
 /// Export-only binary semaphore for deferred PRESENT completion.

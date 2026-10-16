@@ -5,7 +5,7 @@ mod present;
 mod randr;
 mod readback;
 mod scanout;
-mod session;
+pub(in crate::kms::render::backend) mod session;
 pub(in crate::kms::render::backend) mod state;
 
 #[cfg(test)]

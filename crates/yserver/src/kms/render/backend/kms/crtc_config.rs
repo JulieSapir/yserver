@@ -73,6 +73,7 @@ impl KmsBackend {
         &mut self,
         context: &'static str,
     ) -> io::Result<()> {
+        self.exit_tearing("topology_mutation");
         self.bump_crtc_config_topology_epoch(context);
         let old_pending_pageflips = self.pending_pageflip_crtcs();
         if self.pstate.scanout_m2.active() {

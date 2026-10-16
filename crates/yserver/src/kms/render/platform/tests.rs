@@ -522,6 +522,7 @@ fn test_kms_device(key: crate::platform::drm::DrmDeviceKey) -> KmsDevice {
     KmsDevice {
         key,
         device: Rc::new(drm::Device::for_tests().expect("test DRM device")),
+        async_page_flip: false,
         atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(Rc::new(
             crate::drm::atomic::DrmAtomicCommitExecutor,
         ))),
@@ -1112,6 +1113,7 @@ fn cursor_route_qualifies_colliding_raw_crtcs_by_device() {
     platform.devices.push(KmsDevice {
         key: second_key,
         device: Rc::new(drm::Device::for_tests().expect("second test DRM device")),
+        async_page_flip: false,
         atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(Rc::new(
             crate::drm::atomic::DrmAtomicCommitExecutor,
         ))),
@@ -1137,6 +1139,7 @@ fn drm_device_fd_lookup_distinguishes_same_kind_poll_sources() {
             minor: 1,
         },
         device: second_device,
+        async_page_flip: false,
         atomic_commit_sink: Rc::new(crate::drm::atomic::AtomicCommitSink::new(Rc::new(
             crate::drm::atomic::DrmAtomicCommitExecutor,
         ))),
