@@ -145,6 +145,7 @@ pub(super) fn handle_xkb_request(
         backend.xkb_set(minor, body, ancient, &atom_name)
     };
     if let Some(outcome) = set_outcome {
+        crate::core_loop::xkb_layout::resync_xkb_announced(state, &*backend);
         send_xkb_set_events(state, &*backend, header.opcode, minor, &outcome.events);
         if let Some((code, value)) = outcome.error {
             return emit_x11_error_with_minor(
@@ -192,57 +193,23 @@ pub(super) fn handle_xkb_request(
         // Neither component present (e.g. a latch-only request): the state
         // is left untouched and nothing is sent.
         if requested_group.is_some() || requested_mods.is_some() {
-            let old = (backend.current_group(), backend.current_xkb_mods());
-
+            // `changed` covers this request's change only.
+            crate::core_loop::xkb_layout::resync_xkb_announced(state, &*backend);
             if let Some(group) = requested_group {
                 backend.set_locked_group(group);
             }
             if let Some((affect, values)) = requested_mods {
                 backend.set_locked_mods(affect, values);
             }
-
-            let group = backend.current_group();
-            let (eff_mods, base_mods, latched_mods, locked_mods) = backend.current_xkb_mods();
-
-            let changed = crate::core_loop::xkb_layout::latch_lock_changed(
-                old,
-                (group, (eff_mods, base_mods, latched_mods, locked_mods)),
+            crate::core_loop::xkb_layout::announce_xkb_state(
+                state,
+                &*backend,
+                crate::core_loop::xkb_layout::XkbStateCause {
+                    keycode: 0,
+                    event_type: 0,
+                    request: (header.opcode, 5),
+                },
             );
-            // Nothing actually moved (already in the requested state) —
-            // stay silent rather than announce a no-change transition.
-            if changed == 0 {
-                return Ok(RequestOutcome::Handled);
-            }
-
-            let base = backend.xkb_info().map_or(0, |(_maj, ev, _err)| ev);
-            // XkbSendStateNotify: only clients whose selected StateNotify
-            // details intersect what changed.
-            let subs = crate::core_loop::xkb_select::interest_recipients(state, |i| {
-                i.state & changed != 0
-            });
-            let notify = x11::XkbStateNotify {
-                device_id: 1,
-                mods: eff_mods,
-                base_mods,
-                latched_mods,
-                locked_mods,
-                group,
-                locked_group: group,
-                changed,
-                keycode: 0,
-                event_type: 0, // caused by an XKB request, not a key
-                request_major: 136,
-                request_minor: 5,
-            };
-            let _dropped = fanout_event_to_clients(state, &subs, |buf, seq, order| {
-                let _ = x11::write_xkb_state_notify(buf, order, seq, base, notify);
-            });
-            state.last_xkb_mods = eff_mods;
-            // Dedup anchor: record the group we just announced so the
-            // compiled-`grp:`-key-action path in `key_event_fanout_to_state`
-            // (Driver 2) doesn't re-emit a redundant StateNotify on the
-            // next key. (Driver 2 sets the same field after its own emit.)
-            state.last_xkb_group = group;
         }
     }
     // XkbGetKbdByName (minor 23): a real keymap load + reply, NOT the
@@ -259,6 +226,7 @@ pub(super) fn handle_xkb_request(
             backend.xkb_get_kbd_by_name(body, &mut intern)
         };
         if let Some((mut bytes, notify)) = kbn {
+            crate::core_loop::xkb_layout::resync_xkb_announced(state, &*backend);
             stamp_reply_sequence(&mut bytes, byte_order, sequence);
             // Broadcast NewKeyboardNotify on a successful load, BEFORE writing
             // the reply (Xorg order is reply-then-notify, but the notify fans

@@ -116,6 +116,7 @@ pub fn apply_rules_names_change(state: &mut ServerState, backend: &mut dyn Backe
     ) else {
         return; // unchanged or failed to compile
     };
+    resync_xkb_announced(state, &*backend);
     let xkb_event_base = backend.xkb_info().map_or(0, |(_maj, ev, _err)| ev);
     let count = max_kc.saturating_sub(min_kc).saturating_add(1);
 
@@ -505,16 +506,15 @@ pub fn check_latch_lock_state(body: &[u8]) -> Result<(), (u8, u32)> {
     Ok(())
 }
 
-/// `XkbStateNotify.changed` for a LatchLockState, compared component by
-/// component as Xorg's `XkbStateChangedFlags`. Arguments are
-/// `(group, (effective, base, latched, locked))` before and after; the
-/// group here is the locked group, which is also the effective one.
+/// Xorg `XkbStateChangedFlags` between two keyboard states, each
+/// `(group, (effective, base, latched, locked))`; the group is the locked
+/// group, which is also the effective one.
 ///
 /// The serializer fills compat state, grab, compat grab, lookup and
 /// compat lookup mods from the effective mods, so those five bits move
 /// with them.
 #[must_use]
-pub fn latch_lock_changed(old: (u8, (u8, u8, u8, u8)), new: (u8, (u8, u8, u8, u8))) -> u16 {
+pub fn state_changed_flags(old: (u8, (u8, u8, u8, u8)), new: (u8, (u8, u8, u8, u8))) -> u16 {
     let (old_group, (old_eff, old_base, old_latched, old_locked)) = old;
     let (group, (eff, base, latched, locked)) = new;
     let mut changed: u16 = 0;
@@ -534,6 +534,59 @@ pub fn latch_lock_changed(old: (u8, (u8, u8, u8, u8)), new: (u8, (u8, u8, u8, u8
         changed |= 0x0008; // XkbModifierLockMask
     }
     changed
+}
+
+/// What caused a keyboard state change: `XkbStateNotify`'s keycode,
+/// eventType and request opcodes.
+#[derive(Debug, Clone, Copy)]
+pub struct XkbStateCause {
+    pub keycode: u8,
+    pub event_type: u8,
+    pub request: (u8, u8),
+}
+
+fn xkb_state_now(backend: &dyn Backend) -> (u8, (u8, u8, u8, u8)) {
+    (backend.current_group(), backend.current_xkb_mods())
+}
+
+/// Xorg `XkbSendStateNotify` for what changed since the last announcement
+/// (`XkbStateChangedFlags`): only to clients whose StateNotify details
+/// include a changed component, nothing when nothing changed.
+pub fn announce_xkb_state(state: &mut ServerState, backend: &dyn Backend, cause: XkbStateCause) {
+    let now = xkb_state_now(backend);
+    let changed = state_changed_flags(state.xkb_announced, now);
+    state.xkb_announced = now;
+    if changed == 0 {
+        return;
+    }
+    let xkb_event_base = backend.xkb_info().map_or(0, |(_maj, ev, _err)| ev);
+    let (group, (mods, base_mods, latched_mods, locked_mods)) = now;
+    let notify = x11::XkbStateNotify {
+        device_id: XKB_DEVICE_ID,
+        mods,
+        base_mods,
+        latched_mods,
+        locked_mods,
+        group,
+        locked_group: group,
+        changed,
+        keycode: cause.keycode,
+        event_type: cause.event_type,
+        request_major: cause.request.0,
+        request_minor: cause.request.1,
+    };
+    let recipients =
+        crate::core_loop::xkb_select::interest_recipients(state, |i| i.state & changed != 0);
+    let _dropped = fanout_event_to_clients(state, &recipients, |buf, seq, order| {
+        let _ = x11::write_xkb_state_notify(buf, order, seq, xkb_event_base, notify);
+    });
+}
+
+/// Take the backend's keyboard state as announced, silently: for changes
+/// Xorg sends no StateNotify for (keymap loads and edits), so the next
+/// one doesn't report them.
+pub fn resync_xkb_announced(state: &mut ServerState, backend: &dyn Backend) {
+    state.xkb_announced = xkb_state_now(backend);
 }
 
 pub(crate) use crate::core_loop::xkb_select::subscribers;
@@ -927,9 +980,9 @@ mod tests {
     /// Locking a held Shift changes only the lock component: effective
     /// mods stay 0x01, so neither ModifierState nor the mirrors are flagged.
     #[test]
-    fn latch_lock_changed_flags_only_what_moved() {
+    fn state_changed_flags_only_what_moved() {
         assert_eq!(
-            latch_lock_changed((0, (1, 1, 0, 0)), (0, (1, 1, 0, 1))),
+            state_changed_flags((0, (1, 1, 0, 0)), (0, (1, 1, 0, 1))),
             0x0008
         );
     }
@@ -937,19 +990,19 @@ mod tests {
     /// NumLock on from idle: lock + effective, and the five fields the
     /// StateNotify serializer derives from effective mods.
     #[test]
-    fn latch_lock_changed_flags_effective_mirrors() {
+    fn state_changed_flags_effective_mirrors() {
         assert_eq!(
-            latch_lock_changed((0, (0, 0, 0, 0)), (0, (0x10, 0, 0, 0x10))),
+            state_changed_flags((0, (0, 0, 0, 0)), (0, (0x10, 0, 0, 0x10))),
             0x1F09
         );
     }
 
     #[test]
-    fn latch_lock_changed_flags_group_lock() {
+    fn state_changed_flags_group_lock() {
         assert_eq!(
-            latch_lock_changed((0, (0, 0, 0, 0)), (1, (0, 0, 0, 0))),
+            state_changed_flags((0, (0, 0, 0, 0)), (1, (0, 0, 0, 0))),
             0x0090
         );
-        assert_eq!(latch_lock_changed((1, (0, 0, 0, 0)), (1, (0, 0, 0, 0))), 0);
+        assert_eq!(state_changed_flags((1, (0, 0, 0, 0)), (1, (0, 0, 0, 0))), 0);
     }
 }

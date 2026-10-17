@@ -459,48 +459,17 @@ pub fn key_event_fanout_after_transition(
         deliver_routed_key_with_master_status(state, event, master_transition_accepted),
     );
 
-    // XkbStateNotify (GH #59): libxkbcommon-x11 clients (kitty/GLFW, all
-    // of Wayland's X11 path) keep their xkb_state synchronized ONLY from
-    // these events via `xkb_state_update_mask()` — NOT from the key
-    // events. So if the effective modifiers OR the group changed across
-    // this key event (cook_host_key already advanced the backend's
-    // xkb_state), fan out a full XkbStateNotify to StateNotify selectors.
-    // Without this a client that seeded a held modifier from XkbGetState
-    // (e.g. kitty launched from a `super + Return` chord, with Mod4 held
-    // at query time) never learns the modifier cleared on release, and
-    // every key resolves to NoSymbol. The `last_xkb_*` anchors dedup
-    // against the XkbLatchLockState handler so neither re-emits the other.
-    let g = backend.current_group();
-    let (eff_mods, base_mods, latched_mods, locked_mods) = backend.current_xkb_mods();
-    if eff_mods != state.last_xkb_mods || g != state.last_xkb_group {
-        let base = backend.xkb_info().map_or(0, |(_maj, ev, _err)| ev);
-        let subs = crate::core_loop::xkb_layout::subscribers(state, 0x0004);
-        // changed: all modifier components + the compat/grab/lookup mirrors
-        // Xorg fills (0x1F0F); add the group bits on a group switch.
-        let mut changed: u16 = 0x1F0F;
-        if g != state.last_xkb_group {
-            changed |= 0x0090; // XkbGroupStateMask | XkbGroupLockMask
-        }
-        let notify = x11::XkbStateNotify {
-            device_id: 1,
-            mods: eff_mods,
-            base_mods,
-            latched_mods,
-            locked_mods,
-            group: g,
-            locked_group: g,
-            changed,
+    // Xorg `_XkbApplyState` after the key event: libxkbcommon-x11 clients
+    // track modifiers from XkbStateNotify alone (GH #59).
+    crate::core_loop::xkb_layout::announce_xkb_state(
+        state,
+        backend,
+        crate::core_loop::xkb_layout::XkbStateCause {
             keycode: event.keycode,
             event_type: if event.pressed { 2 } else { 3 },
-            request_major: 0,
-            request_minor: 0,
-        };
-        let _redundant = fanout_event_to_clients(state, &subs, |buf, seq, order| {
-            let _ = x11::write_xkb_state_notify(buf, order, seq, base, notify);
-        });
-        state.last_xkb_group = g;
-        state.last_xkb_mods = eff_mods;
-    }
+            request: (0, 0),
+        },
+    );
     backend.sync_floating_keyboard_states(state);
 
     dropped
@@ -2285,7 +2254,7 @@ mod tests {
         );
         assert_eq!(bytes[1], 2, "xkbType = XkbStateNotify");
         assert_eq!(bytes[9], 0x40, "mods @9 = effective Mod4");
-        assert_eq!(state.last_xkb_mods, 0x40);
+        assert_eq!(state.xkb_announced.1.0, 0x40);
 
         // Modifier released → effective mods 0. The CLEAR must be announced
         // (this is what unsticks a seeded modifier in kitty).
@@ -2299,7 +2268,7 @@ mod tests {
         );
         assert_eq!(bytes2[1], 2, "xkbType = XkbStateNotify");
         assert_eq!(bytes2[9], 0x00, "mods @9 cleared to 0 on modifier release");
-        assert_eq!(state.last_xkb_mods, 0);
+        assert_eq!(state.xkb_announced.1.0, 0);
     }
 
     #[test]
