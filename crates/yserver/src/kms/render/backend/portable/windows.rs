@@ -1925,8 +1925,9 @@ impl<P: Platform> XBackend<P> {
         &mut self,
         _origin: Option<OriginContext>,
         host_xid: u32,
-        paint_background: bool,
+        background: yserver_core::backend::RealizeBackground,
     ) -> io::Result<()> {
+        use yserver_core::backend::RealizeBackground;
         if self.storage_lifecycle_exempt(host_xid) {
             return Ok(());
         }
@@ -1941,7 +1942,9 @@ impl<P: Platform> XBackend<P> {
         }
         // Xorg miPaintWindow on RealizeTree: tile the background wherever the window paints,
         // unless `inhibitBGPaint` (`mi/miexpose.c:435`) leaves it as a None background.
-        if paint_background && (geom.bg_pixel.is_some() || geom.bg_pixmap.is_some()) {
+        if background == RealizeBackground::Paint
+            && (geom.bg_pixel.is_some() || geom.bg_pixmap.is_some())
+        {
             if let Err(e) = self.clear_window_area_with_background(
                 host_xid,
                 geom.bg_pixel.unwrap_or(0),
@@ -1956,12 +1959,10 @@ impl<P: Platform> XBackend<P> {
                     "render realize_window_storage: bg paint failed for 0x{host_xid:x}: {e:?}"
                 );
             }
-        } else if let Some(id) = leaf
-            && self
-                .resolve_paint_target(host_xid)
-                .is_some_and(|t| t.backing_id() == id)
-        {
-            // Background None shows what is underneath: seed from the parent (no lower siblings).
+        } else if let Some(id) = leaf {
+            // Unpainted, the window shows what is underneath: seed from the parent (no lower
+            // siblings). Also when it paints into an ancestor's backing: a new backing copies
+            // the leaves under it, and Xorg paints only after allocating it.
             self.seed_backing_from_parent(host_xid, id);
         }
         // The ring, once core has sent the border source (it does right after CreateWindow).

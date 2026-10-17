@@ -59,6 +59,8 @@ pub enum RecordedCall {
     RealizeWindowStorage(u32),
     /// `realize_window_storage` with the background paint inhibited.
     RealizeWindowStorageUnpainted(u32),
+    /// `realize_window_storage` with the background paint left to the core.
+    RealizeWindowStorageDeferred(u32),
     ReleaseWindowStorage(u32),
     ConfigureSubwindow {
         host_xid: u32,
@@ -1530,12 +1532,18 @@ impl Backend for RecordingBackend {
         &mut self,
         _origin: Option<OriginContext>,
         host_xid: u32,
-        paint_background: bool,
+        background: crate::backend::RealizeBackground,
     ) -> io::Result<()> {
-        self.record(if paint_background {
-            RecordedCall::RealizeWindowStorage(host_xid)
-        } else {
-            RecordedCall::RealizeWindowStorageUnpainted(host_xid)
+        self.record(match background {
+            crate::backend::RealizeBackground::Paint => {
+                RecordedCall::RealizeWindowStorage(host_xid)
+            }
+            crate::backend::RealizeBackground::Deferred => {
+                RecordedCall::RealizeWindowStorageDeferred(host_xid)
+            }
+            crate::backend::RealizeBackground::Inhibited => {
+                RecordedCall::RealizeWindowStorageUnpainted(host_xid)
+            }
         });
         Ok(())
     }

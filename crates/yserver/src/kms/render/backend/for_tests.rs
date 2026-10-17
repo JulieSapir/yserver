@@ -165,7 +165,11 @@ impl KmsBackend {
         }
         let mut stack = vec![host_xid];
         while let Some(xid) = stack.pop() {
-            self.realize_window_storage(None, xid, true)?;
+            self.realize_window_storage(
+                None,
+                xid,
+                yserver_core::backend::RealizeBackground::Paint,
+            )?;
             let mut children: Vec<(u64, u32)> = self
                 .windows
                 .iter()

@@ -9,7 +9,7 @@ use std::{
 
 use ash::vk;
 use yserver_core::{
-    backend::{Backend, BackendTopology, CursorHandle, WindowHandle},
+    backend::{Backend, BackendTopology, CursorHandle, RealizeBackground, WindowHandle},
     core_loop::{HostInputEvent, handle_host_input},
     host_x11::HostSubwindowVisual,
     server::ServerState,
@@ -97,7 +97,8 @@ fn create_window(b: &mut XBackend<SurfacePlatform>) -> u32 {
         .expect("create_subwindow");
     let xid = window.as_raw();
     b.map_subwindow(None, xid).expect("map");
-    b.realize_window_storage(None, xid, true).expect("realize");
+    b.realize_window_storage(None, xid, RealizeBackground::Paint)
+        .expect("realize");
     // The core's stacking sync, which these tests have no core for.
     b.core.top_level_order.push(xid);
     xid
@@ -161,14 +162,13 @@ fn headless_backend_fills_a_window_and_reads_it_back() {
     assert_ne!(at(0, 0), [0x00, 0x00, 0xFF], "outside the fill is not");
 }
 
-/// A child of `parent` at `rect` with background `pixel`, mapped and realized
-/// with or without its background paint.
+/// A child of `parent` at `rect` with background `pixel`, mapped and realized.
 fn create_child(
     b: &mut XBackend<SurfacePlatform>,
     parent: u32,
     rect: (i16, i16, u16, u16),
     pixel: u32,
-    paint_background: bool,
+    background: RealizeBackground,
 ) -> u32 {
     let window = b
         .create_subwindow(
@@ -190,7 +190,7 @@ fn create_child(
         .expect("create_subwindow");
     let xid = window.as_raw();
     b.map_subwindow(None, xid).expect("map");
-    b.realize_window_storage(None, xid, paint_background)
+    b.realize_window_storage(None, xid, background)
         .expect("realize");
     xid
 }
@@ -205,8 +205,20 @@ fn realize_without_background_paint_shows_the_parent() {
     };
     let top = create_window(&mut b);
     fill(&mut b, top, 0x00FF_0000, (0, 0, 8, 8));
-    let painted = create_child(&mut b, top, (0, 0, 4, 4), 0x0080_8080, true);
-    let inhibited = create_child(&mut b, top, (4, 4, 4, 4), 0x0080_8080, false);
+    let painted = create_child(
+        &mut b,
+        top,
+        (0, 0, 4, 4),
+        0x0080_8080,
+        RealizeBackground::Paint,
+    );
+    let inhibited = create_child(
+        &mut b,
+        top,
+        (4, 4, 4, 4),
+        0x0080_8080,
+        RealizeBackground::Inhibited,
+    );
     b.maybe_composite().expect("compose over no outputs");
 
     let first_pixel = |b: &mut XBackend<SurfacePlatform>, xid: u32| {

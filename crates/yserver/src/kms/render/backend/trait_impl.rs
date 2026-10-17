@@ -474,9 +474,9 @@ impl<P: Platform> Backend for XBackend<P> {
         &mut self,
         _origin: Option<OriginContext>,
         host_xid: u32,
-        paint_background: bool,
+        background: yserver_core::backend::RealizeBackground,
     ) -> io::Result<()> {
-        Self::backend_windows_realize_window_storage(self, _origin, host_xid, paint_background)
+        Self::backend_windows_realize_window_storage(self, _origin, host_xid, background)
     }
 
     fn release_window_storage(

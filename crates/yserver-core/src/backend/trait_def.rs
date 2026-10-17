@@ -42,6 +42,19 @@ pub struct ModeSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CrtcConfigToken(pub u64);
 
+/// What `Backend::realize_window_storage` does about the background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizeBackground {
+    /// Paint it now (`miPaintWindow` on realize).
+    Paint,
+    /// The core paints it once the redirect backing the window paints into
+    /// exists; until then the storage shows what is underneath.
+    Deferred,
+    /// Never: Xorg's `inhibitBGPaint` (`mi/miexpose.c:435`). The storage shows
+    /// what is underneath, as for a None background.
+    Inhibited,
+}
+
 /// Initial disposition of a client-driven CRTC configuration request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrtcConfigApply {
@@ -1290,15 +1303,13 @@ pub trait Backend {
     fn unmap_subwindow(&mut self, origin: Option<OriginContext>, host_xid: u32) -> io::Result<()>;
 
     /// A window became viewable: allocate and paint its storage (parent first; never root/COW).
-    /// `paint_background` is false when Xorg's `inhibitBGPaint` holds: the storage then shows
-    /// what is underneath, as for a None background.
     fn realize_window_storage(
         &mut self,
         origin: Option<OriginContext>,
         host_xid: u32,
-        paint_background: bool,
+        background: RealizeBackground,
     ) -> io::Result<()> {
-        let _ = (origin, host_xid, paint_background);
+        let _ = (origin, host_xid, background);
         Ok(())
     }
 

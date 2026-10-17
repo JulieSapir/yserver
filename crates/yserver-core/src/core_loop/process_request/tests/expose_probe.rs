@@ -149,7 +149,9 @@ impl Probe {
         self.request(COMPOSITE_MAJOR, minor, &ROOT_WINDOW.0.to_le_bytes());
     }
 
-    /// Whether `window`'s storage was realized with its background paint.
+    /// How `window`'s background was painted on realize: `Some(true)` with
+    /// its storage or, deferred, after a redirect backing was allocated;
+    /// `Some(false)` never; `None` when not realized.
     pub(super) fn realized_painted(&self, window: u32) -> Option<bool> {
         let host = self
             .state
@@ -157,16 +159,27 @@ impl Probe {
             .window(ResourceId(window))?
             .host_xid?
             .as_raw();
-        self.backend
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .find_map(|call| match call {
-                RecordedCall::RealizeWindowStorage(x) if *x == host => Some(true),
-                RecordedCall::RealizeWindowStorageUnpainted(x) if *x == host => Some(false),
-                _ => None,
-            })
+        let calls = self.backend.calls.lock().unwrap();
+        let (mut realized, mut deferred, mut backing) = (None, false, false);
+        for call in calls.iter() {
+            match call {
+                RecordedCall::RealizeWindowStorage(x) if *x == host => realized = Some(true),
+                RecordedCall::RealizeWindowStorageUnpainted(x) if *x == host => {
+                    realized = Some(false);
+                }
+                RecordedCall::RealizeWindowStorageDeferred(x) if *x == host => {
+                    (realized, deferred, backing) = (Some(false), true, false);
+                }
+                RecordedCall::AllocateRedirectedBacking { .. } => backing = true,
+                RecordedCall::PaintWindowBackgroundRect { host_xid, .. }
+                    if *host_xid == host && deferred && backing =>
+                {
+                    realized = Some(true);
+                }
+                _ => {}
+            }
+        }
+        realized
     }
 
     pub(super) fn reparent(&mut self, window: u32, parent: u32, x: i16, y: i16) {

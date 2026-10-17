@@ -408,6 +408,17 @@ pub(super) fn apply_viewability_delta_to_redirects(
     for window in &delta.became_viewable {
         realize_redirect_backing(state, backend, origin, *window);
     }
+    for window in &delta.became_viewable {
+        if state.background_paint_after_backing.remove(window)
+            && let Some((xid, width, height)) = state
+                .resources
+                .window(*window)
+                .and_then(|w| Some((w.host_xid?.as_raw(), w.width, w.height)))
+            && let Err(err) = backend.paint_window_background_rect(origin, xid, 0, 0, width, height)
+        {
+            log::warn!("paint_window_background_rect(0x{xid:x}) failed: {err}");
+        }
+    }
 }
 
 /// Host xid of a window whose storage follows its viewability; the root and the COW own theirs.
@@ -423,23 +434,61 @@ pub(super) fn storage_lifecycle_host_xid(state: &ServerState, window: ResourceId
 }
 
 /// Windows that became viewable get storage, parent first; call before their redirect backings.
+/// One that paints into a backing this delta allocates (its own or an ancestor's) is painted
+/// once that exists: Xorg allocates the pixmap on realize (`compRealizeWindow`,
+/// `composite/compwindow.c:274`), before the exposures paint.
 pub(super) fn realize_storage_for_delta(
-    state: &ServerState,
+    state: &mut ServerState,
     backend: &mut dyn Backend,
     origin: Option<OriginContext>,
     delta: &ViewabilityDelta,
 ) {
+    use crate::backend::RealizeBackground;
+    let gets_backing: Vec<ResourceId> = if backend.supports_redirect_activation() {
+        delta
+            .became_viewable
+            .iter()
+            .copied()
+            .filter(|w| effective_redirect_mode_for_window(state, *w).is_some())
+            .collect()
+    } else {
+        Vec::new()
+    };
     for window in &delta.became_viewable {
-        if let Some(xid) = storage_lifecycle_host_xid(state, *window)
-            && let Err(err) = backend.realize_window_storage(
-                origin,
-                xid,
-                !super::background_paint_inhibited(state, *window),
-            )
+        let Some(xid) = storage_lifecycle_host_xid(state, *window) else {
+            continue;
+        };
+        let background = if super::background_paint_inhibited(state, *window) {
+            RealizeBackground::Inhibited
+        } else if state
+            .resources
+            .window_resolved_background(*window)
+            .is_some()
+            && ancestor_or_self_in(state, *window, &gets_backing)
         {
+            state.background_paint_after_backing.insert(*window);
+            RealizeBackground::Deferred
+        } else {
+            RealizeBackground::Paint
+        };
+        if let Err(err) = backend.realize_window_storage(origin, xid, background) {
             log::warn!("realize_window_storage(0x{xid:x}) failed: {err}");
         }
     }
+}
+
+fn ancestor_or_self_in(state: &ServerState, window: ResourceId, set: &[ResourceId]) -> bool {
+    let mut current = window;
+    while let Some(w) = state.resources.window(current) {
+        if set.contains(&current) {
+            return true;
+        }
+        if w.parent == current {
+            break;
+        }
+        current = w.parent;
+    }
+    false
 }
 
 /// Windows that became unviewable drop storage, child first; call after their redirect backings.

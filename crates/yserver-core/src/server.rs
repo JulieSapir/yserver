@@ -1280,6 +1280,9 @@ pub struct ServerState {
     pub damage_objects: HashMap<u32, DamageObject>,
     /// Clock for [`DamageObject::list_pos`] and [`DamageObject::created`].
     pub damage_list_clock: u64,
+    /// Windows realized unpainted whose background goes into the redirect
+    /// backing they are about to get.
+    pub background_paint_after_backing: HashSet<ResourceId>,
     /// A real DamageNotify was queued after backend drawing. Before client
     /// output is allowed to drain, the core asks the backend to submit that
     /// drawing so an external compositor cannot sample ahead of it.
@@ -1822,6 +1825,7 @@ impl ServerState {
             sync_fences: HashMap::new(),
             damage_objects: HashMap::new(),
             damage_list_clock: 0,
+            background_paint_after_backing: HashSet::new(),
             damage_notify_flush_pending: false,
             composite_redirects: crate::composite_redirects::CompositeRedirects::default(),
             present_event_selections: HashMap::new(),
