@@ -978,8 +978,9 @@ fn map_subwindows_delta_includes_promoted_grandchildren() {
         &f.0.to_le_bytes(),
     )
     .expect("MapSubwindows");
-    // C was already viewable; A and B each bring their grandchild.
-    assert_eq!(delta.became_viewable, vec![a, a1, b, b1]);
+    // C was already viewable; B then A (top-most first, `dix/window.c:2739`),
+    // each bringing its grandchild.
+    assert_eq!(delta.became_viewable, vec![b, b1, a, a1]);
     assert!(delta.became_unviewable.is_empty());
 }
 

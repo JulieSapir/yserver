@@ -2460,7 +2460,15 @@ pub(super) fn map_subwindows_with_delta(
         )
         .map(|outcome| (outcome, delta));
     }
-    let children: Vec<ResourceId> = state.resources.children(parent).to_vec();
+    // Xorg walks firstChild→nextSib, top-most first, mapping, notifying and
+    // realizing each in turn (`dix/window.c:2739-2758`).
+    let children: Vec<ResourceId> = state
+        .resources
+        .children(parent)
+        .iter()
+        .rev()
+        .copied()
+        .collect();
     let mut newly_viewable = Vec::new();
     for child in children {
         let transition = state.resources.map_window(child);
@@ -2502,7 +2510,6 @@ pub(super) fn map_subwindows_with_delta(
     }
     // Xorg maps them all, then validates and exposes once: top-most first,
     // each clipped by the siblings mapped with it (`dix/window.c:2760-2775`).
-    newly_viewable.reverse();
     send_map_exposures(state, backend, origin, &newly_viewable);
     // Xorg MapSubwindows: one WindowsRestructured after the batch
     // (`dix/window.c:2775`).

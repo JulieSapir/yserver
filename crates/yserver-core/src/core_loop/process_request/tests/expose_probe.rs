@@ -520,3 +520,35 @@ fn unredirect_after_overlay_release_damages_the_restored_windows() {
         assert_eq!(overlay_release_case(bg, false).0, "");
     }
 }
+
+/// Case 1a of the probe: MapSubwindows on T with A, B (over A) and C.
+fn map_subwindows_case(child_bg: Bg) -> String {
+    let mut p = Probe::new();
+    let t = p.create("T", ROOT_WINDOW.0, (50, 50, 300, 200), Bg::None);
+    p.create("A", t, (10, 10, 80, 80), child_bg);
+    p.create("B", t, (60, 60, 80, 80), child_bg);
+    p.create("C", t, (190, 10, 80, 80), child_bg);
+    p.watch_damage(t, true);
+    p.map(t);
+    let _ = p.step();
+    p.map_subwindows(t);
+    p.step()
+}
+
+/// `MapSubwindows` delivers MapNotify from firstChild down (`dix/window.c:2739`);
+/// the exposures follow, top-most first.
+#[test]
+fn map_subwindows_notifies_top_most_first() {
+    const EXPOSES: &str = "Expose(C 0,0 80x80 c0) Expose(B 0,0 80x80 c0) \
+                           Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)";
+    assert_eq!(
+        map_subwindows_case(Bg::None),
+        format!("Map(C@T) Map(B@T) Map(A@T) {EXPOSES}")
+    );
+    assert_eq!(
+        map_subwindows_case(Bg::Pixel(0x80_8080)),
+        "Map(C@T) Map(B@T) Map(A@T) DmgR(T 190,10 80x80) Expose(C 0,0 80x80 c0) \
+         DmgR(T 60,60 80x80) Expose(B 0,0 80x80 c0) DmgR(T 10,10 80x50) DmgR(T 10,60 50x30) \
+         Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)"
+    );
+}
