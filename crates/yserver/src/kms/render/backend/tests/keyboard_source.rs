@@ -2731,14 +2731,14 @@ fn latch_lock_numlock_keeps_held_shift_and_physical_key_unlocks() {
     assert_eq!(base, SHIFT, "Shift still depressed after the lock");
     assert_eq!(locked, MOD2, "NumLock locked");
     assert_eq!(eff, SHIFT | MOD2);
-    assert_eq!(b.current_led_bits(), input::Led::NUMLOCK.bits());
+    assert_eq!(b.pstate.leds_sent, input::Led::NUMLOCK.bits(), "LED on");
 
     let _ = b.cook_host_key(key(77, true));
     let _ = b.cook_host_key(key(77, false));
     let (_eff, base, _latched, locked) = Backend::current_xkb_mods(&b);
     assert_eq!(locked, 0, "physical NumLock unlocks");
     assert_eq!(base, SHIFT, "Shift still held");
-    assert_eq!(b.current_led_bits(), 0, "NumLock LED off");
+    assert_eq!(b.pstate.leds_sent, 0, "NumLock LED off");
 
     let _ = b.cook_host_key(key(50, false));
     assert_eq!(

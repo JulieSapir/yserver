@@ -194,16 +194,15 @@ fn press_release_key(state: &mut xkbcommon::xkb::State, kc: u8) {
     state.update_key(key, xkbcommon::xkb::KeyDirection::Up);
 }
 
-/// Lock the real modifiers `target` in a fresh `state` of `keymap` by pressing
-/// and releasing the keymap's own lock keys; returns the bits no key could
-/// lock.
+/// Lock the real modifiers `target` in `state` of `keymap` by pressing and
+/// releasing the keymap's own lock keys; returns the bits no key could lock.
 ///
-/// A replay only goes through `update_key`, so the state reaches the locks by
-/// the keymap's own `LockMods` actions and the real lock keys still unlock
-/// afterwards. An out-of-band lock on the master state uses `update_mask`
-/// instead (`backend_keyboard_set_locked_mods`, XkbLatchLockState); the
-/// KMS test `latch_lock_numlock_keeps_held_shift_and_physical_key_unlocks`
-/// pins that held keys and the physical lock key keep working with it.
+/// The replay reaches the locks through `update_key` and the keymap's own
+/// `LockMods` actions. XkbLatchLockState locks with `update_mask` instead
+/// (`backend_keyboard_set_locked_mods`), which libxkbcommon documents as not
+/// to be mixed with `update_key`; the KMS test
+/// `latch_lock_numlock_keeps_held_shift_and_physical_key_unlocks` pins the
+/// held-key and physical-unlock behaviour that relies on.
 ///
 /// Candidates come from probing every keycode on a scratch state: a key
 /// qualifies when a press+release locks only real modifiers we want and
@@ -2900,10 +2899,9 @@ impl KmsCore {
     /// returned (xkbcommon writes the compiler's message to its log). Text
     /// identical to the installed keymap's skips the compile.
     ///
-    /// Unlike an RMLVO reload this is an in-place mapping change, and Xorg
-    /// keeps the keyboard state through those: the locked real modifiers
-    /// are restored by replaying the keymap's own lock keys (see
-    /// `relock_real_mods`), held keys are re-asserted, and `locked_group`
+    /// Xorg keeps the keyboard state through a mapping change: the locked
+    /// real modifiers are restored by replaying the keymap's own lock keys
+    /// (see `relock_real_mods`), held keys are re-asserted, and `locked_group`
     /// (tracked here, not in `xkb_state`) is kept, clamped to the new
     /// group count. The keymap becomes [`KeymapSource::Edited`];
     /// `xkb_rmlvo` keeps naming its base.
