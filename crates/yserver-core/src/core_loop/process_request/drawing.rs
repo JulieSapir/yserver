@@ -1040,10 +1040,9 @@ pub(super) fn handle_clear_area(
         }
         let (w_width, w_height) = (window.width, window.height);
         let region = clear_area_region(state, request, w_width, w_height);
+        paint_window_background(state, backend, origin, request.window, &region)?;
         if exposures {
-            send_window_exposures(state, backend, origin, request.window, &region, true);
-        } else {
-            paint_window_background(state, backend, origin, request.window, &region);
+            send_window_exposures(state, backend, origin, request.window, &region, false);
         }
     }
     debug!(

@@ -92,7 +92,7 @@ pub(crate) fn send_window_exposures(
         return;
     }
     if paint {
-        paint_window_background(state, backend, origin, window, region);
+        let _ = paint_window_background(state, backend, origin, window, region);
     }
     if subscribers_by_id(state, window, 0x0000_8000).is_empty() {
         return;
@@ -127,28 +127,31 @@ pub(crate) fn send_window_exposures(
 /// Xorg's `miPaintWindow(PW_BACKGROUND)` (`mi/miexpose.c:398-436`) over
 /// `region` of `window` (its content space, already clipped): nothing when
 /// the background resolves to None or is inhibited, else the fill and its
-/// DAMAGE.
+/// DAMAGE. A failed fill stops the paint; only the rects already filled are
+/// damaged.
 pub(crate) fn paint_window_background(
     state: &mut ServerState,
     backend: &mut dyn Backend,
     origin: Option<OriginContext>,
     window: ResourceId,
     region: &[x11::xfixes::RegionRect],
-) {
+) -> io::Result<()> {
     if region.is_empty() {
-        return;
+        return Ok(());
     }
     let Some(bg) = state.resources.window_resolved_background(window) else {
-        return;
+        return Ok(());
     };
     if background_paint_inhibited(state, window) {
-        return;
+        return Ok(());
     }
     let Some(target) = state.resources.host_drawable_target(window) else {
-        return;
+        return Ok(());
     };
+    let mut result = Ok(());
+    let mut painted = 0;
     for r in region {
-        let _ = backend.clear_area(
+        result = backend.clear_area(
             origin,
             target.host_xid(),
             bg.background_pixel,
@@ -159,8 +162,13 @@ pub(crate) fn paint_window_background(
             r.height,
             bg.tile_origin_offset,
         );
+        if result.is_err() {
+            break;
+        }
+        painted += 1;
     }
-    let _dropped = accumulate_damage_region_to_state(state, window, region);
+    let _dropped = accumulate_damage_region_to_state(state, window, &region[..painted]);
+    result
 }
 
 /// The Expose events of windows becoming viewable: each of `tops`, then

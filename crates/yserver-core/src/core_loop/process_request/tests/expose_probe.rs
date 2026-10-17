@@ -59,6 +59,16 @@ impl Probe {
     }
 
     pub(super) fn request(&mut self, opcode: u8, data: u8, body: &[u8]) {
+        self.try_request(opcode, data, body)
+            .expect("request through core dispatcher");
+    }
+
+    pub(super) fn try_request(
+        &mut self,
+        opcode: u8,
+        data: u8,
+        body: &[u8],
+    ) -> io::Result<RequestOutcome> {
         self.sequence = self.sequence.wrapping_add(1);
         process_request(
             &mut self.state,
@@ -73,7 +83,6 @@ impl Probe {
             body,
             None,
         )
-        .expect("request through core dispatcher");
     }
 
     fn xid(&mut self) -> u32 {
@@ -193,6 +202,15 @@ impl Probe {
     }
 
     pub(super) fn clear(&mut self, window: u32, rect: (i16, i16, u16, u16)) {
+        self.try_clear(window, rect)
+            .expect("request through core dispatcher");
+    }
+
+    pub(super) fn try_clear(
+        &mut self,
+        window: u32,
+        rect: (i16, i16, u16, u16),
+    ) -> io::Result<RequestOutcome> {
         let mut body = window.to_le_bytes().to_vec();
         for half in [
             rect.0.to_le_bytes(),
@@ -202,7 +220,7 @@ impl Probe {
         ] {
             body.extend_from_slice(&half);
         }
-        self.request(61, 1, &body);
+        self.try_request(61, 1, &body)
     }
 
     /// The probe's `watch_damage` at one level: `raw` RawRectangles, else NonEmpty.
@@ -389,6 +407,21 @@ fn clear_area_exposes_and_damages_only_the_clip_list() {
             "Expose(V 150,0 50x75 c0)",
         ]
     );
+}
+
+/// A failed fill fails the ClearArea and damages nothing it did not paint.
+#[test]
+fn clear_area_fill_failure_propagates_without_damage() {
+    let mut p = Probe::new();
+    let t = p.create("T", ROOT_WINDOW.0, (50, 50, 400, 300), Bg::Pixel(0x40_4040));
+    let v = p.create("V", t, (20, 20, 200, 150), Bg::Pixel(0x80_8080));
+    p.map(v);
+    p.map(t);
+    p.watch_damage(t, true);
+    let _ = p.step();
+    p.backend.fail_fill_rectangle = true;
+    assert!(p.try_clear(v, (0, 0, 0, 0)).is_err());
+    assert_eq!(p.step(), "");
 }
 
 /// `miPaintWindow` fills only the clipped region (`mi/miwindow.c:110-116`).

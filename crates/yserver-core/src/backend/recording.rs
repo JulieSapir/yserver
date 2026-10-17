@@ -512,6 +512,8 @@ pub struct RecordingBackend {
     /// `execute_present_pixmap_copy_or_reroute`'s failure arm. Default
     /// `false` matches today's always-succeeds behavior.
     pub fail_copy_area: bool,
+    /// When `true`, `fill_rectangle` records the call but returns `Err`.
+    pub fail_fill_rectangle: bool,
     /// Canned direct-Present result plus observed candidates. A successful
     /// result lets request-layer tests prove M2b bypasses Copy entirely.
     pub present_direct_result: bool,
@@ -664,6 +666,7 @@ impl RecordingBackend {
             armed_completion_idle_vblank_targets: Vec::new(),
             arm_idle_vblanks_result: None,
             fail_copy_area: false,
+            fail_fill_rectangle: false,
             present_direct_result: false,
             present_direct_candidates: Vec::new(),
             enqueued_present_completions: Vec::new(),
@@ -2126,6 +2129,9 @@ impl Backend for RecordingBackend {
             width,
             height,
         });
+        if self.fail_fill_rectangle {
+            return Err(io::Error::other("fill_rectangle failure injected"));
+        }
         Ok(())
     }
 
