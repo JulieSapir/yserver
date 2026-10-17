@@ -4,7 +4,7 @@ use crate::{
         damage_fanout::{accumulate_damage_full_to_state, report_existing_damage_to_state},
         process_request::{
             RequestOutcome, emit_x11_error_with_minor,
-            redirect::sync_redirect_backing,
+            redirect::{BackingDamage, sync_redirect_backing},
             shape_xfixes::{
                 drawable_full_rect_xfixes, format_region_rects, normalize_region_rects,
             },
@@ -128,6 +128,15 @@ pub(super) fn handle_composite_request(
                 mode,
                 owner: client_id,
             };
+            let released = if !redirect && subwindows {
+                crate::core_loop::process_request::manual_subwindows_release_regions(
+                    state,
+                    client_id,
+                    &[window],
+                )
+            } else {
+                Vec::new()
+            };
             let redirects = &mut state.composite_redirects;
             let ok = match (redirect, subwindows) {
                 // Only one Manual redirect per window or subwindows list,
@@ -162,8 +171,20 @@ pub(super) fn handle_composite_request(
                     },
                 );
             }
+            if mode == crate::server::CompositeRedirectMode::Manual {
+                crate::core_loop::process_request::clear_after_manual_subwindows_release(
+                    state, backend, origin, &released,
+                );
+            }
             for (target, before) in targets.into_iter().zip(before) {
-                sync_redirect_backing(state, backend, origin, target, before);
+                sync_redirect_backing(
+                    state,
+                    backend,
+                    origin,
+                    target,
+                    before,
+                    BackingDamage::Allocation,
+                );
             }
         }
         x11composite::CREATE_REGION_FROM_BORDER_CLIP => {
