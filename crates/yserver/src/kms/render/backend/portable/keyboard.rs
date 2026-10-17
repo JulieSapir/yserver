@@ -319,6 +319,18 @@ impl<P: Platform> XBackend<P> {
         self.core.xkb_desc.indicators_lit(&self.core.xkb_state.0)
     }
 
+    /// Xorg's `XkbUpdateLedAutoState` on the default feedback: indicators
+    /// whose map is in use follow the state, the others keep theirs (all
+    /// of them when no map is in use). `(effectiveState, namesPresent |
+    /// mapsPresent)`.
+    pub(in crate::kms::render::backend) fn effective_indicators(&mut self) -> (u32, u32) {
+        let present = self.core.xkb_desc.maps_present();
+        let defined = self.core.xkb_desc.names_present() | present;
+        let lit = (self.lit_indicators() & present) | (self.core.indicator_state & !present);
+        self.core.indicator_state = lit;
+        (lit, defined)
+    }
+
     /// Push the XKB lock-LED state (Caps/Num/Scroll) to the keyboards
     /// when it changed. On a KMS server nothing else drives the LEDs —
     /// Xorg's keyboard driver does this via the XKB indicator state;
@@ -521,7 +533,7 @@ impl<P: Platform> XBackend<P> {
                 };
             }
         };
-        let before = self.core.xkb_desc.indicators_lit(&self.core.xkb_state.0);
+        let (before, _) = self.effective_indicators();
         let _ = self.mutate_keymap(|desc| {
             desc.set_indicator_map(which, &maps);
             crate::kms::xkb_desc::XkbChanges::default()
@@ -533,13 +545,15 @@ impl<P: Platform> XBackend<P> {
         } else {
             (lit & which) | (before & !which)
         };
+        let leds_defined = desc.names_present() | desc.maps_present();
+        self.core.indicator_state = state;
         XkbSetOutcome {
             error: None,
             events: vec![XkbSetEvent::IndicatorMaps(XkbIndicatorMapsChange {
                 maps_changed: which,
                 state_changed: state ^ before,
                 state,
-                leds_defined: desc.names_present() | desc.maps_present(),
+                leds_defined,
             })],
         }
     }
@@ -848,6 +862,7 @@ impl<P: Platform> XBackend<P> {
         // possible. The behaviour-level fix is identical to v1
         // (reply minors get bodies, void minors return None).
         use crate::kms::{xkb as xkb_replies, xkb_desc::reply};
+        let indicators = self.effective_indicators().0;
         let desc = &self.core.xkb_desc;
         let major = self.xkb_opcode().unwrap_or(0);
         let or_error = |r: Result<Vec<u8>, reply::XkbError>| {
@@ -860,6 +875,7 @@ impl<P: Platform> XBackend<P> {
                 self.effective_locked_group(),
             )),
             6 => Some(reply::reply_get_controls(desc)),
+            12 => Some(xkb_replies::reply_get_indicator_state(indicators)),
             8 => Some(or_error(reply::reply_get_map(desc, body))),
             10 => Some(or_error(reply::reply_get_compat_map(desc, body))),
             // minor 13 is GetIndicatorMap (clients send it 8×); minor 22 is
@@ -876,7 +892,7 @@ impl<P: Platform> XBackend<P> {
             21 => Some(xkb_replies::reply_per_client_flags(body)),
             22 => Some(xkb_replies::reply_minimal(22)),
             24 => Some(xkb_replies::reply_get_device_info()),
-            12 | 19 | 23 | 101 => Some(xkb_replies::reply_minimal(minor)),
+            19 | 23 | 101 => Some(xkb_replies::reply_minimal(minor)),
             1 | 3 | 5 | 7 | 9 | 11 | 14 | 16 | 18 | 20 | 25 => None,
             _ => {
                 log::debug!("render xkb: unknown minor {minor}, no reply sent");

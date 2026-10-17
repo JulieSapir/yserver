@@ -78,6 +78,10 @@ impl<P: Platform> Backend for XBackend<P> {
         Self::backend_keyboard_current_xkb_mods(self)
     }
 
+    fn xkb_indicators(&mut self) -> (u32, u32) {
+        self.effective_indicators()
+    }
+
     fn composite_opcode(&self) -> Option<u8> {
         Some(144)
     }

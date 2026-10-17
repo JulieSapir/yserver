@@ -116,7 +116,7 @@ pub fn apply_rules_names_change(state: &mut ServerState, backend: &mut dyn Backe
     ) else {
         return; // unchanged or failed to compile
     };
-    resync_xkb_announced(state, &*backend);
+    resync_xkb_announced(state, backend);
     let xkb_event_base = backend.xkb_info().map_or(0, |(_maj, ev, _err)| ev);
     let count = max_kc.saturating_sub(min_kc).saturating_add(1);
 
@@ -340,13 +340,32 @@ pub(crate) fn send_indicator_maps_change(
         );
         reason |= XI_INDICATOR_STATE_MASK;
     }
+    send_led_extension_device_notify(
+        state,
+        xkb_event_base,
+        reason,
+        change.leds_defined,
+        change.state,
+    );
+}
+
+/// `XkbSendExtensionDeviceNotify` for the core keyboard's default LED
+/// feedback (class KbdFeedbackClass, id 0), to clients whose
+/// ExtensionDeviceNotify details include `reason`.
+fn send_led_extension_device_notify(
+    state: &mut ServerState,
+    xkb_event_base: u8,
+    reason: u16,
+    leds_defined: u32,
+    led_state: u32,
+) {
     let notify = x11::XkbExtensionDeviceNotify {
         device_id: XKB_DEVICE_ID,
         reason,
         led_class: 0,
         led_id: 0,
-        leds_defined: change.leds_defined,
-        led_state: change.state,
+        leds_defined,
+        led_state,
         first_btn: 0,
         n_btns: 0,
         supported: XI_ALL_FEATURES_MASK,
@@ -551,8 +570,14 @@ fn xkb_state_now(backend: &dyn Backend) -> (u8, (u8, u8, u8, u8)) {
 
 /// Xorg `XkbSendStateNotify` for what changed since the last announcement
 /// (`XkbStateChangedFlags`): only to clients whose StateNotify details
-/// include a changed component, nothing when nothing changed.
-pub fn announce_xkb_state(state: &mut ServerState, backend: &dyn Backend, cause: XkbStateCause) {
+/// include a changed component, nothing when nothing changed. Then
+/// `XkbUpdateIndicators`: IndicatorStateNotify and ExtensionDeviceNotify
+/// (IndicatorState) when the lit indicators changed.
+pub fn announce_xkb_state(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    cause: XkbStateCause,
+) {
     let now = xkb_state_now(backend);
     let changed = state_changed_flags(state.xkb_announced, now);
     state.xkb_announced = now;
@@ -580,13 +605,34 @@ pub fn announce_xkb_state(state: &mut ServerState, backend: &dyn Backend, cause:
     let _dropped = fanout_event_to_clients(state, &recipients, |buf, seq, order| {
         let _ = x11::write_xkb_state_notify(buf, order, seq, xkb_event_base, notify);
     });
+
+    let (lit, defined) = backend.xkb_indicators();
+    let lit_changed = lit ^ state.xkb_announced_indicators;
+    state.xkb_announced_indicators = lit;
+    if lit_changed != 0 {
+        send_indicator_notify(
+            state,
+            xkb_event_base,
+            x11::XkbIndicatorNotifyKind::State,
+            lit,
+            lit_changed,
+        );
+        send_led_extension_device_notify(
+            state,
+            xkb_event_base,
+            XI_INDICATOR_STATE_MASK,
+            defined,
+            lit,
+        );
+    }
 }
 
-/// Take the backend's keyboard state as announced, silently: for changes
-/// Xorg sends no StateNotify for (keymap loads and edits), so the next
-/// one doesn't report them.
-pub fn resync_xkb_announced(state: &mut ServerState, backend: &dyn Backend) {
+/// Take the backend's keyboard state and indicators as announced,
+/// silently: for changes Xorg sends no StateNotify for (keymap loads and
+/// edits), so the next one doesn't report them.
+pub fn resync_xkb_announced(state: &mut ServerState, backend: &mut dyn Backend) {
     state.xkb_announced = xkb_state_now(backend);
+    state.xkb_announced_indicators = backend.xkb_indicators().0;
 }
 
 pub(crate) use crate::core_loop::xkb_select::subscribers;

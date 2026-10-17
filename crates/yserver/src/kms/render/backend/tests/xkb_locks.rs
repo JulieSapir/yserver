@@ -5,6 +5,8 @@ use super::*;
 
 /// XKB event types the replay compares.
 const STATE_NOTIFY: u8 = 2;
+const INDICATOR_STATE_NOTIFY: u8 = 4;
+const EXTENSION_DEVICE_NOTIFY: u8 = 11;
 
 /// One `> STEP` of the golden and what Xorg answered.
 struct LocksStep {
@@ -135,6 +137,9 @@ impl LocksServer {
             .map(|(_, l)| l)
         {
             xkb_client_request(s, b, ACTOR, 136, 23, &get_kbd_by_name_body(layout));
+        } else if let Some(path) = step.strip_prefix("xreq:") {
+            let req = super::xkb::xkb_testdata(path);
+            super::xkb::xkb_send_recorded(s, b, ACTOR, &req);
         } else if let Some(m) = step.strip_prefix("lock:") {
             let (affect, mods) = m.split_once(':').unwrap();
             let mut body = [0u8; 12];
@@ -171,7 +176,21 @@ impl LocksServer {
         let r = kbd_map_drain(&mut self.listener);
         assert_eq!(r.len(), 32, "GetState reply {r:02x?}");
         assert_eq!(r[0], 1, "GetState reply {r:02x?}");
+        xkb_client_request(
+            &mut self.state,
+            &mut self.backend,
+            LISTENER,
+            136,
+            12,
+            &[0x00, 0x01, 0, 0],
+        );
+        let ind = kbd_map_drain(&mut self.listener);
+        assert_eq!(ind.len(), 32, "GetIndicatorState reply {ind:02x?}");
         vec![
+            (
+                "indicators",
+                u32::from_le_bytes(ind[8..12].try_into().unwrap()),
+            ),
             ("mods", u32::from(r[8])),
             ("base", u32::from(r[9])),
             ("latched", u32::from(r[10])),
@@ -215,19 +234,17 @@ fn get_kbd_by_name_body(layout: &str) -> Vec<u8> {
     body
 }
 
-/// Golden (`xorg-xkb-locks.txt`, Xvfb 21.1.25): a reload by name keeps the
-/// locked modifiers, and each held lock key still locks or unlocks on its
-/// release as before the reload: Xorg's state after every `state` step.
+/// Golden (`xorg-xkb-locks.txt`, Xvfb 21.1.25): Xorg's state and lit
+/// indicators after every `state` step. A reload by name keeps the locked
+/// modifiers, each held lock key still locks or unlocks on its release as
+/// before the reload, and indicators without a map keep their state.
 #[test]
-fn reload_keeps_locks_and_held_keys_as_xorg() {
+fn keyboard_state_matches_xorg() {
     let cases = parse_locks_golden(include_str!("../../../testdata/xorg-xkb-locks.txt"));
     let mut failures = Vec::new();
     let mut checked = 0;
     // The locked group across a reload is not ported (yserver resets it).
-    for case in cases
-        .iter()
-        .filter(|c| c.name.starts_with("reload-") && c.name != "reload-group-lock")
-    {
+    for case in cases.iter().filter(|c| c.name != "reload-group-lock") {
         let mut server = LocksServer::new(case.details);
         for (i, step) in case.steps.iter().enumerate() {
             if step.step != "state" {
@@ -247,7 +264,7 @@ fn reload_keeps_locks_and_held_keys_as_xorg() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 26, "state steps checked");
+    assert_eq!(checked, 34, "state steps checked");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -290,11 +307,13 @@ fn locks_compare_events(
 /// presses (XTEST), XkbLockModifiers and reloads, with Xorg's `changed`
 /// (`XkbStateChangedFlags`), on a listener selecting every detail and on
 /// one selecting only some (`XkbSendStateNotify`: `stateNotifyMask &
-/// changed`).
+/// changed`); then, when a lock lit or darkened an indicator,
+/// IndicatorStateNotify and ExtensionDeviceNotify (IndicatorState, every
+/// defined indicator in `ledsDefined`), as `XkbUpdateIndicators` sends.
 #[test]
-fn state_notifies_match_xorg() {
+fn state_and_indicator_notifies_match_xorg() {
     let cases = parse_locks_golden(include_str!("../../../testdata/xorg-xkb-locks.txt"));
-    assert_eq!(cases.len(), 16, "golden parsed");
+    assert_eq!(cases.len(), 17, "golden parsed");
     let mut failures = Vec::new();
     // The locked group across a reload is not ported (yserver resets it).
     for case in cases.iter().filter(|c| c.name != "reload-group-lock") {
@@ -305,7 +324,11 @@ fn state_notifies_match_xorg() {
             }
             let (all, selected) = server.step(&step.step);
             let what = format!("{} step {i} {}", case.name, step.step);
-            let types = [STATE_NOTIFY];
+            let types = [
+                STATE_NOTIFY,
+                INDICATOR_STATE_NOTIFY,
+                EXTENSION_DEVICE_NOTIFY,
+            ];
             locks_compare_events(&what, &all, &step.all, &types, &mut failures);
             let what = format!("{what} (selective)");
             locks_compare_events(&what, &selected, &step.selected, &types, &mut failures);

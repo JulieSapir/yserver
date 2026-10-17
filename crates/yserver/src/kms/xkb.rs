@@ -558,6 +558,16 @@ pub(super) fn reply_get_state(state: &xkbcommon::xkb::State, locked_group: u8) -
     r
 }
 
+/// `xkbGetIndicatorStateReply`: the lit indicators (Xorg
+/// `ProcXkbGetIndicatorState`: `sli->effectiveState`).
+pub(super) fn reply_get_indicator_state(state: u32) -> Vec<u8> {
+    let mut r = vec![0u8; 32];
+    r[0] = 1; // reply type
+    r[1] = 1; // deviceID
+    r[8..12].copy_from_slice(&state.to_le_bytes());
+    r
+}
+
 /// Minimal empty `xkbGetGeometryReply` (XKBproto.h:796-815,
 /// `sz_xkbGetGeometryReply` = 32). `name`=0, all section counts 0 — a
 /// structurally-valid empty geometry, the embedded block for

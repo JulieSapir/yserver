@@ -2503,6 +2503,9 @@ pub(crate) struct KmsCore {
     /// the same text skips the compile.
     xkb_text: String,
     pub(crate) xkb_state: XkbState,
+    /// Xorg's `sli->effectiveState`: the lit indicators, those without a
+    /// map in use keeping their last state.
+    pub(crate) indicator_state: u32,
     /// The RMLVO the active keymap was compiled from, or, for an edited
     /// keymap, the one it was edited from. Read by GetNames (`symbolsName`)
     /// and `_XKB_RULES_NAMES`.
@@ -2678,6 +2681,7 @@ impl KmsCore {
             startup_xkb_rmlvo,
             keymap_source: KeymapSource::Rmlvo,
             locked_group: 0,
+            indicator_state: 0,
             down_keys: HashSet::new(),
             font_loader: FontLoader::new()?,
             fonts: HashMap::new(),
@@ -2774,6 +2778,7 @@ impl KmsCore {
             startup_xkb_rmlvo,
             keymap_source: KeymapSource::Rmlvo,
             locked_group: 0,
+            indicator_state: 0,
             down_keys: HashSet::new(),
             font_loader: FontLoader::new().expect("test font loader"),
             fonts: HashMap::new(),
@@ -2980,6 +2985,7 @@ impl KmsCore {
         self.xkb_rmlvo = self.startup_xkb_rmlvo.clone();
         self.keymap_source = KeymapSource::Rmlvo;
         self.locked_group = 0;
+        self.indicator_state = 0;
         self.xkb_state = XkbState(fresh_state(&self.xkb_keymap.0));
     }
 }

@@ -1155,6 +1155,8 @@ pub struct ServerState {
     /// next StateNotify's `changed` is computed against
     /// (`core_loop::xkb_layout::announce_xkb_state`).
     pub xkb_announced: (u8, (u8, u8, u8, u8)),
+    /// The lit indicators `XkbIndicatorStateNotify` last announced.
+    pub xkb_announced_indicators: u32,
     /// Window the pointer is currently confined to (0 = none) — set
     /// while an active pointer grab with `confine_to` is in effect
     /// (Xorg `ConfineCursorToWindow`). The pointer fanout clamps
@@ -1785,6 +1787,7 @@ impl ServerState {
             modifier_mapping_override: None,
             keys_down: [0u8; 32],
             xkb_announced: (0, (0, 0, 0, 0)),
+            xkb_announced_indicators: 0,
             pointer_confine_to: ResourceId(0),
             buttons_down: 0,
             confine_warp_active: false,

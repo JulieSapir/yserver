@@ -1249,7 +1249,7 @@ locks_case() { # NAME DETAILS WHAT STEP...
     shift 3
     fresh gb
     echo "## case $name: -s $details: $what"
-    "$PROBE" -d ":$DISP" -s "$details" "$@" | grep -v '^[-+] \|^coremodmap '
+    "$PROBE" -d ":$DISP" -s "$details" "$@" | grep -v '^[-+] \|^coremodmap ' | sed "s|$TD/||g"
     stop_x
 }
 
@@ -1263,10 +1263,11 @@ gen_locks() {
         echo "# each case: setxkbmap -rules evdev -model pc105 -layout gb; then tools/xkb-mutation-probe.c"
         echo "# -s DETAILS with the case's steps: lock:AFFECT:MODS = XkbLockModifiers, lockgroup:N ="
         echo "# XkbLockGroup, down/up = XTEST, 'run:setxkbmap ... -layout L' = a reload (XkbGetKbdByName),"
-        echo "# state = GetState + GetIndicatorState (Xorg's GetState leaves grab/lookup 0). 'e xkb' is a"
-        echo "# listener selecting everything, 'e xkbs' one selecting only StateNotify with DETAILS. The"
-        echo "# probe's per-key map diff and coremodmap lines are filtered out. In raw event hex the"
-        echo "# sequence number (bytes 2-3) and time (4-7) differ between runs."
+        echo "# xreq:FILE = that recorded request, state = GetState + GetIndicatorState (Xorg's GetState"
+        echo "# leaves grab/lookup 0). 'e xkb' is a listener selecting everything, 'e xkbs' one selecting"
+        echo "# only StateNotify with DETAILS. The probe's per-key map diff and coremodmap lines are"
+        echo "# filtered out. In raw event hex the sequence number (bytes 2-3) and time (4-7) differ"
+        echo "# between runs."
         locks_case reload-numlock-lockmods 08 "NumLock locked by request, reload to de, then Caps Lock pressed and released" \
             lock:10:10 state "$r de" state down:66 up:66 state
         locks_case reload-numlock-lockmods-same 08 "NumLock locked by request, reload to the same layout" \
@@ -1299,6 +1300,8 @@ gen_locks() {
             lock:10:10 lock:10:10 lock:10:00 state
         locks_case lockmods-latchdetail 04 "NumLock then Caps Lock locked by request" \
             lock:10:10 lock:02:02 state
+        locks_case indmaps-cleared 08 "Caps Lock locked, every indicator map cleared, then Caps Lock unlocked and NumLock locked" \
+            down:66 up:66 "xreq:$TD/xkb-setcompat/indmap-none-in-use.bin" state down:66 up:66 lock:10:10 state
     } >"$out"
 }
 

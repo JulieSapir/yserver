@@ -865,7 +865,7 @@ fn xkb_view_of_change_keyboard_mapping_matches_xorg() {
 }
 
 /// A recorded request file (header included), sent raw by `client`.
-fn xkb_send_recorded(
+pub(super) fn xkb_send_recorded(
     state: &mut yserver_core::server::ServerState,
     backend: &mut KmsBackend,
     client: u32,
@@ -878,7 +878,7 @@ fn xkb_send_recorded(
     xkb_client_request(state, backend, client, 136, req[1], &req[4..]);
 }
 
-fn xkb_testdata(path: &str) -> Vec<u8> {
+pub(super) fn xkb_testdata(path: &str) -> Vec<u8> {
     let path = format!("{}/src/kms/testdata/{path}", env!("CARGO_MANIFEST_DIR"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }

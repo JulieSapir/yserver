@@ -145,7 +145,7 @@ pub(super) fn handle_xkb_request(
         backend.xkb_set(minor, body, ancient, &atom_name)
     };
     if let Some(outcome) = set_outcome {
-        crate::core_loop::xkb_layout::resync_xkb_announced(state, &*backend);
+        crate::core_loop::xkb_layout::resync_xkb_announced(state, backend);
         send_xkb_set_events(state, &*backend, header.opcode, minor, &outcome.events);
         if let Some((code, value)) = outcome.error {
             return emit_x11_error_with_minor(
@@ -194,7 +194,7 @@ pub(super) fn handle_xkb_request(
         // is left untouched and nothing is sent.
         if requested_group.is_some() || requested_mods.is_some() {
             // `changed` covers this request's change only.
-            crate::core_loop::xkb_layout::resync_xkb_announced(state, &*backend);
+            crate::core_loop::xkb_layout::resync_xkb_announced(state, backend);
             if let Some(group) = requested_group {
                 backend.set_locked_group(group);
             }
@@ -203,7 +203,7 @@ pub(super) fn handle_xkb_request(
             }
             crate::core_loop::xkb_layout::announce_xkb_state(
                 state,
-                &*backend,
+                backend,
                 crate::core_loop::xkb_layout::XkbStateCause {
                     keycode: 0,
                     event_type: 0,
@@ -226,7 +226,7 @@ pub(super) fn handle_xkb_request(
             backend.xkb_get_kbd_by_name(body, &mut intern)
         };
         if let Some((mut bytes, notify)) = kbn {
-            crate::core_loop::xkb_layout::resync_xkb_announced(state, &*backend);
+            crate::core_loop::xkb_layout::resync_xkb_announced(state, backend);
             stamp_reply_sequence(&mut bytes, byte_order, sequence);
             // Broadcast NewKeyboardNotify on a successful load, BEFORE writing
             // the reply (Xorg order is reply-then-notify, but the notify fans

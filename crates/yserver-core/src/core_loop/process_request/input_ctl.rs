@@ -632,7 +632,7 @@ pub(super) fn change_modifier_mapping(
         }
         return ModmapChangeOutcome::Success;
     };
-    crate::core_loop::xkb_layout::resync_xkb_announced(state, &*backend);
+    crate::core_loop::xkb_layout::resync_xkb_announced(state, backend);
     // The keymap is the one modifier map now: drop any stored readback.
     state.modifier_mapping_override = None;
     state.xi1_modifier_map.clear();
@@ -748,7 +748,7 @@ pub(super) fn apply_keymap_change(
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
     let change = backend.change_keyboard_mapping(first_keycode, kpk, &keysyms);
-    crate::core_loop::xkb_layout::resync_xkb_announced(state, &*backend);
+    crate::core_loop::xkb_layout::resync_xkb_announced(state, backend);
     if change.is_none() {
         store_keymap_overrides(state, first_keycode, kpk, count, syms);
     }

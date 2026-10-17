@@ -698,6 +698,11 @@ pub trait Backend {
     fn current_xkb_mods(&self) -> (u8, u8, u8, u8) {
         (0, 0, 0, 0)
     }
+    /// The core keyboard's lit XKB indicators and the defined ones, `(Xorg
+    /// sli->effectiveState, namesPresent | mapsPresent)`. Default none.
+    fn xkb_indicators(&mut self) -> (u32, u32) {
+        (0, 0)
+    }
     fn composite_opcode(&self) -> Option<u8>;
     fn render_format_for_ynest_id(&self, ynest_fmt: u32) -> Option<u32>;
     fn ping(&mut self, origin: Option<OriginContext>) -> io::Result<()>;
