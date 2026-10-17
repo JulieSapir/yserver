@@ -6,6 +6,7 @@ use super::*;
 
 const EXPOSURE_AND_SUBSTRUCTURE: u32 = 0x0000_8000 | 0x0008_0000;
 const DAMAGE_MAJOR: u8 = 143;
+const COMPOSITE_MAJOR: u8 = 144;
 const DAMAGE_RAW: u8 = 0;
 const DAMAGE_NON_EMPTY: u8 = 3;
 
@@ -16,6 +17,7 @@ pub(super) type Fill = (i16, i16, u16, u16);
 #[derive(Clone, Copy)]
 pub(super) enum Bg {
     None,
+    ParentRelative,
     Pixel(u32),
 }
 
@@ -30,10 +32,11 @@ pub(super) struct Probe {
 }
 
 impl Probe {
+    /// The probe's observer: SubstructureNotify on root.
     pub(super) fn new() -> Self {
         let mut state = ServerState::new();
         let peer = install_client(&mut state, 1);
-        Self {
+        let mut probe = Self {
             state,
             backend: RecordingBackend::new(),
             peer,
@@ -41,7 +44,12 @@ impl Probe {
             damages: Vec::new(),
             next_xid: 0x0020_0001,
             sequence: 0,
-        }
+        };
+        let mut body = ROOT_WINDOW.0.to_le_bytes().to_vec();
+        body.extend_from_slice(&0x0800u32.to_le_bytes());
+        body.extend_from_slice(&0x0008_0000u32.to_le_bytes());
+        probe.request(2, 0, &body);
+        probe
     }
 
     pub(super) fn request(&mut self, opcode: u8, data: u8, body: &[u8]) {
@@ -96,6 +104,7 @@ impl Probe {
         body.extend_from_slice(&0u32.to_le_bytes()); // CopyFromParent visual
         let (mask, first) = match bg {
             Bg::None => (0x0001u32, 0u32),
+            Bg::ParentRelative => (0x0001, 1),
             Bg::Pixel(p) => (0x0002, p),
         };
         body.extend_from_slice(&(mask | 0x0200 | 0x0800).to_le_bytes());
@@ -113,6 +122,33 @@ impl Probe {
 
     pub(super) fn map_subwindows(&mut self, window: u32) {
         self.request(9, 0, &window.to_le_bytes());
+    }
+
+    /// COMPOSITE `RedirectSubwindows(window, Manual)`.
+    pub(super) fn redirect_subwindows(&mut self, window: u32) {
+        let mut body = window.to_le_bytes().to_vec();
+        body.extend_from_slice(&[1, 0, 0, 0]);
+        self.request(COMPOSITE_MAJOR, 2, &body);
+    }
+
+    /// Whether `window`'s storage was realized with its background paint.
+    pub(super) fn realized_painted(&self, window: u32) -> Option<bool> {
+        let host = self
+            .state
+            .resources
+            .window(ResourceId(window))?
+            .host_xid?
+            .as_raw();
+        self.backend
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|call| match call {
+                RecordedCall::RealizeWindowStorage(x) if *x == host => Some(true),
+                RecordedCall::RealizeWindowStorageUnpainted(x) if *x == host => Some(false),
+                _ => None,
+            })
     }
 
     pub(super) fn clear(&mut self, window: u32, rect: (i16, i16, u16, u16)) {
@@ -327,5 +363,96 @@ fn clear_area_paints_only_the_clip_list() {
         clear_area_case(Bg::None, true)
             .iter()
             .all(|(_, f)| f.is_empty())
+    );
+}
+
+/// Case 2 of the probe in comp mode: ParentRelative or pixel `K` (with
+/// ParentRelative `G`) under `P`, whose subwindows a Manual redirect holds;
+/// root's are redirected too. The map steps' events, and whether P, K, G
+/// were realized with their background paint.
+fn manual_parent_case(
+    k_bg: Bg,
+    map_parent_last: bool,
+    raw: bool,
+) -> (Vec<String>, [Option<bool>; 3]) {
+    let mut p = Probe::new();
+    p.redirect_subwindows(ROOT_WINDOW.0);
+    let pw = p.create("P", ROOT_WINDOW.0, (50, 50, 300, 200), Bg::Pixel(0x80_8080));
+    let k = p.create("K", pw, (20, 20, 120, 100), k_bg);
+    let g = p.create("G", k, (10, 10, 50, 40), Bg::ParentRelative);
+    p.map(g);
+    p.redirect_subwindows(pw);
+    p.watch_damage(pw, raw);
+    p.watch_damage(k, raw);
+    let _ = p.step();
+    let order = if map_parent_last { [k, pw] } else { [pw, k] };
+    let lines = order
+        .into_iter()
+        .map(|w| {
+            p.map(w);
+            p.step()
+        })
+        .collect();
+    (lines, [pw, k, g].map(|w| p.realized_painted(w)))
+}
+
+/// `compRedirectSubwindows` sets `inhibitBGPaint` on P (`composite/compalloc.c:404-411`)
+/// and `miPaintWindow` follows K's ParentRelative chain to it (`mi/miexpose.c:425-436`):
+/// neither is painted nor damaged. K draws into its own pixmap, so its paint
+/// never damages P.
+#[test]
+fn manual_redirect_parent_inhibits_parent_relative_children() {
+    const K_EXPOSES: &str = "Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) \
+                             Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0)";
+    let unpainted = [Some(false), Some(false), Some(false)];
+    assert_eq!(
+        manual_parent_case(Bg::ParentRelative, false, true),
+        (
+            vec![
+                "Map(P@root) Expose(P 0,0 300x200 c0)".to_string(),
+                format!("Map(K@P) {K_EXPOSES} Expose(G 0,0 50x40 c0)"),
+            ],
+            unpainted
+        )
+    );
+    assert_eq!(
+        manual_parent_case(Bg::ParentRelative, true, true),
+        (
+            vec![
+                "Map(K@P)".to_string(),
+                format!("Map(P@root) Expose(P 0,0 300x200 c0) {K_EXPOSES} Expose(G 0,0 50x40 c0)"),
+            ],
+            unpainted
+        )
+    );
+    let k_raw = "DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50)";
+    let painted_k = [Some(false), Some(true), Some(true)];
+    assert_eq!(
+        manual_parent_case(Bg::Pixel(0x20_50a0), false, true),
+        (
+            vec![
+                "Map(P@root) Expose(P 0,0 300x200 c0)".to_string(),
+                format!("Map(K@P) {k_raw} {K_EXPOSES} DmgR(K 10,10 50x40) Expose(G 0,0 50x40 c0)"),
+            ],
+            painted_k
+        )
+    );
+    assert_eq!(
+        manual_parent_case(Bg::Pixel(0x20_50a0), true, true).0[1],
+        format!(
+            "Map(P@root) Expose(P 0,0 300x200 c0) {k_raw} {K_EXPOSES} DmgR(K 10,10 50x40) \
+             Expose(G 0,0 50x40 c0)"
+        )
+    );
+    assert_eq!(
+        manual_parent_case(Bg::Pixel(0x20_50a0), false, false).0[1],
+        format!("Map(K@P) DmgN(K 0,0 120x100) {K_EXPOSES} Expose(G 0,0 50x40 c0)")
+    );
+    assert_eq!(
+        manual_parent_case(Bg::Pixel(0x20_50a0), true, false).0[1],
+        format!(
+            "Map(P@root) Expose(P 0,0 300x200 c0) DmgN(K 0,0 120x100) {K_EXPOSES} \
+             Expose(G 0,0 50x40 c0)"
+        )
     );
 }

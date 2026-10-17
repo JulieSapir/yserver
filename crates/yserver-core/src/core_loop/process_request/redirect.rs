@@ -414,7 +414,11 @@ pub(super) fn realize_storage_for_delta(
 ) {
     for window in &delta.became_viewable {
         if let Some(xid) = storage_lifecycle_host_xid(state, *window)
-            && let Err(err) = backend.realize_window_storage(origin, xid)
+            && let Err(err) = backend.realize_window_storage(
+                origin,
+                xid,
+                !super::background_paint_inhibited(state, *window),
+            )
         {
             log::warn!("realize_window_storage(0x{xid:x}) failed: {err}");
         }

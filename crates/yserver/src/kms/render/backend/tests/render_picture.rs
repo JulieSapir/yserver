@@ -789,7 +789,7 @@ fn root_and_cow_storage_never_go_through_the_lifecycle() {
     let cow_id = b.store.lookup(cow).expect("COW storage");
     for xid in [root, cow] {
         b.release_window_storage(None, xid).expect("release");
-        b.realize_window_storage(None, xid).expect("realize");
+        b.realize_window_storage(None, xid, true).expect("realize");
     }
     assert_eq!(
         b.store.lookup(root),

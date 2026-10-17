@@ -57,6 +57,8 @@ pub enum RecordedCall {
     MapSubwindow(u32),
     UnmapSubwindow(u32),
     RealizeWindowStorage(u32),
+    /// `realize_window_storage` with the background paint inhibited.
+    RealizeWindowStorageUnpainted(u32),
     ReleaseWindowStorage(u32),
     ConfigureSubwindow {
         host_xid: u32,
@@ -1528,8 +1530,13 @@ impl Backend for RecordingBackend {
         &mut self,
         _origin: Option<OriginContext>,
         host_xid: u32,
+        paint_background: bool,
     ) -> io::Result<()> {
-        self.record(RecordedCall::RealizeWindowStorage(host_xid));
+        self.record(if paint_background {
+            RecordedCall::RealizeWindowStorage(host_xid)
+        } else {
+            RecordedCall::RealizeWindowStorageUnpainted(host_xid)
+        });
         Ok(())
     }
 

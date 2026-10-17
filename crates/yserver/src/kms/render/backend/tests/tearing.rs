@@ -1078,7 +1078,7 @@ fn materialize_test_cow_stage(
         .expect("COW stage resource")
         .host_xid = Some(stage_handle);
     let _ = state.resources.map_window(window_resource);
-    Backend::realize_window_storage(backend, None, stage_handle.as_raw())
+    Backend::realize_window_storage(backend, None, stage_handle.as_raw(), true)
         .expect("realize COW stage storage");
     Backend::map_subwindow(backend, None, stage_handle.as_raw()).expect("map COW stage");
     Backend::register_subwindow(backend, None, window_resource, stage_handle.as_raw())

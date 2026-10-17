@@ -381,6 +381,12 @@ pub fn accumulate_damage_to_state(
     // of the loop terminates the walk before the first step.
     let mut current = drawable;
     for _ in 0..ANCESTOR_WALK_MAX_DEPTH {
+        // A redirected window draws into its own pixmap, whose damage list
+        // its ancestors are not on (`getDrawableDamageRef`,
+        // `miext/damage/damage.c:86-110`).
+        if state.composite_redirects.window_mode(current).is_some() {
+            break;
+        }
         // Look up the current window's own offset + parent. A
         // missing window is the loop termination for pixmaps and
         // for any path that strays off the tree.

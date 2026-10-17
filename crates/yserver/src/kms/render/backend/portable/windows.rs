@@ -1925,6 +1925,7 @@ impl<P: Platform> XBackend<P> {
         &mut self,
         _origin: Option<OriginContext>,
         host_xid: u32,
+        paint_background: bool,
     ) -> io::Result<()> {
         if self.storage_lifecycle_exempt(host_xid) {
             return Ok(());
@@ -1938,8 +1939,9 @@ impl<P: Platform> XBackend<P> {
         if let Some(id) = leaf {
             self.store.set_scene_participating(id, geom.mapped);
         }
-        // Xorg miPaintWindow on RealizeTree: tile the background wherever the window paints.
-        if geom.bg_pixel.is_some() || geom.bg_pixmap.is_some() {
+        // Xorg miPaintWindow on RealizeTree: tile the background wherever the window paints,
+        // unless `inhibitBGPaint` (`mi/miexpose.c:435`) leaves it as a None background.
+        if paint_background && (geom.bg_pixel.is_some() || geom.bg_pixmap.is_some()) {
             if let Err(e) = self.clear_window_area_with_background(
                 host_xid,
                 geom.bg_pixel.unwrap_or(0),

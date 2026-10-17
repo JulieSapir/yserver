@@ -97,7 +97,7 @@ fn create_window(b: &mut XBackend<SurfacePlatform>) -> u32 {
         .expect("create_subwindow");
     let xid = window.as_raw();
     b.map_subwindow(None, xid).expect("map");
-    b.realize_window_storage(None, xid).expect("realize");
+    b.realize_window_storage(None, xid, true).expect("realize");
     // The core's stacking sync, which these tests have no core for.
     b.core.top_level_order.push(xid);
     xid
@@ -159,6 +159,65 @@ fn headless_backend_fills_a_window_and_reads_it_back() {
     let at = |x: usize, y: usize| &pixels[(y * 8 + x) * 4..(y * 8 + x) * 4 + 3];
     assert_eq!(at(3, 3), [0x00, 0x00, 0xFF], "inside the fill is red");
     assert_ne!(at(0, 0), [0x00, 0x00, 0xFF], "outside the fill is not");
+}
+
+/// A child of `parent` at `rect` with background `pixel`, mapped and realized
+/// with or without its background paint.
+fn create_child(
+    b: &mut XBackend<SurfacePlatform>,
+    parent: u32,
+    rect: (i16, i16, u16, u16),
+    pixel: u32,
+    paint_background: bool,
+) -> u32 {
+    let window = b
+        .create_subwindow(
+            None,
+            WindowHandle::from_raw(parent).expect("parent"),
+            rect.0,
+            rect.1,
+            rect.2,
+            rect.3,
+            0,
+            HostSubwindowVisual::Explicit {
+                depth: 24,
+                visual_xid: 0,
+                colormap_xid: 0,
+            },
+            Some(pixel),
+            None,
+        )
+        .expect("create_subwindow");
+    let xid = window.as_raw();
+    b.map_subwindow(None, xid).expect("map");
+    b.realize_window_storage(None, xid, paint_background)
+        .expect("realize");
+    xid
+}
+
+/// Xorg's `inhibitBGPaint` (`mi/miexpose.c:435`): a window realized without
+/// its background paint shows its parent's pixels, not its background.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn realize_without_background_paint_shows_the_parent() {
+    let Some(mut b) = headless_or_skip() else {
+        return;
+    };
+    let top = create_window(&mut b);
+    fill(&mut b, top, 0x00FF_0000, (0, 0, 8, 8));
+    let painted = create_child(&mut b, top, (0, 0, 4, 4), 0x0080_8080, true);
+    let inhibited = create_child(&mut b, top, (4, 4, 4, 4), 0x0080_8080, false);
+    b.maybe_composite().expect("compose over no outputs");
+
+    let first_pixel = |b: &mut XBackend<SurfacePlatform>, xid: u32| {
+        let reply = b
+            .get_image(None, xid, 2, 0, 0, 4, 4, !0)
+            .expect("get_image")
+            .expect("reply");
+        reply[32..35].to_vec()
+    };
+    assert_eq!(first_pixel(&mut b, painted), [0x80, 0x80, 0x80]);
+    assert_eq!(first_pixel(&mut b, inhibited), [0x00, 0x00, 0xFF]);
 }
 
 /// A backend with one 64x48 headless-surface output, its clock and link.
