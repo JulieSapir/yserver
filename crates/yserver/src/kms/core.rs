@@ -161,6 +161,33 @@ fn locked_real_mods(state: &xkbcommon::xkb::State, keymap: &xkbcommon::xkb::Keym
         .fold(0u8, |mask, (bit, _)| mask | (1 << bit))
 }
 
+/// The real modifiers releasing the `held` keys unlocks in `state` (which
+/// it consumes: the keys end up released).
+fn release_unlocks(
+    state: &mut xkbcommon::xkb::State,
+    keymap: &xkbcommon::xkb::Keymap,
+    held: &[u8],
+) -> u8 {
+    held.iter().fold(0, |unlocked, &kc| {
+        let before = locked_real_mods(state, keymap);
+        state.update_key(
+            xkbcommon::xkb::Keycode::new(u32::from(kc)),
+            xkbcommon::xkb::KeyDirection::Up,
+        );
+        unlocked | (before & !locked_real_mods(state, keymap))
+    })
+}
+
+/// The real modifiers a press of `kc` locks in a fresh state of `keymap`.
+fn press_locks(keymap: &xkbcommon::xkb::Keymap, kc: u8) -> u8 {
+    let mut probe = fresh_state(keymap);
+    probe.update_key(
+        xkbcommon::xkb::Keycode::new(u32::from(kc)),
+        xkbcommon::xkb::KeyDirection::Down,
+    );
+    locked_real_mods(&probe, keymap)
+}
+
 fn press_release_key(state: &mut xkbcommon::xkb::State, kc: u8) {
     let key = xkbcommon::xkb::Keycode::new(u32::from(kc));
     state.update_key(key, xkbcommon::xkb::KeyDirection::Down);
@@ -2804,16 +2831,10 @@ impl KmsCore {
     /// reloads, even for its own base RMLVO: Xorg reloads on every
     /// `setxkbmap`, which is how a user undoes an `xmodmap`.
     ///
-    /// A fresh `xkb_state` is built, then every physically-held key in
-    /// `down_keys` is re-applied to it. The layout switch is typically
-    /// triggered by a *hotkey* still held at swap time; without re-applying,
-    /// the new state's modifier/group tracking diverges from the physical
-    /// keyboard (the stuck-modifier class seen on the VT path).
-    ///
-    /// LIMITATION (deliberate): *locked* state (Caps Lock, a locked group)
-    /// is reset by the rebuild — only physically-held keys are re-asserted.
-    /// This matches the VT-acquire path's fresh-state behavior. (An in-place
-    /// edit, [`Self::install_desc`], does carry the locks, by replay.)
+    /// The keyboard state carries across as Xorg's does
+    /// (`xorg-xkb-locks.txt`): the locked real modifiers and the held keys,
+    /// each held key still acting on its release as it would have
+    /// ([`Self::swap_keymap`]).
     pub(crate) fn recompile_keymap(&mut self, rmlvo: &XkbRmlvo) -> Option<(u8, u8)> {
         if self.keymap_is_pristine(rmlvo) {
             return None;
@@ -2850,7 +2871,8 @@ impl KmsCore {
         let (desc, text, cooking) = cooking_keymap_for(ctx, keymap, rmlvo);
         self.xkb_desc = desc;
         self.xkb_text = text;
-        self.swap_keymap(cooking, 0);
+        let locked = locked_real_mods(&self.xkb_state.0, &self.xkb_keymap.0);
+        self.swap_keymap(cooking, locked);
         self.xkb_rmlvo = rmlvo.clone();
         self.keymap_source = KeymapSource::Rmlvo;
         log::info!(
@@ -2916,20 +2938,31 @@ impl KmsCore {
     }
 
     /// Replace keymap and state: a fresh state with the real modifiers
-    /// `relock` locked again, then every held key in `down_keys` re-applied
-    /// (locks first, so the replay happens on a neutral keyboard).
+    /// `relock` locked again and every held key in `down_keys` re-pressed.
+    ///
+    /// Xorg keeps each held key's action across a reload: a lock key whose
+    /// press locked keeps the lock on release, one pressed while locked
+    /// unlocks on release (`xorg-xkb-locks.txt`, `reload-*-held*`). A
+    /// libxkbcommon `LockMods` press unlocks on release iff the lock was
+    /// already set, so a held key's lock is restored before its replay only
+    /// when its release would undo it, as read off the old state.
     fn swap_keymap(&mut self, keymap: xkbcommon::xkb::Keymap, relock: u8) {
+        let mut held: Vec<u8> = self.down_keys.iter().copied().collect();
+        held.sort_unstable();
+        let unlocking = release_unlocks(&mut self.xkb_state.0, &self.xkb_keymap.0, &held);
+        let held_locks = held.iter().fold(0, |m, &kc| m | press_locks(&keymap, kc)) & !unlocking;
         let mut new_state = fresh_state(&keymap);
+        let _ = relock_real_mods(&mut new_state, &keymap, relock & !held_locks);
+        for &kc in &held {
+            new_state.update_key(
+                xkbcommon::xkb::Keycode::new(u32::from(kc)),
+                xkbcommon::xkb::KeyDirection::Down,
+            );
+        }
         let dropped = relock_real_mods(&mut new_state, &keymap, relock);
         if dropped != 0 {
             log::info!(
                 "xkb: locked modifiers {dropped:#04x} have no lock key in the new keymap; released"
-            );
-        }
-        for kc in &self.down_keys {
-            new_state.update_key(
-                xkbcommon::xkb::Keycode::new(u32::from(*kc)),
-                xkbcommon::xkb::KeyDirection::Down,
             );
         }
         self.xkb_state = XkbState(new_state);
@@ -3157,8 +3190,9 @@ mod xkb_rmlvo_tests {
         assert_eq!(core.locked_group, 0, "group 2 no longer exists");
     }
 
+    /// Xorg: `xorg-xkb-locks.txt`, `reload-capslock-key`.
     #[test]
-    fn rmlvo_swap_still_resets_locks() {
+    fn rmlvo_swap_keeps_locks() {
         let mut core = KmsCore::for_tests();
         press_release(&mut core, 66);
         assert!(locked(&core, "Lock"), "precondition");
@@ -3167,10 +3201,7 @@ mod xkb_rmlvo_tests {
             ..XkbRmlvo::default()
         });
         assert!(changed.is_some());
-        assert!(
-            !locked(&core, "Lock"),
-            "a full reload starts from a fresh state"
-        );
+        assert!(locked(&core, "Lock"), "a full reload keeps the lock");
     }
 
     #[test]

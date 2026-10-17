@@ -23,6 +23,7 @@ mod xi_grabs_classes;
 mod xi_hotplug_session;
 mod xi_xtest;
 mod xkb;
+mod xkb_locks;
 mod xkb_repeat_controls;
 
 use super::{

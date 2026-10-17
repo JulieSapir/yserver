@@ -23,6 +23,9 @@
  *
  * Usage:
  *   xkb-mutation-probe [-d DISPLAY] [-x] STEP [STEP ...]
+ * -s DETAILS adds a fourth connection, the STATE LISTENER: XkbUseExtension
+ * + XkbSelectEvents(StateNotify only, the given StateNotify details, hex);
+ * its events print as 'e xkbs ...'.
  * -x (extended) also snapshots GetCompatMap / GetIndicatorMap / GetNames /
  * the GetGeometry header after every step and prints their delta (see
  * "Extended output" below).
@@ -49,6 +52,15 @@
  *                                     major=M minor=N'
  *   xreq0:FILE                        as xreq:, but sent on a fresh connection
  *                                     that never called XkbUseExtension
+ *   lock:AFFECT:MODS                  the actor (after its XkbUseExtension)
+ *                                     sends XkbLatchLockState with only
+ *                                     affectModLocks/modLocks (hex), as
+ *                                     XkbLockModifiers does
+ *   lockgroup:N                       XkbLatchLockState with only lockGroup
+ *                                     and groupLock N, as XkbLockGroup does
+ *   state                             print GetState and GetIndicatorState
+ *                                     (on the XKB listener) as one '= state'
+ *                                     line, no step taken
  *   full                              (-x) print the whole current state as
  *                                     '= ' lines, no step taken
  *   total                             diff the current map against the map
@@ -125,7 +137,7 @@
 #define ALL_MAP 0xff
 #define ALL_EVENTS 0x0fff
 
-static xcb_connection_t *xl, *cl, *ac;
+static xcb_connection_t *xl, *cl, *ac, *sl;
 static uint8_t xkb_event_base;
 
 static void die(const char *m)
@@ -716,8 +728,7 @@ static void send_raw_xkb(xcb_connection_t *c, const char *path)
     report_xkb_error(xcb_request_check(c, ck));
 }
 
-/* xreq: on the actor, after its XkbUseExtension */
-static void send_xkb_request(const char *path)
+static void actor_use_xkb(void)
 {
     if (!actor_xkb_ready) {
         xcb_xkb_use_extension_reply_t *ue =
@@ -727,7 +738,32 @@ static void send_xkb_request(const char *path)
         free(ue);
         actor_xkb_ready = 1;
     }
+}
+
+/* xreq: on the actor, after its XkbUseExtension */
+static void send_xkb_request(const char *path)
+{
+    actor_use_xkb();
     send_raw_xkb(ac, path);
+}
+
+/* GetState + GetIndicatorState on the XKB listener */
+static void print_state(void)
+{
+    xcb_xkb_get_state_reply_t *r =
+        xcb_xkb_get_state_reply(xl, xcb_xkb_get_state(xl, DEV_CORE), NULL);
+    xcb_xkb_get_indicator_state_reply_t *ir = xcb_xkb_get_indicator_state_reply(
+        xl, xcb_xkb_get_indicator_state(xl, DEV_CORE), NULL);
+    if (!r || !ir)
+        die("GetState / GetIndicatorState failed");
+    printf("= state mods=0x%02x base=0x%02x latched=0x%02x locked=0x%02x group=%d baseGroup=%d "
+           "latchedGroup=%d lockedGroup=%d compat=0x%02x grab=0x%02x compatGrab=0x%02x "
+           "lookup=0x%02x compatLookup=0x%02x ptrBtn=0x%04x indicators=0x%08x\n",
+           r->mods, r->baseMods, r->latchedMods, r->lockedMods, r->group, r->baseGroup,
+           r->latchedGroup, r->lockedGroup, r->compatState, r->grabMods, r->compatGrabMods,
+           r->lookupMods, r->compatLookupMods, r->ptrBtnState, ir->state);
+    free(r);
+    free(ir);
 }
 
 static xcb_connection_t *open_conn(const char *d);
@@ -803,23 +839,24 @@ static unsigned u32(const uint8_t *e, int o)
     return e[o] | e[o + 1] << 8 | e[o + 2] << 16 | (unsigned)e[o + 3] << 24;
 }
 
-static void print_xkb_event(const uint8_t *e)
+static void print_xkb_event(const char *who, const uint8_t *e)
 {
+    printf("e %s ", who);
     switch (e[1]) {
     case 0:
-        printf("e xkb NewKeyboardNotify dev=%d oldDev=%d min=%d max=%d oldMin=%d oldMax=%d "
+        printf("NewKeyboardNotify dev=%d oldDev=%d min=%d max=%d oldMin=%d oldMax=%d "
                "req=%d.%d changed=0x%04x",
                e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15], u16(e, 16));
         break;
     case 1:
-        printf("e xkb MapNotify dev=%d ptrBtnActions=%d changed=0x%04x min=%d max=%d "
+        printf("MapNotify dev=%d ptrBtnActions=%d changed=0x%04x min=%d max=%d "
                "types=%d+%d syms=%d+%d acts=%d+%d beh=%d+%d expl=%d+%d modmap=%d+%d "
                "vmodmap=%d+%d vmods=0x%04x",
                e[8], e[9], u16(e, 10), e[12], e[13], e[14], e[15], e[16], e[17], e[18], e[19],
                e[20], e[21], e[22], e[23], e[24], e[25], e[26], e[27], u16(e, 28));
         break;
     case 2:
-        printf("e xkb StateNotify dev=%d mods=0x%02x base=0x%02x latched=0x%02x locked=0x%02x "
+        printf("StateNotify dev=%d mods=0x%02x base=0x%02x latched=0x%02x locked=0x%02x "
                "group=%d baseGroup=%d latchedGroup=%d lockedGroup=%d compat=0x%02x "
                "grab=0x%02x compatGrab=0x%02x lookup=0x%02x compatLookup=0x%02x "
                "ptrBtn=0x%04x changed=0x%04x keycode=%d eventType=%d req=%d.%d",
@@ -828,29 +865,29 @@ static void print_xkb_event(const uint8_t *e)
                u16(e, 26), e[28], e[29], e[30], e[31]);
         break;
     case 3:
-        printf("e xkb ControlsNotify dev=%d numGroups=%d changed=0x%08x enabled=0x%08x "
+        printf("ControlsNotify dev=%d numGroups=%d changed=0x%08x enabled=0x%08x "
                "enabledChanges=0x%08x keycode=%d eventType=%d req=%d.%d",
                e[8], e[9], u32(e, 12), u32(e, 16), u32(e, 20), e[24], e[25], e[26], e[27]);
         break;
     case 4:
     case 5:
-        printf("e xkb %s dev=%d state=0x%08x changed=0x%08x",
+        printf("%s dev=%d state=0x%08x changed=0x%08x",
                e[1] == 4 ? "IndicatorStateNotify" : "IndicatorMapNotify", e[8], u32(e, 12),
                u32(e, 16));
         break;
     case 6:
-        printf("e xkb NamesNotify dev=%d changed=0x%04x types=%d+%d levelNames=%d+%d "
+        printf("NamesNotify dev=%d changed=0x%04x types=%d+%d levelNames=%d+%d "
                "nRadioGroups=%d nKeyAliases=%d changedGroupNames=0x%02x changedVMods=0x%04x "
                "keys=%d+%d changedIndicators=0x%08x",
                e[8], u16(e, 10), e[12], e[13], e[14], e[15], e[17], e[18], e[19], u16(e, 20),
                e[22], e[23], u32(e, 24));
         break;
     case 7:
-        printf("e xkb CompatMapNotify dev=%d changedGroups=0x%02x si=%d+%d totalSI=%d", e[8],
+        printf("CompatMapNotify dev=%d changedGroups=0x%02x si=%d+%d totalSI=%d", e[8],
                e[9], u16(e, 10), u16(e, 12), u16(e, 14));
         break;
     default:
-        printf("e xkb xkbType=%d dev=%d", e[1], e[8]);
+        printf("xkbType=%d dev=%d", e[1], e[8]);
         break;
     }
     hex32(e);
@@ -875,10 +912,21 @@ static void drain(void)
     while ((ev = xcb_poll_for_queued_event(xl))) {
         const uint8_t *e = (const uint8_t *)ev;
         if ((e[0] & 0x7f) == xkb_event_base)
-            print_xkb_event(e);
+            print_xkb_event("xkb", e);
         else
             print_core_event("xkbl", e);
         free(ev);
+    }
+    if (sl) {
+        free(xcb_get_input_focus_reply(sl, xcb_get_input_focus(sl), NULL));
+        while ((ev = xcb_poll_for_queued_event(sl))) {
+            const uint8_t *e = (const uint8_t *)ev;
+            if ((e[0] & 0x7f) == xkb_event_base)
+                print_xkb_event("xkbs", e);
+            else
+                print_core_event("xkbs core", e);
+            free(ev);
+        }
     }
     while ((ev = xcb_poll_for_queued_event(cl))) {
         print_core_event("core", (const uint8_t *)ev);
@@ -1050,6 +1098,15 @@ static void step(char *arg)
         send_smm(kpm, kc);
     } else if (!strcmp(f[0], "smmx") && n == 2) {
         smmx(f[1]);
+    } else if (!strcmp(f[0], "lock") && n == 3) {
+        actor_use_xkb();
+        report_xkb_error(xcb_request_check(
+            ac, xcb_xkb_latch_lock_state_checked(ac, DEV_CORE, strtoul(f[1], NULL, 16),
+                                                 strtoul(f[2], NULL, 16), 0, 0, 0, 0, 0)));
+    } else if (!strcmp(f[0], "lockgroup") && n == 2) {
+        actor_use_xkb();
+        report_xkb_error(xcb_request_check(
+            ac, xcb_xkb_latch_lock_state_checked(ac, DEV_CORE, 0, 0, 1, atoi(f[1]), 0, 0, 0)));
     } else if ((!strcmp(f[0], "down") || !strcmp(f[0], "up")) && n == 2) {
         uint8_t type = !strcmp(f[0], "down") ? XCB_KEY_PRESS : XCB_KEY_RELEASE;
         report_error(xcb_request_check(
@@ -1076,12 +1133,17 @@ int main(int argc, char **argv)
         disp = argv[2];
         i = 3;
     }
+    long state_details = -1;
+    if (i + 1 < argc && !strcmp(argv[i], "-s")) {
+        state_details = strtol(argv[i + 1], NULL, 16);
+        i += 2;
+    }
     if (i < argc && !strcmp(argv[i], "-x")) {
         extended = 1;
         i++;
     }
     if (i >= argc)
-        die("usage: xkb-mutation-probe [-d DISPLAY] [-x] STEP...");
+        die("usage: xkb-mutation-probe [-d DISPLAY] [-s DETAILS] [-x] STEP...");
     display_name = disp;
     xl = open_conn(disp);
     cl = open_conn(disp);
@@ -1102,6 +1164,20 @@ int main(int argc, char **argv)
                                           ALL_MAP, NULL));
     if (err)
         die("SelectEvents failed");
+    if (state_details >= 0) {
+        sl = open_conn(disp);
+        ue = xcb_xkb_use_extension_reply(sl, xcb_xkb_use_extension(sl, 1, 0), NULL);
+        if (!ue || !ue->supported)
+            die("state listener UseExtension failed");
+        free(ue);
+        xcb_xkb_select_events_details_t d = {.affectState = 0x3fff,
+                                             .stateDetails = (uint16_t)state_details};
+        err = xcb_request_check(
+            sl, xcb_xkb_select_events_aux_checked(sl, DEV_CORE, XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
+                                                  0, 0, 0, 0, &d));
+        if (err)
+            die("state listener SelectEvents failed");
+    }
     /* make sure the core listener is known to the server as a client with the
      * root window's default event delivery (MappingNotify goes to all) */
     free(xcb_get_input_focus_reply(cl, xcb_get_input_focus(cl), NULL));
@@ -1122,6 +1198,11 @@ int main(int argc, char **argv)
             diff_snap(&first, &before);
             if (extended)
                 diff_xsnap(&xfirst, &xbefore);
+            continue;
+        }
+        if (!strcmp(argv[i], "state")) {
+            printf("> state\n");
+            print_state();
             continue;
         }
         if (!strcmp(argv[i], "full")) {
@@ -1153,5 +1234,7 @@ int main(int argc, char **argv)
     xcb_disconnect(ac);
     xcb_disconnect(cl);
     xcb_disconnect(xl);
+    if (sl)
+        xcb_disconnect(sl);
     return 0;
 }

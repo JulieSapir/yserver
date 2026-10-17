@@ -16,6 +16,7 @@
 #   crates/yserver/src/kms/testdata/xkb-setcompat/NAME.bin
 #   crates/yserver/src/kms/testdata/xorg-xkb-setnames.txt
 #   crates/yserver/src/kms/testdata/xkb-setnames/NAME.bin
+#   crates/yserver/src/kms/testdata/xorg-xkb-locks.txt
 #
 # Every value in those files is Xvfb output recorded by tools/xkb-mutation-probe.c
 # (or x11trace). Never hand-edit them; rerun this script.
@@ -25,7 +26,7 @@
 # (x11trace's fake display); both must be free. Only the Xvfb this script
 # starts is ever killed (by pid).
 #
-# usage: tools/xkb-mutation-goldens.sh [ckm|smm|xkbcomp|repeat|pristine|steps|errors|resize|setcompat|setnames ...]   (default: all)
+# usage: tools/xkb-mutation-goldens.sh [ckm|smm|xkbcomp|repeat|pristine|steps|errors|resize|setcompat|setnames|locks ...]   (default: all)
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -1243,8 +1244,66 @@ gen_setnames() {
     rm "$dir/cases.txt"
 }
 
+locks_case() { # NAME DETAILS WHAT STEP...
+    local name=$1 details=$2 what=$3
+    shift 3
+    fresh gb
+    echo "## case $name: -s $details: $what"
+    "$PROBE" -d ":$DISP" -s "$details" "$@" | grep -v '^[-+] \|^coremodmap '
+    stop_x
+}
+
+gen_locks() {
+    local out=$TD/xorg-xkb-locks.txt
+    local r="run:setxkbmap -display :$DISP -rules evdev -model pc105 -layout"
+    {
+        echo "# Xorg's XKB lock state across keymap reloads, and its state/indicator notifies (issue #253):"
+        echo "# Xvfb -noreset, fresh server per case, layout=gb"
+        versions
+        echo "# each case: setxkbmap -rules evdev -model pc105 -layout gb; then tools/xkb-mutation-probe.c"
+        echo "# -s DETAILS with the case's steps: lock:AFFECT:MODS = XkbLockModifiers, lockgroup:N ="
+        echo "# XkbLockGroup, down/up = XTEST, 'run:setxkbmap ... -layout L' = a reload (XkbGetKbdByName),"
+        echo "# state = GetState + GetIndicatorState (Xorg's GetState leaves grab/lookup 0). 'e xkb' is a"
+        echo "# listener selecting everything, 'e xkbs' one selecting only StateNotify with DETAILS. The"
+        echo "# probe's per-key map diff and coremodmap lines are filtered out. In raw event hex the"
+        echo "# sequence number (bytes 2-3) and time (4-7) differ between runs."
+        locks_case reload-numlock-lockmods 08 "NumLock locked by request, reload to de, then Caps Lock pressed and released" \
+            lock:10:10 state "$r de" state down:66 up:66 state
+        locks_case reload-numlock-lockmods-same 08 "NumLock locked by request, reload to the same layout" \
+            lock:10:10 state "$r gb" state
+        locks_case reload-capslock-lockmods 08 "Caps Lock locked by request, reload to de, then its key unlocks" \
+            lock:02:02 state "$r de" state down:66 up:66 state
+        locks_case reload-numlock-key 08 "NumLock locked by its key, reload, then the key unlocks" \
+            down:77 up:77 state "$r de" state down:77 up:77 state
+        locks_case reload-capslock-key 08 "Caps Lock locked by its key, reload, then the key unlocks" \
+            down:66 up:66 state "$r de" state down:66 up:66 state
+        locks_case reload-numlock-held 08 "NumLock key held (its press locked) across the reload, then released" \
+            down:77 state "$r de" state up:77 state
+        locks_case reload-numlock-held-unlocking 08 "NumLock locked, its key pressed again and held across the reload, then released" \
+            down:77 up:77 down:77 state "$r de" state up:77 state
+        locks_case reload-capslock-held 08 "Caps Lock key held (its press locked) across the reload, then released" \
+            down:66 state "$r de" state up:66 state
+        locks_case reload-capslock-held-unlocking 08 "Caps Lock locked, its key pressed again and held across the reload, then released" \
+            down:66 up:66 down:66 state "$r de" state up:66 state
+        locks_case reload-group-lock 08 "group 2 locked, reload to two groups, then to one" \
+            "$r gb,de" lockgroup:1 state "$r us,ru" state "$r de" state
+        locks_case key-caps-lockdetail 08 "Caps Lock pressed and released twice" \
+            state down:66 up:66 down:66 up:66 state
+        locks_case key-caps-basedetail 02 "Caps Lock pressed and released twice" \
+            down:66 up:66 down:66 up:66
+        locks_case key-shift-lockdetail 08 "Shift pressed and released" \
+            down:50 up:50 state
+        locks_case key-shift-numlock 08 "NumLock pressed and released while Shift is held, then alone" \
+            down:50 down:77 up:77 up:50 down:77 up:77 state
+        locks_case lockmods-numlock 01 "NumLock locked, locked again (no change), unlocked" \
+            lock:10:10 lock:10:10 lock:10:00 state
+        locks_case lockmods-latchdetail 04 "NumLock then Caps Lock locked by request" \
+            lock:10:10 lock:02:02 state
+    } >"$out"
+}
+
 targets=("$@")
-[ ${#targets[@]} -eq 0 ] && targets=(ckm smm xkbcomp repeat pristine steps errors resize setcompat setnames)
+[ ${#targets[@]} -eq 0 ] && targets=(ckm smm xkbcomp repeat pristine steps errors resize setcompat setnames locks)
 for t in "${targets[@]}"; do
     "gen_$t"
 done

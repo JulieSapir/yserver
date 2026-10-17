@@ -1006,7 +1006,7 @@ impl<P: Platform> XBackend<P> {
             variant: variant.to_string(),
             options: options.map(str::to_string),
         })?;
-        // The reload starts from a fresh state (locks released).
+        // The new keymap may light (or drop) other indicators.
         self.sync_keyboard_leds();
         Some(range)
     }
@@ -1060,7 +1060,7 @@ impl<P: Platform> XBackend<P> {
             Some((min, max)) => {
                 // New map -> group 0 active until the next LatchLockState.
                 self.core.locked_group = 0;
-                // Fresh state: locks released.
+                // The new keymap may light (or drop) other indicators.
                 self.sync_keyboard_leds();
                 KeymapLoad::Loaded {
                     min_keycode: min,

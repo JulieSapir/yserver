@@ -2857,10 +2857,10 @@ fn caps_as_control(b: &mut KmsBackend) {
     let _ = b.apply_modifier_mapping(&modmap);
 }
 
-/// A full RMLVO reload starts from a fresh state (Caps Lock off), so
-/// the keyboard LEDs must follow right away, not on the next key.
+/// A full RMLVO reload keeps Caps Lock and its LED (Xorg:
+/// `xorg-xkb-locks.txt`, `reload-capslock-key`).
 #[test]
-fn rmlvo_reload_resyncs_the_lock_leds() {
+fn rmlvo_reload_keeps_the_lock_and_its_led() {
     use yserver_core::backend::Backend;
     let mut b = KmsBackend::for_tests();
     let _ = b.cook_host_key(caps_key(true));
@@ -2874,8 +2874,16 @@ fn rmlvo_reload_resyncs_the_lock_leds() {
         b.set_keymap_rmlvo("evdev", "pc105", "de", "", None)
             .is_some()
     );
-    assert_eq!(b.current_led_bits(), 0, "fresh state");
-    assert_eq!(b.pstate.leds_sent, 0, "LEDs resynced by the reload");
+    assert_eq!(
+        b.current_led_bits(),
+        input::Led::CAPSLOCK.bits(),
+        "Caps Lock kept"
+    );
+    assert_eq!(
+        b.pstate.leds_sent,
+        input::Led::CAPSLOCK.bits(),
+        "LED kept by the reload"
+    );
 }
 
 /// An edit carries Caps Lock across, but when the edit takes away the
