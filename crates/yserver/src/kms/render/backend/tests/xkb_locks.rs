@@ -261,6 +261,24 @@ fn keyboard_state_matches_xorg() {
                     ));
                 }
             }
+            // The keyboard LEDs follow the indicators by index: bit 0 Caps
+            // Lock, bit 1 Num Lock, bit 2 Scroll Lock.
+            let indicators = locks_field(xorg, "indicators");
+            let leds = [
+                input::Led::CAPSLOCK,
+                input::Led::NUMLOCK,
+                input::Led::SCROLLLOCK,
+            ]
+            .into_iter()
+            .enumerate()
+            .filter(|(bit, _)| indicators & (1 << bit) != 0)
+            .fold(0, |acc, (_, led)| acc | led.bits());
+            if server.backend.pstate.leds_sent != leds {
+                failures.push(format!(
+                    "{} step {i}: LEDs {:#x}, expected {leds:#x}",
+                    case.name, server.backend.pstate.leds_sent
+                ));
+            }
             checked += 1;
         }
     }

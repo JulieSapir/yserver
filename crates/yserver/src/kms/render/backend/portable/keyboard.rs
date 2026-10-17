@@ -333,11 +333,12 @@ impl<P: Platform> XBackend<P> {
 
     /// Push the XKB lock-LED state (Caps/Num/Scroll) to the keyboards
     /// when it changed. On a KMS server nothing else drives the LEDs —
-    /// Xorg's keyboard driver does this via the XKB indicator state;
-    /// we do it via `libinput_device_led_update`. The update crosses to the
-    /// input thread via the `LedRelay` eventfd.
+    /// Xorg's keyboard driver does this from the effective indicator state
+    /// (`XkbDDXUpdateDeviceIndicators(.., sli->effectiveState)`,
+    /// `xkb/xkbLEDs.c:755`); we do it via `libinput_device_led_update`. The
+    /// update crosses to the input thread via the `LedRelay` eventfd.
     pub(in crate::kms::render::backend) fn sync_keyboard_leds(&mut self) {
-        let lit = self.lit_indicators();
+        let (lit, _) = self.effective_indicators();
         P::set_keyboard_leds(&mut self.pstate, lit);
     }
 
