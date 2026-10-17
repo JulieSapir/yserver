@@ -1278,6 +1278,8 @@ pub struct ServerState {
     /// (Task 19) lives on the KMS backend's `dri3_sync_resources` map.
     pub sync_fences: HashMap<u32, SyncFence>,
     pub damage_objects: HashMap<u32, DamageObject>,
+    /// Clock for [`DamageObject::list_pos`] and [`DamageObject::created`].
+    pub damage_list_clock: u64,
     /// A real DamageNotify was queued after backend drawing. Before client
     /// output is allowed to drain, the core asks the backend to submit that
     /// drawing so an external compositor cannot sample ahead of it.
@@ -1819,6 +1821,7 @@ impl ServerState {
             idletime_last_evaluated: HashMap::new(),
             sync_fences: HashMap::new(),
             damage_objects: HashMap::new(),
+            damage_list_clock: 0,
             damage_notify_flush_pending: false,
             composite_redirects: crate::composite_redirects::CompositeRedirects::default(),
             present_event_selections: HashMap::new(),
@@ -2794,6 +2797,13 @@ pub struct DamageObject {
     /// the area is still coalesced. Tracking the last report lets us
     /// emit a follow-up notify when geometry changes mid-cycle.
     pub last_reported_geometry: Option<x11::damage::Rectangle>,
+    /// Position in Xorg's per-pixmap damage list: higher is nearer the
+    /// head, which reports first (`damageRegionProcessPending`,
+    /// `miext/damage/damage.c:285-300`).
+    pub list_pos: u64,
+    /// Creation order: a window's damage list is newest first
+    /// (`DamageRegister`, `miext/damage/damage.c:1765-1773`).
+    pub created: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

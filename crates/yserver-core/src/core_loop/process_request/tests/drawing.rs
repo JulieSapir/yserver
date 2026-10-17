@@ -946,6 +946,8 @@ fn poly_fill_on_unmapped_window_records_no_damage() {
                 rects: Vec::new(),
                 pending_notify_fired: false,
                 last_reported_geometry: None,
+                list_pos: 0,
+                created: 0,
             },
         );
         let body = poly_fill_rectangle_body(window, UV_GC);

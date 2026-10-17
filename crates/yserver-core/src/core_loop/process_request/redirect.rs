@@ -120,6 +120,8 @@ pub(super) fn activate_redirect_backing_for(
                     depth: w_depth,
                 });
             }
+            // compAllocPixmap → compSetPixmap (`composite/compalloc.c:620`).
+            crate::core_loop::damage_fanout::move_window_damage_to_list_head(state, window);
             // YSERVER_TRAY_DEBUG: capture-side timeline for the systray
             // sliver/blank race — when each (socket) window's redirect
             // backing is allocated, its size, and the mode. Correlate
@@ -326,11 +328,8 @@ pub(super) fn damage_restored_window(
 ) {
     let region =
         crate::core_loop::clip_list::not_clipped_by_children_while(state, window, still_redirected);
-    for r in region {
-        let _dropped = crate::core_loop::damage_fanout::accumulate_damage_to_state(
-            state, window, r.x, r.y, r.width, r.height,
-        );
-    }
+    let _dropped =
+        crate::core_loop::damage_fanout::accumulate_damage_region_to_state(state, window, &region);
 }
 
 /// Point GLX pixmap `glx_xid` at `new_host`, moving its export-lifetime ref along (acquire NEW, release OLD).

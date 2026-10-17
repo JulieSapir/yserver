@@ -82,6 +82,8 @@ fn render_damage_fixture(
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 

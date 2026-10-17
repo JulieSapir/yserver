@@ -4569,6 +4569,8 @@ fn present_pixmap_update_region_emits_damage_on_destination_window() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     state.xfixes_regions.insert(
@@ -4699,6 +4701,8 @@ fn present_pixmap_synced_update_region_emits_damage_on_destination_window() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     state.xfixes_regions.insert(
@@ -5104,6 +5108,8 @@ fn present_to_unviewable_window_skips_copy_and_damage_but_completes() {
                 rects: Vec::new(),
                 pending_notify_fired: false,
                 last_reported_geometry: None,
+                list_pos: 0,
+                created: 0,
             },
         );
         let pending = SupersessionFixture::new(PRESENT_ID, WINDOW)

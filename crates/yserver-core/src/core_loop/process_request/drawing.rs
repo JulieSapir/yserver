@@ -1291,8 +1291,9 @@ fn finish_copy_exposures(
         };
         for r in &paint {
             backend.paint_window_background_rect(origin, dst_host, r.x, r.y, r.width, r.height)?;
-            let _dropped = accumulate_damage_to_state(state, dst, r.x, r.y, r.width, r.height);
         }
+        let _dropped =
+            crate::core_loop::damage_fanout::accumulate_damage_region_to_state(state, dst, &paint);
     }
     if graphics_exposures {
         let events: Vec<(i16, i16, u16, u16)> = rects

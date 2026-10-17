@@ -3,7 +3,7 @@ use crate::{
     core_loop::{
         damage_fanout::{
             accumulate_damage_border_to_state, accumulate_damage_full_to_state,
-            accumulate_damage_to_state,
+            accumulate_damage_region_to_state,
         },
         fanout::{
             emit_visibility_unobscured_subtree_to_state, emit_window_event_to_state,
@@ -159,8 +159,8 @@ pub(crate) fn paint_window_background(
             r.height,
             bg.tile_origin_offset,
         );
-        let _dropped = accumulate_damage_to_state(state, window, r.x, r.y, r.width, r.height);
     }
+    let _dropped = accumulate_damage_region_to_state(state, window, region);
 }
 
 /// The Expose events of windows becoming viewable: each of `tops`, then
@@ -183,10 +183,7 @@ fn send_map_exposures(
             if state.resources.window_resolved_background(w).is_some()
                 && !background_paint_inhibited(state, w)
             {
-                for r in &region {
-                    let _dropped =
-                        accumulate_damage_to_state(state, w, r.x, r.y, r.width, r.height);
-                }
+                let _dropped = accumulate_damage_region_to_state(state, w, &region);
             }
             send_window_exposures(state, backend, origin, w, &region, false);
         }
@@ -677,6 +674,8 @@ pub(super) fn handle_reparent_window(
             );
         }
     };
+    // compReparentWindow → compSetPixmap (`composite/compwindow.c:470-472`).
+    crate::core_loop::damage_fanout::move_window_damage_to_list_head(state, result.window);
     let on_window = subscribers_by_id(state, result.window, 0x0002_0000);
     let on_old_parent = subscribers_by_id(state, result.old_parent, 0x0008_0000);
     let on_new_parent = if result.old_parent == result.new_parent {

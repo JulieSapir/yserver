@@ -792,6 +792,8 @@ pub(crate) fn unrealize_redirect_backing(
             .retain(|alias| alias.host_pixmap != backing.host_pixmap);
         backing
     };
+    // compSetParentPixmap (`composite/compalloc.c:641-665`).
+    crate::core_loop::damage_fanout::move_window_damage_to_list_head(state, window);
     if let Err(err) = backend.release_redirected_backing(origin, backing.host_pixmap) {
         log::warn!(
             "release_redirected_backing(0x{:x}) failed: {err}",

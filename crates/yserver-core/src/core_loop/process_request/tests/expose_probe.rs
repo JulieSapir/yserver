@@ -169,6 +169,16 @@ impl Probe {
             })
     }
 
+    pub(super) fn reparent(&mut self, window: u32, parent: u32, x: i16, y: i16) {
+        let mut body = Vec::new();
+        for word in [window, parent] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        body.extend_from_slice(&x.to_le_bytes());
+        body.extend_from_slice(&y.to_le_bytes());
+        self.request(7, 0, &body);
+    }
+
     pub(super) fn clear(&mut self, window: u32, rect: (i16, i16, u16, u16)) {
         let mut body = window.to_le_bytes().to_vec();
         for half in [
@@ -250,6 +260,14 @@ impl Probe {
                     " Unmap({}@{})",
                     self.nm(le_u32(e, 8)),
                     self.nm(le_u32(e, 4))
+                ),
+                21 => format!(
+                    " Reparent({}@{} ->{} {},{})",
+                    self.nm(le_u32(e, 8)),
+                    self.nm(le_u32(e, 4)),
+                    self.nm(le_u32(e, 12)),
+                    u16_at(e, 16) as i16,
+                    u16_at(e, 18) as i16
                 ),
                 c if c == crate::nested::DAMAGE_FIRST_EVENT => {
                     let damage = le_u32(e, 8);
@@ -490,8 +508,10 @@ fn overlay_release_case(bg: Bg, release_first: bool) -> (String, (u16, u16)) {
     let w2 = p.create("W2", ROOT_WINDOW.0, (150, 100, 200, 150), bg);
     let w1c = p.create("W1c", w1, (10, 10, 60, 40), bg);
     p.map(w1c);
-    p.watch_damage(w1, true);
-    p.watch_damage(w2, true);
+    for w in [w1, w2] {
+        p.watch_damage(w, false);
+        p.watch_damage(w, true);
+    }
     p.map(w1);
     p.map(w2);
     let _ = p.step();
@@ -515,7 +535,10 @@ fn unredirect_after_overlay_release_damages_the_restored_windows() {
         let (line, (w, h)) = overlay_release_case(bg, true);
         assert_eq!(
             line,
-            format!("Expose(root 0,0 {w}x{h} c0) DmgR(W1 0,0 200x150) DmgR(W2 0,0 200x150)")
+            format!(
+                "Expose(root 0,0 {w}x{h} c0) DmgN(W1 0,0 200x150) DmgR(W1 0,0 200x150) \
+                 DmgN(W2 0,0 200x150) DmgR(W2 0,0 200x150)"
+            )
         );
         assert_eq!(overlay_release_case(bg, false).0, "");
     }
@@ -550,5 +573,84 @@ fn map_subwindows_notifies_top_most_first() {
         "Map(C@T) Map(B@T) Map(A@T) DmgR(T 190,10 80x80) Expose(C 0,0 80x80 c0) \
          DmgR(T 60,60 80x80) Expose(B 0,0 80x80 c0) DmgR(T 10,10 80x50) DmgR(T 10,60 50x30) \
          Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)"
+    );
+}
+
+/// Case 1b of the probe with both damage levels on P and R, NonEmpty then
+/// RawRectangles each, as the probe creates them.
+fn reparent_case(comp: bool) -> Vec<String> {
+    let mut p = Probe::new();
+    if comp {
+        p.redirect_subwindows(ROOT_WINDOW.0);
+    }
+    let bg = Bg::Pixel(0x80_8080);
+    let pw = p.create("P", ROOT_WINDOW.0, (50, 50, 300, 200), bg);
+    let r = p.create("R", ROOT_WINDOW.0, (400, 60, 120, 100), bg);
+    let k = p.create("Rk", r, (10, 10, 50, 40), bg);
+    p.map(k);
+    for w in [pw, r] {
+        p.watch_damage(w, false);
+        p.watch_damage(w, true);
+    }
+    let _ = p.step();
+    p.map(pw);
+    p.map(r);
+    let mut lines = vec![p.step()];
+    p.reparent(r, pw, 20, 30);
+    lines.push(p.step());
+    p.reparent(r, ROOT_WINDOW.0, 400, 60);
+    lines.push(p.step());
+    lines
+}
+
+/// Xorg reports each damage object in its pixmap's list order: new objects
+/// are prepended (`miext/damage/damage.c:1482`), and a window given a pixmap,
+/// by compositing or a reparent, moves its own to the head oldest first
+/// (`damageSetWindowPixmap`, `:1547-1575`). Each reports its whole part of
+/// the op before the next (`damageRegionProcessPending`, `:285-300`).
+#[test]
+fn damage_notifies_follow_the_damage_list_order() {
+    const R_EXPOSES: &str = "Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) \
+                             Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0)";
+    const R_RAW: &str =
+        "DmgR(R 0,0 120x10) DmgR(R 0,10 10x40) DmgR(R 60,10 60x40) DmgR(R 0,50 120x50)";
+    const P_RAW: &str =
+        "DmgR(P 20,30 120x10) DmgR(P 20,40 10x40) DmgR(P 80,40 60x40) DmgR(P 20,80 120x50)";
+    const INTO: &str = "Unmap(R@root) Reparent(R@root ->P 20,30) Reparent(R@P ->P 20,30) Map(R@P)";
+    const OUT: &str = "Reparent(R@P ->root 400,60) Reparent(R@root ->root 400,60) Map(R@root)";
+    const RK: &str = "DmgR(R 10,10 50x40) Expose(Rk 0,0 50x40 c0)";
+    assert_eq!(
+        reparent_case(false),
+        [
+            format!(
+                "Map(P@root) DmgR(P 0,0 300x200) DmgN(P 0,0 300x200) Expose(P 0,0 300x200 c0) \
+                 Map(R@root) {R_RAW} DmgN(R 0,0 120x100) {R_EXPOSES} {RK}"
+            ),
+            format!(
+                "{INTO} DmgN(R 0,0 120x100) {R_RAW} {P_RAW} DmgN(P 0,0 300x200) {R_EXPOSES} \
+                 DmgR(R 10,10 50x40) DmgR(P 30,40 50x40) Expose(Rk 0,0 50x40 c0)"
+            ),
+            format!(
+                "Unmap(R@P) DmgR(P 20,30 120x100) DmgN(P 0,0 300x200) Expose(P 20,30 120x100 c0) \
+                 {OUT} DmgN(R 0,0 120x100) {R_RAW} {R_EXPOSES} {RK}"
+            ),
+        ]
+    );
+    assert_eq!(
+        reparent_case(true),
+        [
+            format!(
+                "Map(P@root) DmgN(P 0,0 300x200) DmgR(P 0,0 300x200) Expose(P 0,0 300x200 c0) \
+                 Map(R@root) DmgN(R 0,0 120x100) {R_RAW} {R_EXPOSES} {RK}"
+            ),
+            format!(
+                "{INTO} DmgN(R 0,0 120x100) {R_RAW} DmgN(P 0,0 300x200) {P_RAW} {R_EXPOSES} \
+                 DmgR(R 10,10 50x40) DmgR(P 30,40 50x40) Expose(Rk 0,0 50x40 c0)"
+            ),
+            format!(
+                "Unmap(R@P) DmgN(P 0,0 300x200) DmgR(P 20,30 120x100) Expose(P 20,30 120x100 c0) \
+                 {OUT} DmgN(R 0,0 120x100) {R_RAW} {R_EXPOSES} {RK}"
+            ),
+        ]
     );
 }

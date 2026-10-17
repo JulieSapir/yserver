@@ -298,6 +298,8 @@ fn activate_redirect_on_mapped_window_emits_initial_damage() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -597,6 +599,8 @@ fn map_window_emits_damage_on_window_extent() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -703,6 +707,8 @@ fn map_window_seeds_damage_for_newly_viewable_descendant() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -824,6 +830,8 @@ fn map_window_does_not_rereport_held_nonempty_damage_for_newly_viewable_descenda
                 width: 200,
                 height: 80,
             }),
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -880,6 +888,8 @@ fn damage_subtract_flushes_coalesced_paint_before_consuming_damage() {
             rects: rects.clone(),
             pending_notify_fired: true,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     let body: Vec<u8> = [0x100_u32, 0, 0x200]
@@ -1072,6 +1082,8 @@ fn damage_subtract_with_no_repair_returns_old_damage_in_parts_and_clears() {
             rects: vec![damaged_rect],
             pending_notify_fired: true,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     // Pre-create the parts region so the handler writes into it.
@@ -1143,6 +1155,8 @@ fn damage_subtract_with_no_repair_canonicalizes_parts_region() {
             ],
             pending_notify_fired: true,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     state.xfixes_regions.insert(
@@ -1192,6 +1206,8 @@ fn damage_subtract_with_repair_returns_intersection_and_subtracts_from_damage() 
             }],
             pending_notify_fired: true,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     // Repair: right-half strip 50x100 at (50, 0). MUST remain
@@ -1307,6 +1323,8 @@ fn damage_subtract_with_remaining_nonempty_damage_rereports_immediately() {
             }],
             pending_notify_fired: true,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     state.xfixes_regions.insert(
@@ -1427,6 +1445,8 @@ fn configure_window_on_redirected_window_emits_damage_to_subscriber() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -1575,6 +1595,8 @@ fn configure_window_on_inherited_redirect_emits_damage_to_subscriber() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -1685,6 +1707,8 @@ fn configure_window_move_on_unmapped_redirected_window_emits_no_damage() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -1796,6 +1820,8 @@ fn configure_window_stack_only_on_redirected_window_does_not_emit_damage() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 

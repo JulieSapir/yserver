@@ -513,6 +513,10 @@ pub(super) fn handle_damage_request(
         x11damage::CREATE => {
             if let Some((damage, drawable, level)) = x11damage::parse_create(body) {
                 let drawable_id = ResourceId(drawable);
+                // DamageRegister prepends to the drawable's list
+                // (`miext/damage/damage.c:1482`).
+                state.damage_list_clock += 1;
+                let tick = state.damage_list_clock;
                 state.damage_objects.insert(
                     damage,
                     crate::server::DamageObject {
@@ -522,6 +526,8 @@ pub(super) fn handle_damage_request(
                         rects: Vec::new(),
                         pending_notify_fired: false,
                         last_reported_geometry: None,
+                        list_pos: tick,
+                        created: tick,
                     },
                 );
                 debug!(

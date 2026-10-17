@@ -132,16 +132,8 @@ pub fn accumulate_damage_border_to_state(
     state: &mut ServerState,
     window: ResourceId,
 ) -> Vec<ClientId> {
-    let mut dropped: Vec<ClientId> = Vec::new();
-    for rect in border_annulus_rects(state, window) {
-        for c in accumulate_damage_to_state(state, window, rect.x, rect.y, rect.width, rect.height)
-        {
-            if !dropped.contains(&c) {
-                dropped.push(c);
-            }
-        }
-    }
-    dropped
+    let ring = border_annulus_rects(state, window);
+    accumulate_damage_region_to_state(state, window, &ring)
 }
 
 /// Mapped `InputOutput` children of `drawable`, as rects in the
@@ -295,17 +287,7 @@ pub fn accumulate_damage_clip_by_children_to_state(
 
     log_clip_by_children_debug(state, drawable, "damage", &[full], &visible);
 
-    let mut dropped: Vec<ClientId> = Vec::new();
-    for rect in visible {
-        for c in
-            accumulate_damage_to_state(state, drawable, rect.x, rect.y, rect.width, rect.height)
-        {
-            if !dropped.contains(&c) {
-                dropped.push(c);
-            }
-        }
-    }
-    dropped
+    accumulate_damage_region_to_state(state, drawable, &visible)
 }
 
 pub fn accumulate_damage_to_state(
@@ -316,7 +298,34 @@ pub fn accumulate_damage_to_state(
     width: u16,
     height: u16,
 ) -> Vec<ClientId> {
-    if width == 0 || height == 0 {
+    accumulate_damage_region_to_state(
+        state,
+        drawable,
+        &[xfixes::RegionRect {
+            x,
+            y,
+            width,
+            height,
+        }],
+    )
+}
+
+/// DAMAGE for one drawing op over `region` of `drawable` (its own
+/// coordinates), as Xorg's `damageRegionAppend` +
+/// `damageRegionProcessPending` (`miext/damage/damage.c:125-300`): every
+/// damage object the op reaches gets the region clipped to its drawable,
+/// and reports it whole, in damage-list order.
+pub fn accumulate_damage_region_to_state(
+    state: &mut ServerState,
+    drawable: ResourceId,
+    region: &[xfixes::RegionRect],
+) -> Vec<ClientId> {
+    let region: Vec<xfixes::RegionRect> = region
+        .iter()
+        .filter(|r| r.width != 0 && r.height != 0)
+        .copied()
+        .collect();
+    if region.is_empty() {
         return Vec::new();
     }
     // Nothing on screen ⇒ nothing damaged (issue #97). Xorg keeps
@@ -348,37 +357,21 @@ pub fn accumulate_damage_to_state(
     if std::env::var_os("YSERVER_DAMAGE_BACKTRACE").is_some() {
         let bt = std::backtrace::Backtrace::force_capture();
         log::info!(
-            "DIAG accumulate_damage: drawable=0x{:x} rect=({},{} {}x{})\n{}",
+            "DIAG accumulate_damage: drawable=0x{:x} region={}\n{}",
             drawable.0,
-            x,
-            y,
-            width,
-            height,
+            format_damage_rects(&region),
             bt,
         );
     }
     let timestamp = state.timestamp_now();
-    let mut pending: Vec<PendingNotify> = Vec::new();
+    let mut hits: Vec<Hit> = Vec::new();
 
-    // Initial rect in the leaf drawable's coordinate space. Carry as
-    // i32 through the ancestor walk so translation + clip don't
-    // overflow when a child sits well past its parent's edge;
-    // saturate-cast back to i16/u16 only at emit time.
-    let mut rx = i32::from(x);
-    let mut ry = i32::from(y);
-    let mut rw = i32::from(width);
-    let mut rh = i32::from(height);
+    // The leaf level — pixmaps and windows alike. Pixmaps have no parent,
+    // so a `state.resources.window(drawable)` miss at the top of the loop
+    // ends the walk before the first step.
+    let mut level_region = crate::core_loop::clip_list::canonical(region);
+    collect_level(state, drawable, &level_region, &mut hits);
 
-    // Process the leaf level — pixmaps and windows alike. Pixmaps
-    // have no parent so processing stops here; windows fall through
-    // to the ancestor walk below.
-    accumulate_at_level(state, drawable, rx, ry, rw, rh, &mut pending);
-
-    // Ancestor walk — only meaningful for window drawables. Pixmaps
-    // exist outside the window tree per X11 spec (Composite spec's
-    // NameWindowPixmap aliases sit beside the window tree, not in
-    // it), so a `state.resources.window(drawable)` miss at the top
-    // of the loop terminates the walk before the first step.
     let mut current = drawable;
     for _ in 0..ANCESTOR_WALK_MAX_DEPTH {
         // A redirected window draws into its own pixmap, whose damage list
@@ -387,56 +380,57 @@ pub fn accumulate_damage_to_state(
         if state.composite_redirects.window_mode(current).is_some() {
             break;
         }
-        // Look up the current window's own offset + parent. A
-        // missing window is the loop termination for pixmaps and
-        // for any path that strays off the tree.
         let Some(current_win) = state.resources.window(current) else {
             break;
         };
-        let cur_off_x = i32::from(current_win.x);
-        let cur_off_y = i32::from(current_win.y);
-        let parent = current_win.parent;
+        let (off_x, off_y, parent) = (
+            i32::from(current_win.x),
+            i32::from(current_win.y),
+            current_win.parent,
+        );
         // Root self-parents (`parent == self`, see resources.rs
-        // ROOT_WINDOW initialiser). Other walks in the tree use
-        // the same sentinel for termination — propagating beyond
-        // root makes no sense.
+        // ROOT_WINDOW initialiser).
         if parent == current {
             break;
         }
-        // Translate the rect from `current`'s coord space into
-        // `parent`'s by adding `current`'s own (x, y).
-        rx += cur_off_x;
-        ry += cur_off_y;
-        // Clip the translated rect to `parent`'s extent. If the
-        // rect doesn't intersect this parent at all, it certainly
-        // won't intersect any higher ancestor either — terminate.
         let Some(parent_win) = state.resources.window(parent) else {
-            // Dangling parent xid (resources tree should keep this
-            // consistent; stay defensive — stop walking).
             break;
         };
-        let parent_w = i32::from(parent_win.width);
-        let parent_h = i32::from(parent_win.height);
-        let x0 = rx.max(0);
-        let y0 = ry.max(0);
-        let x1 = (rx + rw).min(parent_w);
-        let y1 = (ry + rh).min(parent_h);
-        if x1 <= x0 || y1 <= y0 {
+        // Into the parent's coordinates, clipped to its extent: an ancestor
+        // sees the part of the paint that lies inside it.
+        let bounds = xfixes::RegionRect {
+            x: 0,
+            y: 0,
+            width: parent_win.width,
+            height: parent_win.height,
+        };
+        level_region = crate::core_loop::clip_list::intersect(
+            &crate::core_loop::clip_list::translate(level_region, off_x, off_y),
+            &[bounds],
+        );
+        if level_region.is_empty() {
             break;
         }
-        // Re-anchor the rect to its visible portion within
-        // `parent`. The clipped rect (in parent's coord space) is
-        // what higher ancestors will see, exactly mirroring the
-        // X11 spec rule "damage propagates the visible region
-        // through ancestors."
-        rx = x0;
-        ry = y0;
-        rw = x1 - x0;
-        rh = y1 - y0;
         current = parent;
-        accumulate_at_level(state, parent, rx, ry, rw, rh, &mut pending);
+        collect_level(state, parent, &level_region, &mut hits);
     }
 
+    if hits.is_empty() {
+        return Vec::new();
+    }
+    // `damageRegionProcessPending` walks the list from its head.
+    hits.sort_by_key(|h| {
+        std::cmp::Reverse(
+            state
+                .damage_objects
+                .get(&h.damage_id)
+                .map_or((0, 0), |d| (d.list_pos, h.damage_id)),
+        )
+    });
+    let mut pending: Vec<PendingNotify> = Vec::new();
+    for hit in hits {
+        commit_hit(state, hit, &mut pending);
+    }
     if pending.is_empty() {
         return Vec::new();
     }
@@ -460,6 +454,42 @@ pub fn accumulate_damage_to_state(
         }
     }
     dropped
+}
+
+/// Xorg's `damageSetWindowPixmap` (`miext/damage/damage.c:1547-1575`) for
+/// each window `compSetPixmap` visits from `window`
+/// (`composite/compwindow.c:118-148`): a window's damage leaves the old
+/// pixmap's list and is prepended to the new one's, newest first, so the
+/// oldest ends at the head. Descendants with their own backing are skipped.
+pub fn move_window_damage_to_list_head(state: &mut ServerState, window: ResourceId) {
+    let mut stack = vec![window];
+    while let Some(w) = stack.pop() {
+        if w != window
+            && state
+                .resources
+                .window(w)
+                .is_some_and(|win| win.redirected_backing.is_some())
+        {
+            continue;
+        }
+        let mut ids: Vec<(u64, u32)> = state
+            .damage_objects
+            .iter()
+            .filter(|(_, d)| d.drawable == w)
+            .map(|(id, d)| (d.created, *id))
+            .collect();
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        for (_, id) in ids {
+            state.damage_list_clock += 1;
+            let tick = state.damage_list_clock;
+            if let Some(d) = state.damage_objects.get_mut(&id) {
+                d.list_pos = tick;
+            }
+        }
+        // `TraverseTree` visits firstChild first; children are stored
+        // bottom-most first.
+        stack.extend(state.resources.children(w).iter().copied());
+    }
 }
 
 /// Re-report an already-accumulated damage object without appending a
@@ -594,51 +624,41 @@ pub fn report_existing_damage_to_state(state: &mut ServerState, damage_id: u32) 
     dropped
 }
 
-/// Per-level helper: match damage objects keyed on `level_drawable`,
-/// push the (clipped, i32 → i16/u16-saturated) rect into each, and
-/// add a fire-once `PendingNotify` for any object that hasn't fired
-/// in this cycle yet. Called once per level by the ancestor walk
-/// (leaf + each ancestor up to root).
-///
-/// `rx/ry/rw/rh` are in `level_drawable`'s coordinate space and
-/// already clipped to its extent by the caller. They arrive as i32
-/// for safe walk-time arithmetic; the saturate-cast here is the
-/// single conversion point.
-fn accumulate_at_level(
-    state: &mut ServerState,
+/// One damage object reached by a drawing op: its drawable's part of the
+/// op's region, in that drawable's coordinates.
+struct Hit {
+    damage_id: u32,
+    drawable: ResourceId,
+    rects: Vec<xfixes::RegionRect>,
+    /// The drawable's current geometry (`damageGetGeometry`).
+    geometry: x11damage::Rectangle,
+}
+
+/// The damage objects keyed on `level_drawable` or one of its
+/// NameWindowPixmap aliases, each given `rects` (already clipped to it).
+fn collect_level(
+    state: &ServerState,
     level_drawable: ResourceId,
-    rx: i32,
-    ry: i32,
-    rw: i32,
-    rh: i32,
-    pending: &mut Vec<PendingNotify>,
+    rects: &[xfixes::RegionRect],
+    hits: &mut Vec<Hit>,
 ) {
     // Resolve `level_drawable` through the NameWindowPixmap alias
     // indirection. Compositors such as picom subscribe DAMAGE on the
     // pixmap returned by `NameWindowPixmap`, not on the window itself.
-    // When damage is accumulated for a redirected window (either a
-    // ConfigureWindow-move emits `accumulate_damage_full(state, W)` or
-    // a descendant paint walks up to W as a redirected ancestor), the
-    // damage objects subscribed on W's `composite_named_pixmaps[*]`
-    // alias pixmaps MUST also fire here — otherwise the compositor
-    // never receives `DamageNotify` for redirected-window content
-    // (move: stale composite; child repaint: blank in the composited
-    // frame).
-    //
     // Xorg's `getDrawableDamageRef(&pWin->drawable)` resolves this
     // automatically via `GetWindowPixmap(pWin)` → backing pixmap →
     // that pixmap's damage list (miext/damage/damage.c:90-110). The
     // alias pixmap and the window share the backing pixmap's damage
     // list, so a single `DamageDamageRegion(&pWin->drawable, ...)` hits
-    // every alias subscription. yserver's per-xid `damage_objects` map
-    // has no such indirection, so we mirror it inline here.
+    // every alias subscription.
     let mut drawables = vec![level_drawable];
-    if let Some(window) = state.resources.window(level_drawable)
-        && !window.composite_named_pixmaps.is_empty()
-    {
-        for alias in &window.composite_named_pixmaps {
-            drawables.push(alias.client_pixmap);
-        }
+    if let Some(window) = state.resources.window(level_drawable) {
+        drawables.extend(
+            window
+                .composite_named_pixmaps
+                .iter()
+                .map(|a| a.client_pixmap),
+        );
     }
     let damage_ids: Vec<u32> = state
         .damage_objects
@@ -646,69 +666,23 @@ fn accumulate_at_level(
         .filter(|(_, dmg)| drawables.contains(&dmg.drawable))
         .map(|(id, _)| *id)
         .collect();
-    // Stage 4d shadow-hunt diagnostic: surface every accumulate call
-    // with its target drawable + how many DAMAGE subscriptions matched
-    // + how many of those have `pending_notify_fired=true` (i.e. would
-    // skip the notify). Grep this in the broken-state run to find:
-    // - level_drawable=0x<W> match_ids=0 (compositor never subscribed
-    //   to W, or subscribed to a different xid — hypothesis 2);
-    // - level_drawable=0x<W> match_ids>0 fired_count=match_ids (notify
-    //   would fire but compositor isn't subtracting fast enough);
-    // - "no entry for W" (paint handler isn't calling accumulate at
-    //   all for that path — hypothesis 1).
-    // Logged unconditionally at trace; enable with
+    // Logged at trace; enable with
     // `yserver_core::core_loop::damage_fanout=trace` in `RUST_LOG`.
-    let fired_count = damage_ids
-        .iter()
-        .filter(|id| {
-            state
-                .damage_objects
-                .get(id)
-                .is_some_and(|d| d.pending_notify_fired)
-        })
-        .count();
     log::trace!(
-        "damage_fanout: level_drawable=0x{:x} rect=({},{} {}x{}) match_ids={} fired_count={}",
+        "damage_fanout: level_drawable=0x{:x} region={} match_ids={}",
         level_drawable.0,
-        rx,
-        ry,
-        rw,
-        rh,
+        format_damage_rects(rects),
         damage_ids.len(),
-        fired_count,
     );
-
     if damage_ids.is_empty() {
         return;
     }
-
-    // Saturate-cast i32 walk coords to the wire i16/u16 shape.
-    // Real window dimensions stay well under i16::MAX (32767); the
-    // saturate is defensive against runaway parent chains or
-    // corrupt tree state.
-    let rect_i16 = xfixes::RegionRect {
-        x: i16::try_from(rx).unwrap_or(i16::MAX),
-        y: i16::try_from(ry).unwrap_or(i16::MAX),
-        width: u16::try_from(rw).unwrap_or(u16::MAX),
-        height: u16::try_from(rh).unwrap_or(u16::MAX),
-    };
-    let area = x11damage::Rectangle {
-        x: rect_i16.x,
-        y: rect_i16.y,
-        width: rect_i16.width,
-        height: rect_i16.height,
-    };
-
     // Per-level geometry — the damaged drawable's CURRENT geometry
-    // in its parent's coordinate space (X11 DAMAGE proto + Xorg
-    // damageext.c: fills from pDrawable->{x, y, width, height};
-    // window drawables carry root-relative x/y, pixmaps are
-    // always (0, 0)). marco/picom/etc. use this geometry to map
-    // the damage rect back into screen space — if x/y stay
-    // hardcoded at (0, 0), the compositor recomposites at the
-    // wrong screen position after every move, observable as
-    // "top-left bits of CC stay rendered" after dragging.
-    let geom_full = drawable_full_rect(state, level_drawable);
+    // (X11 DAMAGE proto + Xorg damageext.c: fills from
+    // pDrawable->{x, y, width, height}; window drawables carry
+    // root-relative x/y, pixmaps are always (0, 0)). Compositors use it
+    // to map the damage rect back into screen space.
+    let full = drawable_full_rect(state, level_drawable);
     let (geom_x, geom_y) = if state.resources.window(level_drawable).is_some() {
         let (ax, ay) = state.resources.window_absolute_position(level_drawable);
         (
@@ -718,116 +692,109 @@ fn accumulate_at_level(
     } else {
         (0, 0)
     };
-    let geom_rect = x11damage::Rectangle {
+    let geometry = x11damage::Rectangle {
         x: geom_x,
         y: geom_y,
-        width: geom_full.width,
-        height: geom_full.height,
+        width: full.width,
+        height: full.height,
     };
-
     for damage_id in damage_ids {
-        let (level, fired, owner, last_reported_geometry) = {
-            let dmg = state
-                .damage_objects
-                .get(&damage_id)
-                .expect("just enumerated");
-            (
-                dmg.level,
-                dmg.pending_notify_fired,
-                dmg.owner,
-                dmg.last_reported_geometry,
-            )
-        };
-        if let Some(d) = state.damage_objects.get_mut(&damage_id) {
-            d.rects.push(rect_i16);
+        hits.push(Hit {
+            damage_id,
+            drawable: level_drawable,
+            rects: rects.to_vec(),
+            geometry,
+        });
+    }
+}
+
+/// Add `hit` to its damage object and queue the notifies its level asks
+/// for (`DamageReportDamage` + `DamageExtReport`,
+/// `miext/damage/damage.c:1935-1975`, `damageext/damageext.c:86-153`).
+fn commit_hit(state: &mut ServerState, hit: Hit, pending: &mut Vec<PendingNotify>) {
+    let Some(dmg) = state.damage_objects.get_mut(&hit.damage_id) else {
+        return;
+    };
+    dmg.rects.extend(hit.rects.iter().copied());
+    let (level, fired, owner, last_reported_geometry) = (
+        dmg.level,
+        dmg.pending_notify_fired,
+        dmg.owner,
+        dmg.last_reported_geometry,
+    );
+    let geometry_changed = last_reported_geometry.is_some_and(|prev| prev != hit.geometry);
+    let owner_alive = state.clients.contains_key(&owner.0);
+    let notify = |level: u8, area: x11damage::Rectangle| PendingNotify {
+        owner,
+        damage_id: hit.damage_id,
+        level,
+        drawable: hit.drawable.0,
+        area,
+        geometry: hit.geometry,
+    };
+    // Raw / Delta / BoundingBox report every op; only NonEmpty has the
+    // one-shot-per-Subtract semantic, re-reported when the geometry the
+    // last notify carried is stale.
+    let queued = match level {
+        x11damage::report_level::RAW_RECTANGLES
+        | x11damage::report_level::DELTA_RECTANGLES
+        | x11damage::report_level::BOUNDING_BOX
+            if owner_alive =>
+        {
+            // `DamageExtNotify` flags every rect but the last of a report
+            // with DamageNotifyMore (`damageext/damageext.c:103-115`).
+            let more = level != x11damage::report_level::BOUNDING_BOX;
+            let last = hit.rects.len() - 1;
+            for (i, r) in hit.rects.iter().enumerate() {
+                let level = if more && i < last {
+                    level | x11damage::MORE_FLAG
+                } else {
+                    level
+                };
+                pending.push(notify(
+                    level,
+                    x11damage::Rectangle {
+                        x: r.x,
+                        y: r.y,
+                        width: r.width,
+                        height: r.height,
+                    },
+                ));
+            }
+            true
         }
-        let geometry_changed = last_reported_geometry.is_some_and(|prev| prev != geom_rect);
-        // Per X11 DAMAGE proto + Xorg `damageext/damageext.c:136-153`
-        // (`DamageExtReport`): Raw / Delta / BoundingBox levels emit
-        // a `DamageNotify` on EVERY damage event; only NonEmpty has
-        // the one-shot-per-Subtract semantic (emit on empty→non-empty
-        // transition, silent until the client Subtracts). The
-        // `geometry_changed` re-report fallback survives for NonEmpty
-        // because the spec requires the geometry payload to be
-        // current.
-        let level_allows_emit = match level {
-            x11damage::report_level::RAW_RECTANGLES
-            | x11damage::report_level::DELTA_RECTANGLES
-            | x11damage::report_level::BOUNDING_BOX => true,
-            x11damage::report_level::NON_EMPTY => !fired || geometry_changed,
-            _ => false,
-        };
-        if state.clients.contains_key(&owner.0) && level_allows_emit {
-            // Per X11 DAMAGE spec + Xorg `damageext/damageext.c:117-126`
-            // (`DamageExtNotify` with `pBoxes == NULL`): NonEmpty events
-            // carry the full drawable extent in `area`, not the actual
-            // damaged sub-rect. Compositors (marco, picom, …) treat
-            // `area` as the region to recomposite — passing the small
-            // rect makes them clip the next composite to it, leaving
-            // the rest of the offscreen stale (observed as shrinking /
-            // top-left-only CC content after small client updates on
-            // marco-with-compositing). Raw / Delta / BoundingBox keep
-            // the current rect.
-            let area_for_level = if level == x11damage::report_level::NON_EMPTY {
+        // NonEmpty events carry the drawable's full extent in `area`
+        // (`DamageExtNotify` with `pBoxes == NULL`,
+        // `damageext/damageext.c:117-126`).
+        x11damage::report_level::NON_EMPTY if owner_alive && (!fired || geometry_changed) => {
+            pending.push(notify(
+                level,
                 x11damage::Rectangle {
                     x: 0,
                     y: 0,
-                    width: geom_full.width,
-                    height: geom_full.height,
-                }
-            } else {
-                area
-            };
-            pending.push(PendingNotify {
-                owner,
-                damage_id,
-                level,
-                drawable: level_drawable.0,
-                geometry: geom_rect,
-                area: area_for_level,
-            });
-            if let Some(d) = state.damage_objects.get(&damage_id) {
-                log::trace!(
-                    "damage_notify_queue: damage=0x{:x} owner={} drawable=0x{:x} level={} \
-                     area=({},{} {}x{}) geom=({},{} {}x{}) rects_n={} rects={}",
-                    damage_id,
-                    owner.0,
-                    level_drawable.0,
-                    level,
-                    area_for_level.x,
-                    area_for_level.y,
-                    area_for_level.width,
-                    area_for_level.height,
-                    geom_rect.x,
-                    geom_rect.y,
-                    geom_rect.width,
-                    geom_rect.height,
-                    d.rects.len(),
-                    format_damage_rects(&d.rects),
-                );
-            }
-            if let Some(d) = state.damage_objects.get_mut(&damage_id) {
-                d.pending_notify_fired = true;
-                d.last_reported_geometry = Some(geom_rect);
-            }
-        } else {
-            let owner_alive = state.clients.contains_key(&owner.0);
-            if let Some(d) = state.damage_objects.get(&damage_id) {
-                log::trace!(
-                    "damage_notify_skip: damage=0x{:x} owner={} drawable=0x{:x} level={} \
-                     fired={} owner_alive={} geometry_changed={} rects_n={} rects={}",
-                    damage_id,
-                    owner.0,
-                    level_drawable.0,
-                    level,
-                    fired,
-                    owner_alive,
-                    geometry_changed,
-                    d.rects.len(),
-                    format_damage_rects(&d.rects),
-                );
-            }
+                    width: hit.geometry.width,
+                    height: hit.geometry.height,
+                },
+            ));
+            true
         }
+        _ => false,
+    };
+    log::trace!(
+        "damage_notify_{}: damage=0x{:x} owner={} drawable=0x{:x} level={} fired={} \
+         owner_alive={} rects={}",
+        if queued { "queue" } else { "skip" },
+        hit.damage_id,
+        owner.0,
+        hit.drawable.0,
+        level,
+        fired,
+        owner_alive,
+        format_damage_rects(&hit.rects),
+    );
+    if queued && let Some(d) = state.damage_objects.get_mut(&hit.damage_id) {
+        d.pending_notify_fired = true;
+        d.last_reported_geometry = Some(hit.geometry);
     }
 }
 
@@ -992,6 +959,8 @@ mod tests {
                 rects: Vec::new(),
                 pending_notify_fired: false,
                 last_reported_geometry: None,
+                list_pos: 0,
+                created: 0,
             },
         );
     }

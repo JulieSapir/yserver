@@ -3041,6 +3041,8 @@ fn xid_occupied_covers_every_namespace() {
             rects: vec![],
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     expect.push(id_damage);

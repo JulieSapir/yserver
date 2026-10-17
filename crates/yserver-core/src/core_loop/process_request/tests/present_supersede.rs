@@ -412,6 +412,8 @@ fn damage_full_extent_region_present_with_offset_translates_position() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -520,6 +522,8 @@ fn damage_unresolvable_region_with_update_flag_accumulates_full_extent() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 

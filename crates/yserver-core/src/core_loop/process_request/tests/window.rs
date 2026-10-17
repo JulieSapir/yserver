@@ -472,6 +472,8 @@ fn map_window_on_already_mapped_window_is_no_op() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -1336,6 +1338,8 @@ fn map_window_emits_map_notify_before_damage_notify() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -2036,6 +2040,8 @@ fn change_window_attributes_border_pixel_damages_the_ring() {
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
 
@@ -2144,6 +2150,8 @@ fn change_window_attributes_border_pixel_damages_nothing_unbordered_or_unmapped(
                 rects: Vec::new(),
                 pending_notify_fired: false,
                 last_reported_geometry: None,
+                list_pos: 0,
+                created: 0,
             },
         );
 
@@ -2231,6 +2239,8 @@ fn configure_window_resize_damages_the_ring_at_the_new_geometry() {
                 rects: Vec::new(),
                 pending_notify_fired: false,
                 last_reported_geometry: None,
+                list_pos: 0,
+                created: 0,
             },
         );
 
@@ -2374,6 +2384,8 @@ fn configure_window_resize_damages_no_ring_unbordered_or_unmapped() {
                 rects: Vec::new(),
                 pending_notify_fired: false,
                 last_reported_geometry: None,
+                list_pos: 0,
+                created: 0,
             },
         );
 
@@ -2995,6 +3007,8 @@ fn map_redirected_frame_events(background_pixel: bool) -> (Vec<String>, Vec<Stri
             rects: Vec::new(),
             pending_notify_fired: false,
             last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
         },
     );
     let _ = read_all_available(&mut comp);
