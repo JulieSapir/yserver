@@ -1,0 +1,278 @@
+==> probe-nocomp.log <==
+mode nocomp
+1a T=none children=none
+  create
+  map T            Map(T@root) Expose(T 0,0 300x200 c0)
+  MapSubwindows    Map(C@T) Map(B@T) Map(A@T) Expose(C 0,0 80x80 c0) Expose(B 0,0 80x80 c0) Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)
+  destroy          Unmap(T@root)
+1a T=none children=pixel
+  create
+  map T            Map(T@root) Expose(T 0,0 300x200 c0)
+  MapSubwindows    Map(C@T) Map(B@T) Map(A@T) DmgR(T 190,10 80x80) DmgN(T 0,0 300x200) Expose(C 0,0 80x80 c0) DmgR(T 60,60 80x80) Expose(B 0,0 80x80 c0) DmgR(T 10,10 80x50) DmgR(T 10,60 50x30) Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)
+  destroy          Unmap(T@root)
+1a T=pixel children=none
+  create
+  map T            Map(T@root) DmgR(T 0,0 300x200) DmgN(T 0,0 300x200) Expose(T 0,0 300x200 c0)
+  MapSubwindows    Map(C@T) Map(B@T) Map(A@T) Expose(C 0,0 80x80 c0) Expose(B 0,0 80x80 c0) Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)
+  destroy          Unmap(T@root)
+1a T=pixel children=pixel
+  create
+  map T            Map(T@root) DmgR(T 0,0 300x200) DmgN(T 0,0 300x200) Expose(T 0,0 300x200 c0)
+  MapSubwindows    Map(C@T) Map(B@T) Map(A@T) DmgR(T 190,10 80x80) DmgN(T 0,0 300x200) Expose(C 0,0 80x80 c0) DmgR(T 60,60 80x80) Expose(B 0,0 80x80 c0) DmgR(T 10,10 80x50) DmgR(T 10,60 50x30) Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)
+  destroy          Unmap(T@root)
+1b bg=none
+  create
+  map P,R          Map(P@root) Expose(P 0,0 300x200 c0) Map(R@root) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) Expose(Rk 0,0 50x40 c0)
+  reparent into P  Unmap(R@root) Reparent(R@root ->P 20,30) Reparent(R@P ->P 20,30) Map(R@P) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) Expose(Rk 0,0 50x40 c0)
+  reparent to root Unmap(R@P) Expose(P 20,30 120x100 c0) Reparent(R@P ->root 400,60) Reparent(R@root ->root 400,60) Map(R@root) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) Expose(Rk 0,0 50x40 c0)
+  destroy          Unmap(R@root) Unmap(P@root)
+1b bg=pixel
+  create
+  map P,R          Map(P@root) DmgR(P 0,0 300x200) DmgN(P 0,0 300x200) Expose(P 0,0 300x200 c0) Map(R@root) DmgR(R 0,0 120x10) DmgR(R 0,10 10x40) DmgR(R 60,10 60x40) DmgR(R 0,50 120x50) DmgN(R 0,0 120x100) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) DmgR(R 10,10 50x40) Expose(Rk 0,0 50x40 c0)
+  reparent into P  Unmap(R@root) Reparent(R@root ->P 20,30) Reparent(R@P ->P 20,30) Map(R@P) DmgN(R 0,0 120x100) DmgR(R 0,0 120x10) DmgR(R 0,10 10x40) DmgR(R 60,10 60x40) DmgR(R 0,50 120x50) DmgR(P 20,30 120x10) DmgR(P 20,40 10x40) DmgR(P 80,40 60x40) DmgR(P 20,80 120x50) DmgN(P 0,0 300x200) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) DmgR(R 10,10 50x40) DmgR(P 30,40 50x40) Expose(Rk 0,0 50x40 c0)
+  reparent to root Unmap(R@P) DmgR(P 20,30 120x100) DmgN(P 0,0 300x200) Expose(P 20,30 120x100 c0) Reparent(R@P ->root 400,60) Reparent(R@root ->root 400,60) Map(R@root) DmgN(R 0,0 120x100) DmgR(R 0,0 120x10) DmgR(R 0,10 10x40) DmgR(R 60,10 60x40) DmgR(R 0,50 120x50) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) DmgR(R 10,10 50x40) Expose(Rk 0,0 50x40 c0)
+  destroy          Unmap(R@root) Unmap(P@root)
+2 P=none K=prel map-K-last
+  create           Map(G@K)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0)
+  map K            Map(K@P) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       000000 x12000
+  destroy          Unmap(P@root)
+2 P=none K=pixel map-K-last
+  create           Map(G@K)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0)
+  map K            Map(K@P) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) DmgN(K 0,0 120x100) DmgR(P 20,20 120x10) DmgR(P 20,30 10x40) DmgR(P 80,30 60x40) DmgR(P 20,70 120x50) DmgN(P 0,0 300x200) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) DmgR(P 30,30 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x48000 2050a0 x12000
+  GetImage K       2050a0 x12000
+  destroy          Unmap(P@root)
+2 P=none K=prel map-P-last
+  create           Map(G@K)
+  map K (P unmapped) Map(K@P)
+  map P            Map(P@root) Expose(P 0,0 300x20 c3) Expose(P 0,20 20x100 c2) Expose(P 140,20 160x100 c1) Expose(P 0,120 300x80 c0) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       000000 x12000
+  destroy          Unmap(P@root)
+2 P=none K=pixel map-P-last
+  create           Map(G@K)
+  map K (P unmapped) Map(K@P)
+  map P            Map(P@root) Expose(P 0,0 300x20 c3) Expose(P 0,20 20x100 c2) Expose(P 140,20 160x100 c1) Expose(P 0,120 300x80 c0) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) DmgN(K 0,0 120x100) DmgR(P 20,20 120x10) DmgR(P 20,30 10x40) DmgR(P 80,30 60x40) DmgR(P 20,70 120x50) DmgN(P 0,0 300x200) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) DmgR(P 30,30 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x48000 2050a0 x12000
+  GetImage K       2050a0 x12000
+  destroy          Unmap(P@root)
+2 P=pixel K=prel map-K-last
+  create           Map(G@K)
+  map P            Map(P@root) DmgR(P 0,0 300x200) DmgN(P 0,0 300x200) Expose(P 0,0 300x200 c0)
+  map K            Map(K@P) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) DmgN(K 0,0 120x100) DmgR(P 20,20 120x10) DmgR(P 20,30 10x40) DmgR(P 80,30 60x40) DmgR(P 20,70 120x50) DmgN(P 0,0 300x200) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) DmgR(P 30,30 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       808080 x60000
+  GetImage K       808080 x12000
+  destroy          Unmap(P@root)
+2 P=pixel K=pixel map-K-last
+  create           Map(G@K)
+  map P            Map(P@root) DmgR(P 0,0 300x200) DmgN(P 0,0 300x200) Expose(P 0,0 300x200 c0)
+  map K            Map(K@P) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) DmgN(K 0,0 120x100) DmgR(P 20,20 120x10) DmgR(P 20,30 10x40) DmgR(P 80,30 60x40) DmgR(P 20,70 120x50) DmgN(P 0,0 300x200) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) DmgR(P 30,30 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       808080 x48000 2050a0 x12000
+  GetImage K       2050a0 x12000
+  destroy          Unmap(P@root)
+2 P=pixel K=prel map-P-last
+  create           Map(G@K)
+  map K (P unmapped) Map(K@P)
+  map P            Map(P@root) DmgR(P 0,0 300x20) DmgR(P 0,20 20x100) DmgR(P 140,20 160x100) DmgR(P 0,120 300x80) DmgN(P 0,0 300x200) Expose(P 0,0 300x20 c3) Expose(P 0,20 20x100 c2) Expose(P 140,20 160x100 c1) Expose(P 0,120 300x80 c0) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) DmgN(K 0,0 120x100) DmgR(P 20,20 120x10) DmgR(P 20,30 10x40) DmgR(P 80,30 60x40) DmgR(P 20,70 120x50) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) DmgR(P 30,30 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       808080 x60000
+  GetImage K       808080 x12000
+  destroy          Unmap(P@root)
+2 P=pixel K=pixel map-P-last
+  create           Map(G@K)
+  map K (P unmapped) Map(K@P)
+  map P            Map(P@root) DmgR(P 0,0 300x20) DmgR(P 0,20 20x100) DmgR(P 140,20 160x100) DmgR(P 0,120 300x80) DmgN(P 0,0 300x200) Expose(P 0,0 300x20 c3) Expose(P 0,20 20x100 c2) Expose(P 140,20 160x100 c1) Expose(P 0,120 300x80 c0) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) DmgN(K 0,0 120x100) DmgR(P 20,20 120x10) DmgR(P 20,30 10x40) DmgR(P 80,30 60x40) DmgR(P 20,70 120x50) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) DmgR(P 30,30 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       808080 x48000 2050a0 x12000
+  GetImage K       2050a0 x12000
+  destroy          Unmap(P@root)
+3 bg=none no-redirect
+  GetOverlay       Map(COW@root)
+  create
+  map W1,W2        Map(W1@root) Map(W2@root)
+  ReleaseOverlay   Unmap(COW@root) Expose(root 0,0 1280x50 c7) Expose(root 0,50 50x50 c6) Expose(root 250,50 1030x50 c5) Expose(root 0,100 50x100 c4) Expose(root 350,100 930x100 c3) Expose(root 0,200 150x50 c2) Expose(root 350,200 930x50 c1) Expose(root 0,250 1280x550 c0) Expose(W2 0,0 200x150 c0) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 100x100 c0) Expose(W1c 0,0 60x40 c0)
+  destroy          Unmap(W2@root) Expose(root 250,100 100x100 c1) Expose(root 150,200 200x50 c0) Expose(W1 100,50 100x100 c0) Unmap(W1@root) Expose(root 50,50 200x150 c0)
+3 bg=pixel no-redirect
+  GetOverlay       Map(COW@root)
+  create
+  map W1,W2        Map(W1@root) Map(W2@root)
+  ReleaseOverlay   Unmap(COW@root) Expose(root 0,0 1280x50 c7) Expose(root 0,50 50x50 c6) Expose(root 250,50 1030x50 c5) Expose(root 0,100 50x100 c4) Expose(root 350,100 930x100 c3) Expose(root 0,200 150x50 c2) Expose(root 350,200 930x50 c1) Expose(root 0,250 1280x550 c0) DmgR(W2 0,0 200x150) DmgN(W2 0,0 200x150) Expose(W2 0,0 200x150 c0) DmgR(W1 0,0 200x10) DmgR(W1 0,10 10x40) DmgR(W1 70,10 130x40) DmgR(W1 0,50 100x100) DmgN(W1 0,0 200x150) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 100x100 c0) DmgR(W1 10,10 60x40) Expose(W1c 0,0 60x40 c0)
+  destroy          Unmap(W2@root) Expose(root 250,100 100x100 c1) Expose(root 150,200 200x50 c0) Expose(W1 100,50 100x100 c0) Unmap(W1@root) Expose(root 50,50 200x150 c0)
+4 V=none
+  create+map       Map(T@root) DmgN(T 0,0 400x300) DmgR(T 0,0 400x300)
+  clear all        Expose(V 0,0 200x75 c1) Expose(V 0,75 100x75 c0)
+  clear 0,0 60x50  Expose(V 0,0 60x50 c0)
+  clear 40,30 120x80 Expose(V 40,30 120x45 c1) Expose(V 40,75 60x35 c0)
+  clear 120,90 50x40
+  clear 150,0 50x150 Expose(V 150,0 50x75 c0)
+  destroy          Unmap(T@root)
+4 V=pixel
+  create+map       Map(T@root) DmgN(T 0,0 400x300) DmgR(T 0,0 400x300)
+  clear all        DmgR(T 20,20 200x75) DmgR(T 20,95 100x75) DmgN(T 0,0 400x300) Expose(V 0,0 200x75 c1) Expose(V 0,75 100x75 c0)
+  clear 0,0 60x50  DmgR(T 20,20 60x50) DmgN(T 0,0 400x300) Expose(V 0,0 60x50 c0)
+  clear 40,30 120x80 DmgR(T 60,50 120x45) DmgR(T 60,95 60x35) DmgN(T 0,0 400x300) Expose(V 40,30 120x45 c1) Expose(V 40,75 60x35 c0)
+  clear 120,90 50x40
+  clear 150,0 50x150 DmgR(T 170,20 50x75) DmgN(T 0,0 400x300) Expose(V 150,0 50x75 c0)
+  destroy          Unmap(T@root)
+done
+==> probe-comp.log <==
+mode comp
+1a T=none children=none
+  create
+  map T            Map(T@root) Expose(T 0,0 300x200 c0)
+  MapSubwindows    Map(C@T) Map(B@T) Map(A@T) Expose(C 0,0 80x80 c0) Expose(B 0,0 80x80 c0) Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)
+  destroy          Unmap(T@root)
+1a T=none children=pixel
+  create
+  map T            Map(T@root) Expose(T 0,0 300x200 c0)
+  MapSubwindows    Map(C@T) Map(B@T) Map(A@T) DmgN(T 0,0 300x200) DmgR(T 190,10 80x80) Expose(C 0,0 80x80 c0) DmgR(T 60,60 80x80) Expose(B 0,0 80x80 c0) DmgR(T 10,10 80x50) DmgR(T 10,60 50x30) Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)
+  destroy          Unmap(T@root)
+1a T=pixel children=none
+  create
+  map T            Map(T@root) DmgN(T 0,0 300x200) DmgR(T 0,0 300x200) Expose(T 0,0 300x200 c0)
+  MapSubwindows    Map(C@T) Map(B@T) Map(A@T) Expose(C 0,0 80x80 c0) Expose(B 0,0 80x80 c0) Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)
+  destroy          Unmap(T@root)
+1a T=pixel children=pixel
+  create
+  map T            Map(T@root) DmgN(T 0,0 300x200) DmgR(T 0,0 300x200) Expose(T 0,0 300x200 c0)
+  MapSubwindows    Map(C@T) Map(B@T) Map(A@T) DmgN(T 0,0 300x200) DmgR(T 190,10 80x80) Expose(C 0,0 80x80 c0) DmgR(T 60,60 80x80) Expose(B 0,0 80x80 c0) DmgR(T 10,10 80x50) DmgR(T 10,60 50x30) Expose(A 0,0 80x50 c1) Expose(A 0,50 50x30 c0)
+  destroy          Unmap(T@root)
+1b bg=none
+  create
+  map P,R          Map(P@root) Expose(P 0,0 300x200 c0) Map(R@root) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) Expose(Rk 0,0 50x40 c0)
+  reparent into P  Unmap(R@root) Reparent(R@root ->P 20,30) Reparent(R@P ->P 20,30) Map(R@P) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) Expose(Rk 0,0 50x40 c0)
+  reparent to root Unmap(R@P) Expose(P 20,30 120x100 c0) Reparent(R@P ->root 400,60) Reparent(R@root ->root 400,60) Map(R@root) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) Expose(Rk 0,0 50x40 c0)
+  destroy          Unmap(R@root) Unmap(P@root)
+1b bg=pixel
+  create
+  map P,R          Map(P@root) DmgN(P 0,0 300x200) DmgR(P 0,0 300x200) Expose(P 0,0 300x200 c0) Map(R@root) DmgN(R 0,0 120x100) DmgR(R 0,0 120x10) DmgR(R 0,10 10x40) DmgR(R 60,10 60x40) DmgR(R 0,50 120x50) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) DmgR(R 10,10 50x40) Expose(Rk 0,0 50x40 c0)
+  reparent into P  Unmap(R@root) Reparent(R@root ->P 20,30) Reparent(R@P ->P 20,30) Map(R@P) DmgN(R 0,0 120x100) DmgR(R 0,0 120x10) DmgR(R 0,10 10x40) DmgR(R 60,10 60x40) DmgR(R 0,50 120x50) DmgN(P 0,0 300x200) DmgR(P 20,30 120x10) DmgR(P 20,40 10x40) DmgR(P 80,40 60x40) DmgR(P 20,80 120x50) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) DmgR(R 10,10 50x40) DmgR(P 30,40 50x40) Expose(Rk 0,0 50x40 c0)
+  reparent to root Unmap(R@P) DmgN(P 0,0 300x200) DmgR(P 20,30 120x100) Expose(P 20,30 120x100 c0) Reparent(R@P ->root 400,60) Reparent(R@root ->root 400,60) Map(R@root) DmgN(R 0,0 120x100) DmgR(R 0,0 120x10) DmgR(R 0,10 10x40) DmgR(R 60,10 60x40) DmgR(R 0,50 120x50) Expose(R 0,0 120x10 c3) Expose(R 0,10 10x40 c2) Expose(R 60,10 60x40 c1) Expose(R 0,50 120x50 c0) DmgR(R 10,10 50x40) Expose(Rk 0,0 50x40 c0)
+  destroy          Unmap(R@root) Unmap(P@root)
+2 P=none K=prel map-K-last
+  create           Map(G@K)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0)
+  map K            Map(K@P) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       000000 x12000
+  GetImage K-pixmap 000000 x12000
+  destroy          Unmap(P@root)
+2 P=none K=pixel map-K-last
+  create           Map(G@K)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0)
+  map K            Map(K@P) DmgN(K 0,0 120x100) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       2050a0 x12000
+  GetImage K-pixmap 2050a0 x12000
+  destroy          Unmap(P@root)
+2 P=none K=prel map-P-last
+  create           Map(G@K)
+  map K (P unmapped) Map(K@P)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       000000 x12000
+  GetImage K-pixmap 000000 x12000
+  destroy          Unmap(P@root)
+2 P=none K=pixel map-P-last
+  create           Map(G@K)
+  map K (P unmapped) Map(K@P)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0) DmgN(K 0,0 120x100) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       2050a0 x12000
+  GetImage K-pixmap 2050a0 x12000
+  destroy          Unmap(P@root)
+2 P=pixel K=prel map-K-last
+  create           Map(G@K)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0)
+  map K            Map(K@P) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       000000 x12000
+  GetImage K-pixmap 000000 x12000
+  destroy          Unmap(P@root)
+2 P=pixel K=pixel map-K-last
+  create           Map(G@K)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0)
+  map K            Map(K@P) DmgN(K 0,0 120x100) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       2050a0 x12000
+  GetImage K-pixmap 2050a0 x12000
+  destroy          Unmap(P@root)
+2 P=pixel K=prel map-P-last
+  create           Map(G@K)
+  map K (P unmapped) Map(K@P)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       000000 x12000
+  GetImage K-pixmap 000000 x12000
+  destroy          Unmap(P@root)
+2 P=pixel K=pixel map-P-last
+  create           Map(G@K)
+  map K (P unmapped) Map(K@P)
+  map P            Map(P@root) Expose(P 0,0 300x200 c0) DmgN(K 0,0 120x100) DmgR(K 0,0 120x10) DmgR(K 0,10 10x40) DmgR(K 60,10 60x40) DmgR(K 0,50 120x50) Expose(K 0,0 120x10 c3) Expose(K 0,10 10x40 c2) Expose(K 60,10 60x40 c1) Expose(K 0,50 120x50 c0) DmgR(K 10,10 50x40) Expose(G 0,0 50x40 c0)
+  GetImage P       000000 x60000
+  GetImage K       2050a0 x12000
+  GetImage K-pixmap 2050a0 x12000
+  destroy          Unmap(P@root)
+3 bg=none redirect-kept
+  GetOverlay       Map(COW@root)
+  create
+  map W1,W2        Map(W1@root) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 200x100 c0) Expose(W1c 0,0 60x40 c0) Map(W2@root) Expose(W2 0,0 200x150 c0)
+  ReleaseOverlay   Unmap(COW@root) Expose(root 0,0 1280x800 c0)
+  destroy          Unmap(W2@root) Unmap(W1@root)
+3 bg=none unredirect-then-release
+  GetOverlay       Map(COW@root)
+  create
+  map W1,W2        Map(W1@root) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 200x100 c0) Expose(W1c 0,0 60x40 c0) Map(W2@root) Expose(W2 0,0 200x150 c0)
+  unredirect
+  ReleaseOverlay   Unmap(COW@root) Expose(root 0,0 1280x50 c7) Expose(root 0,50 50x50 c6) Expose(root 250,50 1030x50 c5) Expose(root 0,100 50x100 c4) Expose(root 350,100 930x100 c3) Expose(root 0,200 150x50 c2) Expose(root 350,200 930x50 c1) Expose(root 0,250 1280x550 c0) Expose(W2 0,0 200x150 c0) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 100x100 c0) Expose(W1c 0,0 60x40 c0)
+  destroy          Unmap(W2@root) Expose(root 250,100 100x100 c1) Expose(root 150,200 200x50 c0) Expose(W1 100,50 100x100 c0) Unmap(W1@root) Expose(root 50,50 200x150 c0)
+  re-redirect
+3 bg=none release-then-unredirect
+  GetOverlay       Map(COW@root)
+  create
+  map W1,W2        Map(W1@root) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 200x100 c0) Expose(W1c 0,0 60x40 c0) Map(W2@root) Expose(W2 0,0 200x150 c0)
+  ReleaseOverlay   Unmap(COW@root) Expose(root 0,0 1280x800 c0)
+  unredirect       Expose(root 0,0 1280x800 c0) DmgN(W1 0,0 200x150) DmgR(W1 0,0 200x150) DmgN(W2 0,0 200x150) DmgR(W2 0,0 200x150)
+  destroy          Unmap(W2@root) Expose(root 250,100 100x100 c1) Expose(root 150,200 200x50 c0) Expose(W1 100,50 100x100 c0) Unmap(W1@root) Expose(root 50,50 200x150 c0)
+  re-redirect
+3 bg=pixel redirect-kept
+  GetOverlay       Map(COW@root)
+  create
+  map W1,W2        Map(W1@root) DmgN(W1 0,0 200x150) DmgR(W1 0,0 200x10) DmgR(W1 0,10 10x40) DmgR(W1 70,10 130x40) DmgR(W1 0,50 200x100) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 200x100 c0) DmgR(W1 10,10 60x40) Expose(W1c 0,0 60x40 c0) Map(W2@root) DmgN(W2 0,0 200x150) DmgR(W2 0,0 200x150) Expose(W2 0,0 200x150 c0)
+  ReleaseOverlay   Unmap(COW@root) Expose(root 0,0 1280x800 c0)
+  destroy          Unmap(W2@root) Unmap(W1@root)
+3 bg=pixel unredirect-then-release
+  GetOverlay       Map(COW@root)
+  create
+  map W1,W2        Map(W1@root) DmgN(W1 0,0 200x150) DmgR(W1 0,0 200x10) DmgR(W1 0,10 10x40) DmgR(W1 70,10 130x40) DmgR(W1 0,50 200x100) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 200x100 c0) DmgR(W1 10,10 60x40) Expose(W1c 0,0 60x40 c0) Map(W2@root) DmgN(W2 0,0 200x150) DmgR(W2 0,0 200x150) Expose(W2 0,0 200x150 c0)
+  unredirect
+  ReleaseOverlay   Unmap(COW@root) Expose(root 0,0 1280x50 c7) Expose(root 0,50 50x50 c6) Expose(root 250,50 1030x50 c5) Expose(root 0,100 50x100 c4) Expose(root 350,100 930x100 c3) Expose(root 0,200 150x50 c2) Expose(root 350,200 930x50 c1) Expose(root 0,250 1280x550 c0) DmgN(W2 0,0 200x150) DmgR(W2 0,0 200x150) Expose(W2 0,0 200x150 c0) DmgN(W1 0,0 200x150) DmgR(W1 0,0 200x10) DmgR(W1 0,10 10x40) DmgR(W1 70,10 130x40) DmgR(W1 0,50 100x100) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 100x100 c0) DmgR(W1 10,10 60x40) Expose(W1c 0,0 60x40 c0)
+  destroy          Unmap(W2@root) Expose(root 250,100 100x100 c1) Expose(root 150,200 200x50 c0) Expose(W1 100,50 100x100 c0) Unmap(W1@root) Expose(root 50,50 200x150 c0)
+  re-redirect
+3 bg=pixel release-then-unredirect
+  GetOverlay       Map(COW@root)
+  create
+  map W1,W2        Map(W1@root) DmgN(W1 0,0 200x150) DmgR(W1 0,0 200x10) DmgR(W1 0,10 10x40) DmgR(W1 70,10 130x40) DmgR(W1 0,50 200x100) Expose(W1 0,0 200x10 c3) Expose(W1 0,10 10x40 c2) Expose(W1 70,10 130x40 c1) Expose(W1 0,50 200x100 c0) DmgR(W1 10,10 60x40) Expose(W1c 0,0 60x40 c0) Map(W2@root) DmgN(W2 0,0 200x150) DmgR(W2 0,0 200x150) Expose(W2 0,0 200x150 c0)
+  ReleaseOverlay   Unmap(COW@root) Expose(root 0,0 1280x800 c0)
+  unredirect       Expose(root 0,0 1280x800 c0) DmgN(W1 0,0 200x150) DmgR(W1 0,0 200x150) DmgN(W2 0,0 200x150) DmgR(W2 0,0 200x150)
+  destroy          Unmap(W2@root) Expose(root 250,100 100x100 c1) Expose(root 150,200 200x50 c0) Expose(W1 100,50 100x100 c0) Unmap(W1@root) Expose(root 50,50 200x150 c0)
+  re-redirect
+4 V=none
+  create+map       Map(T@root) DmgN(T 0,0 400x300) DmgR(T 0,0 400x300)
+  clear all        Expose(V 0,0 200x75 c1) Expose(V 0,75 100x75 c0)
+  clear 0,0 60x50  Expose(V 0,0 60x50 c0)
+  clear 40,30 120x80 Expose(V 40,30 120x45 c1) Expose(V 40,75 60x35 c0)
+  clear 120,90 50x40
+  clear 150,0 50x150 Expose(V 150,0 50x75 c0)
+  destroy          Unmap(T@root)
+4 V=pixel
+  create+map       Map(T@root) DmgN(T 0,0 400x300) DmgR(T 0,0 400x300)
+  clear all        DmgR(T 20,20 200x75) DmgR(T 20,95 100x75) DmgN(T 0,0 400x300) Expose(V 0,0 200x75 c1) Expose(V 0,75 100x75 c0)
+  clear 0,0 60x50  DmgR(T 20,20 60x50) DmgN(T 0,0 400x300) Expose(V 0,0 60x50 c0)
+  clear 40,30 120x80 DmgR(T 60,50 120x45) DmgR(T 60,95 60x35) DmgN(T 0,0 400x300) Expose(V 40,30 120x45 c1) Expose(V 40,75 60x35 c0)
+  clear 120,90 50x40
+  clear 150,0 50x150 DmgR(T 170,20 50x75) DmgN(T 0,0 400x300) Expose(V 150,0 50x75 c0)
+  destroy          Unmap(T@root)
+done
