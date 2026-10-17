@@ -91,25 +91,8 @@ pub(crate) fn send_window_exposures(
     if region.is_empty() {
         return;
     }
-    if paint
-        && let Some(bg) = state.resources.window_resolved_background(window)
-        && !background_paint_inhibited(state, window)
-        && let Some(target) = state.resources.host_drawable_target(window)
-    {
-        for r in region {
-            let _ = backend.clear_area(
-                origin,
-                target.host_xid(),
-                bg.background_pixel,
-                bg.background_pixmap_host_xid.map(|h| h.as_raw()),
-                r.x,
-                r.y,
-                r.width,
-                r.height,
-                bg.tile_origin_offset,
-            );
-            let _dropped = accumulate_damage_to_state(state, window, r.x, r.y, r.width, r.height);
-        }
+    if paint {
+        paint_window_background(state, backend, origin, window, region);
     }
     if subscribers_by_id(state, window, 0x0000_8000).is_empty() {
         return;
@@ -138,6 +121,45 @@ pub(crate) fn send_window_exposures(
                 count,
             );
         });
+    }
+}
+
+/// Xorg's `miPaintWindow(PW_BACKGROUND)` (`mi/miexpose.c:398-436`) over
+/// `region` of `window` (its content space, already clipped): nothing when
+/// the background resolves to None or is inhibited, else the fill and its
+/// DAMAGE.
+pub(crate) fn paint_window_background(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    origin: Option<OriginContext>,
+    window: ResourceId,
+    region: &[x11::xfixes::RegionRect],
+) {
+    if region.is_empty() {
+        return;
+    }
+    let Some(bg) = state.resources.window_resolved_background(window) else {
+        return;
+    };
+    if background_paint_inhibited(state, window) {
+        return;
+    }
+    let Some(target) = state.resources.host_drawable_target(window) else {
+        return;
+    };
+    for r in region {
+        let _ = backend.clear_area(
+            origin,
+            target.host_xid(),
+            bg.background_pixel,
+            bg.background_pixmap_host_xid.map(|h| h.as_raw()),
+            r.x,
+            r.y,
+            r.width,
+            r.height,
+            bg.tile_origin_offset,
+        );
+        let _dropped = accumulate_damage_to_state(state, window, r.x, r.y, r.width, r.height);
     }
 }
 

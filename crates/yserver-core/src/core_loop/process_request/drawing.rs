@@ -2,15 +2,15 @@ use crate::{
     backend::{Backend, OriginContext, params::FillState},
     core_loop::{
         damage_fanout::{accumulate_damage_full_to_state, accumulate_damage_to_state},
-        fanout::emit_window_event_to_state,
         process_request::{
             CopyAreaSubRect, RequestOutcome, background_paint_inhibited, emit_x11_error,
+            paint_window_background,
             redirect::{
                 current_bounding_in_parent, effective_redirect_mode_for_window,
                 redirected_ancestor_or_self,
             },
-            validate_drawable_and_gc, validate_drawable_only, window_unviewable, write_to_client,
-            zpixmap_expected_len,
+            send_window_exposures, validate_drawable_and_gc, validate_drawable_only,
+            window_unviewable, write_to_client, zpixmap_expected_len,
         },
     },
     resources::ROOT_WINDOW,
@@ -23,15 +23,37 @@ use yserver_protocol::{
     x11::{ClientId, RequestHeader, ResourceId, SequenceNumber},
 };
 
-fn clear_extent(requested: u16, offset: i16, window_extent: u16) -> u16 {
-    if requested != 0 {
-        return requested;
+/// Xorg's `miClearToBackground` region (`mi/miwindow.c:63-112`): the
+/// requested rect (a zero width/height reaching the window edge) clipped
+/// to the window's clip list, in its content space.
+fn clear_area_region(
+    state: &ServerState,
+    request: x11::ClearAreaRequest,
+    w_width: u16,
+    w_height: u16,
+) -> Vec<x11::xfixes::RegionRect> {
+    let span = |offset: i16, requested: u16, extent: u16| -> (i32, i32) {
+        let lo = i32::from(offset);
+        let hi = if requested == 0 {
+            i32::from(extent)
+        } else {
+            lo + i32::from(requested)
+        };
+        (lo.max(0), hi.min(i32::from(extent)))
+    };
+    let (x1, x2) = span(request.x, request.width, w_width);
+    let (y1, y2) = span(request.y, request.height, w_height);
+    if x2 <= x1 || y2 <= y1 {
+        return Vec::new();
     }
-    if offset <= 0 {
-        window_extent
-    } else {
-        window_extent.saturating_sub(offset as u16)
-    }
+    let rect = x11::xfixes::RegionRect {
+        x: i16::try_from(x1).unwrap_or(i16::MAX),
+        y: i16::try_from(y1).unwrap_or(i16::MAX),
+        width: u16::try_from(x2 - x1).unwrap_or(u16::MAX),
+        height: u16::try_from(y2 - y1).unwrap_or(u16::MAX),
+    };
+    let clip = crate::core_loop::clip_list::clip_list(state, request.window);
+    crate::core_loop::clip_list::intersect(&[rect], &clip)
 }
 
 pub(super) fn handle_put_image(
@@ -1016,70 +1038,12 @@ pub(super) fn handle_clear_area(
                 61,
             );
         }
-        let extents = state
-            .resources
-            .window(request.window)
-            .map(|w| (w.width, w.height));
-        let resolved_bg = state.resources.window_resolved_background(request.window);
-        let target = state.resources.host_drawable_target(request.window);
-        if let Some((w_width, w_height)) = extents
-            && let Some(target) = target
-        {
-            let width = clear_extent(request.width, request.x, w_width);
-            let height = clear_extent(request.height, request.y, w_height);
-            if width != 0 && height != 0 {
-                // Background None (X11 §ClearArea), or inhibited
-                // (`miPaintWindow`, `mi/miexpose.c:435`): the contents
-                // are left untouched — no paint, no damage. Expose events
-                // (below) still fire when requested.
-                if let Some(bg) = resolved_bg
-                    && !background_paint_inhibited(state, request.window)
-                {
-                    backend.clear_area(
-                        origin,
-                        target.host_xid(),
-                        bg.background_pixel,
-                        bg.background_pixmap_host_xid.map(|h| h.as_raw()),
-                        request.x,
-                        request.y,
-                        width,
-                        height,
-                        bg.tile_origin_offset,
-                    )?;
-                    let _dropped = accumulate_damage_to_state(
-                        state,
-                        request.window,
-                        request.x,
-                        request.y,
-                        width,
-                        height,
-                    );
-                }
-                // X11 spec: when `exposures` is True (header.data),
-                // the server sends an Expose event for visible regions
-                // of the cleared rectangle.
-                if exposures {
-                    let req = request;
-                    let _dropped = emit_window_event_to_state(
-                        state,
-                        req.window,
-                        0x0000_8000,
-                        |buf, seq, order| {
-                            x11::encode_expose_event(
-                                buf,
-                                seq,
-                                order,
-                                req.window,
-                                req.x as u16,
-                                req.y as u16,
-                                width,
-                                height,
-                                0,
-                            );
-                        },
-                    );
-                }
-            }
+        let (w_width, w_height) = (window.width, window.height);
+        let region = clear_area_region(state, request, w_width, w_height);
+        if exposures {
+            send_window_exposures(state, backend, origin, request.window, &region, true);
+        } else {
+            paint_window_background(state, backend, origin, request.window, &region);
         }
     }
     debug!(
