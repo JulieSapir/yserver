@@ -220,6 +220,34 @@ fn realize_without_background_paint_shows_the_parent() {
     assert_eq!(first_pixel(&mut b, inhibited), [0x00, 0x00, 0xFF]);
 }
 
+/// Xorg's `compRestoreWindow` (`composite/compalloc.c:232-256`): what was
+/// drawn into the backing is the window's content once it is unredirected.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn unredirect_restores_what_was_drawn_into_the_backing() {
+    let Some(mut b) = headless_or_skip() else {
+        return;
+    };
+    let xid = create_window(&mut b);
+    let backing = b
+        .allocate_redirected_backing(None, WindowHandle::from_raw(xid).expect("window"), 8, 8, 24)
+        .expect("allocate_redirected_backing");
+    fill(&mut b, xid, 0x0000_FF00, (0, 0, 8, 8));
+    b.release_redirected_backing(None, backing)
+        .expect("release_redirected_backing");
+    b.maybe_composite().expect("compose over no outputs");
+
+    let reply = b
+        .get_image(None, xid, 2, 0, 0, 8, 8, !0)
+        .expect("get_image")
+        .expect("reply");
+    let pixels = &reply[32..];
+    assert!(
+        pixels.chunks_exact(4).all(|p| p[..3] == [0x00, 0xFF, 0x00]),
+        "the whole window holds the backing's green"
+    );
+}
+
 /// A backend with one 64x48 headless-surface output, its clock and link.
 struct SurfaceFixture {
     b: XBackend<SurfacePlatform>,

@@ -175,12 +175,41 @@ pub(crate) fn not_clipped_by_children(state: &ServerState, w: ResourceId) -> Vec
     child_universe(state, &universe, parent, w)
 }
 
+/// [`not_clipped_by_children`] of `w` while the `still_redirected` windows,
+/// Manual redirects not yet released, stay transparent: the clip of
+/// `compRestoreWindow` when `compFreeClientSubwindows` unredirects one
+/// child at a time (`composite/compalloc.c:450-452`).
+pub(crate) fn not_clipped_by_children_while(
+    state: &ServerState,
+    w: ResourceId,
+    still_redirected: &[ResourceId],
+) -> Vec<RegionRect> {
+    let Some(parent) = state.resources.window(w).map(|win| win.parent) else {
+        return Vec::new();
+    };
+    if w == ROOT_WINDOW || state.composite_redirects.window_mode(w).is_some() {
+        return not_clipped_by_children(state, w);
+    }
+    let universe = not_clipped_by_children(state, parent);
+    child_universe_with(state, &universe, parent, w, still_redirected)
+}
+
 /// [`not_clipped_by_children`] of `child` from its parent's.
 fn child_universe(
     state: &ServerState,
     parent_universe: &[RegionRect],
     parent: ResourceId,
     child: ResourceId,
+) -> Vec<RegionRect> {
+    child_universe_with(state, parent_universe, parent, child, &[])
+}
+
+fn child_universe_with(
+    state: &ServerState,
+    parent_universe: &[RegionRect],
+    parent: ResourceId,
+    child: ResourceId,
+    also_transparent: &[ResourceId],
 ) -> Vec<RegionRect> {
     if !viewable(state, child) {
         return Vec::new();
@@ -202,7 +231,7 @@ fn child_universe(
     let siblings = state.resources.children(parent);
     if let Some(at) = siblings.iter().position(|s| *s == child) {
         for s in &siblings[at + 1..] {
-            if viewable(state, *s) && !transparent(state, *s) {
+            if viewable(state, *s) && !transparent(state, *s) && !also_transparent.contains(s) {
                 universe = subtract(&universe, &border_size_in_parent(state, *s));
             }
         }

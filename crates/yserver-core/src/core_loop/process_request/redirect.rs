@@ -315,6 +315,24 @@ pub(crate) fn sync_redirect_backing(
     }
 }
 
+/// Xorg's `compRestoreWindow` (`composite/compalloc.c:232-256`): the old
+/// backing is copied back into the unredirected `window` with
+/// IncludeInferiors, so DAMAGE reports its content where it shows. The
+/// `still_redirected` windows are released after it and do not clip yet.
+pub(super) fn damage_restored_window(
+    state: &mut ServerState,
+    window: ResourceId,
+    still_redirected: &[ResourceId],
+) {
+    let region =
+        crate::core_loop::clip_list::not_clipped_by_children_while(state, window, still_redirected);
+    for r in region {
+        let _dropped = crate::core_loop::damage_fanout::accumulate_damage_to_state(
+            state, window, r.x, r.y, r.width, r.height,
+        );
+    }
+}
+
 /// Point GLX pixmap `glx_xid` at `new_host`, moving its export-lifetime ref along (acquire NEW, release OLD).
 pub(super) fn retarget_glx_pixmap_export(
     state: &mut ServerState,

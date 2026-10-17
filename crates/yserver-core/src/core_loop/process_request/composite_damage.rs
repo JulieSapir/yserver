@@ -4,7 +4,7 @@ use crate::{
         damage_fanout::{accumulate_damage_full_to_state, report_existing_damage_to_state},
         process_request::{
             RequestOutcome, emit_x11_error_with_minor,
-            redirect::{BackingDamage, sync_redirect_backing},
+            redirect::{BackingDamage, damage_restored_window, sync_redirect_backing},
             shape_xfixes::{
                 drawable_full_rect_xfixes, format_region_rects, normalize_region_rects,
             },
@@ -105,15 +105,15 @@ pub(super) fn handle_composite_request(
                     return error(state, x11::error::BAD_MATCH);
                 }
             }
-            // Xorg's order is lastChild first, ours bottom first. The COW
-            // gets no record from a subwindows redirect (compRedirectWindow
-            // returns Success for it).
+            // Xorg walks lastChild→prevSib, bottom-most first, as our
+            // children are stored (`composite/compalloc.c:383`, `:450`). The
+            // COW gets no record from a subwindows redirect
+            // (compRedirectWindow returns Success for it).
             let targets: Vec<ResourceId> = if subwindows {
                 state
                     .resources
                     .children(window)
                     .iter()
-                    .rev()
                     .copied()
                     .filter(|child| *child != COMPOSITE_OVERLAY_WINDOW)
                     .collect()
@@ -176,15 +176,22 @@ pub(super) fn handle_composite_request(
                     state, backend, origin, &released,
                 );
             }
-            for (target, before) in targets.into_iter().zip(before) {
+            for (i, (target, before)) in targets.iter().zip(before).enumerate() {
+                let had_backing = state
+                    .resources
+                    .window(*target)
+                    .is_some_and(|w| w.redirected_backing.is_some());
                 sync_redirect_backing(
                     state,
                     backend,
                     origin,
-                    target,
+                    *target,
                     before,
                     BackingDamage::Allocation,
                 );
+                if had_backing && state.composite_redirects.window_mode(*target).is_none() {
+                    damage_restored_window(state, *target, &targets[i + 1..]);
+                }
             }
         }
         x11composite::CREATE_REGION_FROM_BORDER_CLIP => {

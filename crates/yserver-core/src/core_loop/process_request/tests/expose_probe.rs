@@ -45,11 +45,17 @@ impl Probe {
             next_xid: 0x0020_0001,
             sequence: 0,
         };
-        let mut body = ROOT_WINDOW.0.to_le_bytes().to_vec();
-        body.extend_from_slice(&0x0800u32.to_le_bytes());
-        body.extend_from_slice(&0x0008_0000u32.to_le_bytes());
-        probe.request(2, 0, &body);
+        probe.backend.redirect_activation_supported = true;
+        probe.select(ROOT_WINDOW.0, 0x0008_0000);
         probe
+    }
+
+    /// ChangeWindowAttributes(event-mask).
+    pub(super) fn select(&mut self, window: u32, mask: u32) {
+        let mut body = window.to_le_bytes().to_vec();
+        body.extend_from_slice(&0x0800u32.to_le_bytes());
+        body.extend_from_slice(&mask.to_le_bytes());
+        self.request(2, 0, &body);
     }
 
     pub(super) fn request(&mut self, opcode: u8, data: u8, body: &[u8]) {
@@ -129,6 +135,18 @@ impl Probe {
         let mut body = window.to_le_bytes().to_vec();
         body.extend_from_slice(&[1, 0, 0, 0]);
         self.request(COMPOSITE_MAJOR, 2, &body);
+    }
+
+    /// COMPOSITE `UnredirectSubwindows(window, Manual)`.
+    pub(super) fn unredirect_subwindows(&mut self, window: u32) {
+        let mut body = window.to_le_bytes().to_vec();
+        body.extend_from_slice(&[1, 0, 0, 0]);
+        self.request(COMPOSITE_MAJOR, 4, &body);
+    }
+
+    /// COMPOSITE `GetOverlayWindow(root)` (minor 7) or `ReleaseOverlayWindow` (8).
+    pub(super) fn overlay(&mut self, minor: u8) {
+        self.request(COMPOSITE_MAJOR, minor, &ROOT_WINDOW.0.to_le_bytes());
     }
 
     /// Whether `window`'s storage was realized with its background paint.
@@ -455,4 +473,50 @@ fn manual_redirect_parent_inhibits_parent_relative_children() {
              Expose(G 0,0 50x40 c0)"
         )
     );
+}
+
+/// Case 3 of the probe in comp mode: W1 (with child W1c) and W2 mapped under
+/// the overlay, then ReleaseOverlayWindow and UnredirectSubwindows(root) in
+/// either order. The unredirect step's events, root's size.
+fn overlay_release_case(bg: Bg, release_first: bool) -> (String, (u16, u16)) {
+    let mut p = Probe::new();
+    p.redirect_subwindows(ROOT_WINDOW.0);
+    p.select(ROOT_WINDOW.0, EXPOSURE_AND_SUBSTRUCTURE);
+    p.overlay(7);
+    let cow = crate::resources::COMPOSITE_OVERLAY_WINDOW.0;
+    p.names.push((cow, "COW"));
+    p.select(cow, EXPOSURE_AND_SUBSTRUCTURE);
+    let w1 = p.create("W1", ROOT_WINDOW.0, (50, 50, 200, 150), bg);
+    let w2 = p.create("W2", ROOT_WINDOW.0, (150, 100, 200, 150), bg);
+    let w1c = p.create("W1c", w1, (10, 10, 60, 40), bg);
+    p.map(w1c);
+    p.watch_damage(w1, true);
+    p.watch_damage(w2, true);
+    p.map(w1);
+    p.map(w2);
+    let _ = p.step();
+    if release_first {
+        p.overlay(8);
+        let _ = p.step();
+    }
+    p.unredirect_subwindows(ROOT_WINDOW.0);
+    let line = p.step();
+    let root = p.state.resources.window(ROOT_WINDOW).unwrap();
+    (line, (root.width, root.height))
+}
+
+/// `compFreeClientSubwindows` unredirects the children bottom-most first
+/// (`composite/compalloc.c:450`), each `compRestoreWindow` copying its old
+/// backing back with IncludeInferiors (`:232-256`): DAMAGE over the window
+/// while the ones above are still redirected, nothing under the overlay.
+#[test]
+fn unredirect_after_overlay_release_damages_the_restored_windows() {
+    for bg in [Bg::None, Bg::Pixel(0x80_8080)] {
+        let (line, (w, h)) = overlay_release_case(bg, true);
+        assert_eq!(
+            line,
+            format!("Expose(root 0,0 {w}x{h} c0) DmgR(W1 0,0 200x150) DmgR(W2 0,0 200x150)")
+        );
+        assert_eq!(overlay_release_case(bg, false).0, "");
+    }
 }
