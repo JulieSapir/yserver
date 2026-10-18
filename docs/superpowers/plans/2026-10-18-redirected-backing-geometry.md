@@ -27,7 +27,7 @@ every resize and every tree change. Three reviewer-measured bugs from the #260 r
 (`crates/yserver/src/kms/render/backend/portable/{redirect,windows,paint_target}.rs`), `render_acceptance`
 (lavapipe), and the vng suite (`tools/vng-scenarios`, `golden=live`).
 
-**Status:** draft for jos's review. Not yet reviewed by codex.
+**Status:** reviewed by codex; review corrections and jos's decisions applied (see "Decisions" at the end).
 
 **Branch:** `fix/redirected-backing-geometry`, cut from master `54813f1e` (includes #260).
 
@@ -177,12 +177,16 @@ Why each bug happens:
   5. `cargo clippy --all-targets -- -D warnings` (also with `--features xdmcp`);
   6. `tools/check-layout.sh`;
   7. the vng `redirected-backing` scenario (both legs).
+
+  Every command runs under `env -u RUSTC_WRAPPER`; before each commit the full set is
+  `cargo test --workspace --all-targets --locked` and the same with lavapipe and `-- --ignored`.
 - **Tests:**
   - New acceptance tests go in a new `crates/yserver/tests/render_acceptance/redirected_geometry.rs`, registered in
     `main.rs`. `resize.rs` is 1491 lines already.
   - Every test names its mutation, and the mutation is run once.
   - Red first, against the Xorg value. Never a hypothesis-derived value.
-- **Commits:** one per task, made only after jos's HW smoke of that build (no commit before smoke). Trailer
+- **Commits:** one per task, made after that task's automated gate passes. The HW smoke runs once, at the end
+  (Task 6), on the whole branch. Trailer
   `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`. Never a session URL.
 
 ## Review Focus
@@ -195,8 +199,9 @@ Why each bug happens:
    `unredirect_restores_the_window_leaf_from_the_backing` stays green). Only the rotate stops calling the restore.
 4. **Ordering inside a resize:** realloc, then the NW content copy, then the gravity carries from OLD, then OLD
    dropped, then border exposures and background exposures. Test `resize_call_order_matches_xorg` (Task 2).
-5. **Border damage on W itself:** the rotate already damages W's ring. A second report from the new border exposure
-   must match Xorg (`tools/border-damage-probe.c` A/B), not just be added.
+5. **Border damage on W itself:** the rotate already damages W's ring. yserver keeps ONE report; Xorg reports it
+   twice (`borderExposed` in HandleExposures, then the `compRepaintBorder` work proc). That difference is measured
+   and documented, not matched: the new border exposure must not add a second report for W's own ring.
 
 ---
 
@@ -208,13 +213,16 @@ Why each bug happens:
   map orders), CF, G, GS, U, M and N; the D sub-cases PutImage, ImageText8, PolyText8, CopyPlane, ShmPutImage and
   ShmGetImage; and Damage `RawRectangles` on W for C and U.
 - Create: `tools/vng-scenarios/redirected-backing.sh` with a `# golden: probe.log` line, in the style of
-  `damage-after-map.sh`.
+  `damage-after-map.sh`. The probe writes the raw damage rectangles to a separate `damage-raw.log`, which is
+  **not** a golden file; `probe.log` holds only pixels and damage **coverage**, so `golden=live` diffs exactly what
+  gates.
 - Modify: `tools/vng-scenarios/suite.list`. Add `redirected-backing guest=redirected-backing.sh timeout=300
   golden=live`, **commented out** until Task 5 turns it green, so nightly CI does not go red.
 
-- [ ] **Step 1:** write the probe. Damage lines print the **union coverage** per phase as well as the raw rects. Xorg
-  reports `extents ∩ clip` per fill (`damagePolyFillRect`, `miext/damage/damage.c:1194`) and yserver reports the
-  region, so raw rects are informational and coverage is the gate.
+- [ ] **Step 1:** write the probe. `probe.log` damage lines print the **union coverage** per phase; the raw rects go
+  to `damage-raw.log` only. Xorg reports `extents ∩ clip` per fill (`damagePolyFillRect`,
+  `miext/damage/damage.c:1194`) and yserver reports the region, so raw rects are informational and coverage is the
+  gate. Raw-rect granularity is out of scope.
 - [ ] **Step 2:** run both legs; the Xorg leg must reproduce the Measurements table. Save the Xorg `probe.log`
   values into the test constants of Tasks 1-4.
 - [ ] **Step 3:** commit `test(vng): redirected-backing pixel/damage probe against Xorg (not yet in the suite)`.
@@ -281,7 +289,7 @@ backend op that calls `resolve_paint_target`:
 - [ ] **Step 2:** run them; they fail with the yserver column values above.
 - [ ] **Step 3:** implement.
 - [ ] **Step 4:** run the gate; D rows match Xorg in the vng probe. Also run the xts5 `Xlib9` IncludeInferiors cases
-  touched by #133 step 3, if jos agrees (xts only on request).
+  touched by #133 step 3 (jos: yes). If xts cannot run locally, note it and skip; jos runs xts on bee.
 - [ ] **Step 5:** commit `fix(composite): draw on and read a redirected window through the window, not its backing
   pixmap`.
 
@@ -326,6 +334,10 @@ backend op that calls `resolve_paint_target`:
   `gravitate[g] ∩ oldRegion` copied into the new clip, so the exposure diff that follows covers exactly what the
   copy did not. Children are carried bottom-to-top by `stack_rank`, so a higher sibling wins an overlap at the
   destination.
+- **Failure path.** OLD stays retained until both the NW content copy and every gravity carry from it have
+  finished; only then is it released. If the retain or the reallocation fails, the old route stays valid (W still
+  targets OLD, OLD keeps its Reason-1 hold, and the carries fall back to `carry_from = None`). Nothing ever copies
+  from a freed source.
 - Unchanged: the non-realloc paths. A pure move, and a resize of an **unredirected** W inside a redirected ancestor,
   keep `carry_from = None` and the in-place carry. Resizing W there does not reallocate the ancestor's backing.
 
@@ -400,16 +412,19 @@ backend op that calls `resolve_paint_target`:
 **Files:**
 - Modify: backend `portable/windows.rs:1030-1150` (`paint_window_border`) and the new `…_rects` from Task 3. When
   `target.backing_id()` is not the window's own leaf or own backing (the window paints into an ancestor's backing):
-  - subtract `copy_area_shared_backing_occluders(host_xid, &target)` (`paint_target.rs:906`), which is mapped
-    higher siblings at every level;
-  - clip to `target.content_bounds()` (`crates/yserver-render/src/kms/render/target.rs:266`), since a child's border may not reach its parent's border
-    (`mivaltree.c:386`).
+  - clip the ring to the **parent's and ancestors'** content bounds, since a child's border may not reach its
+    parent's border (`mivaltree.c:386`). Not `target.content_bounds()`: that includes the child's own content
+    bounds (`paint_target.rs:485`), and the ring lies outside them, so it would clip away the ring itself;
+  - then subtract `copy_area_shared_backing_occluders(host_xid, &target)` (`paint_target.rs:906`), which is mapped
+    higher siblings at every level.
 
   This is Xorg's `borderClip` (`miComputeClips`). Leaf targets are unchanged.
 
 - [ ] **Step 1: tests.**
   - Acceptance `a_ring_painted_under_a_higher_sibling_leaves_the_sibling` (M): (11,20) and (20,11) are `00ff00`.
     Mutation: drop the occluder subtract.
+  - `an_unobscured_part_of_the_ring_stays_painted` (same M layout): a point on C's ring that S does not cover is
+    `ff0000`. Mutation: clip the ring to `target.content_bounds()`.
   - `a_childs_ring_stops_at_its_bordered_parents_content`: W bw 3, child crossing W's right edge; W's ring column
     keeps W's border pixel. Expected value from a Xorg probe run, added to the Task 0 probe as case **MB**. This
     divergence is **not measured yet**; it is inferred from the code, so measure it first and drop the test if
@@ -419,13 +434,14 @@ backend op that calls `resolve_paint_target`:
 - [ ] **Step 4:** run the gate.
 - [ ] **Step 5:** commit `fix(composite): a border painted into a shared backing stays under higher siblings`.
 
-### Task 5: N (optional, see Open Question 1), suite entry, status
+### Task 5: N, suite entry, status
 
 **Files:**
 - Modify: backend `portable/redirect.rs:860-870`. Call `overlay_backing_inferiors` only when W has no redirected
   ancestor. Under one, `seed_backing_from_parent` already reads the authoritative ancestor backing, which is
   `compNewPixmap`'s IncludeInferiors copy.
-- Modify: `tools/vng-scenarios/suite.list` (uncomment the Task 0 entry) and `docs/status.md` (one entry: what was
+- Modify: `tools/vng-scenarios/suite.list` (uncomment the Task 0 entry; add it to the `QUICK` filter in
+  `.github/workflows/vng-suite.yml` if its measured runtime is short) and `docs/status.md` (one entry: what was
   measured, the four fixes, and the remaining items below).
 
 - [ ] **Step 1:** acceptance `nested_redirect_seeds_from_the_ancestor_backing` (N): (3,3) and (10,10) `00ff00`,
@@ -434,7 +450,7 @@ backend op that calls `resolve_paint_target`:
 - [ ] **Step 3:** commit `fix(composite): a nested redirect seeds from its ancestor's backing, not stale leaves`, then
   `test(vng): redirected-backing joins the suite`.
 
-### Task 6: Hardware smoke (jos observes; no commit before)
+### Task 6: Hardware smoke (jos observes, once, on the whole branch)
 
 The user watches. Send the per-step observation guide first.
 
@@ -478,15 +494,12 @@ restore and overlay passes are gone; quote the `record_paint_submit` delta.
     red.
   - M and N are small, and each can be dropped without touching the rest.
 
-## Open questions for jos
+## Decisions (jos, after the codex review)
 
-1. **N and M** come from the same principle and are measured. Do they belong on this branch (one branch per issue,
-   since they are part of "the backing is authoritative"), or should they get their own issues?
-2. **Border damage on a resized redirected W:** Xorg damages it twice, once for `borderExposed` during
-   HandleExposures and once for the `compRepaintBorder` work proc. Should yserver match the duplicate exactly
-   (Task 3 Step 4 decides by the border-damage A/B), or keep the single report the #143 work settled on?
-3. **Commit cadence:** commit per task after each HW smoke, or one smoke at the end and FF-merge the five commits?
-4. **xts:** run the #133 `Xlib9` IncludeInferiors set after Task 1 (GetImage and CopyPlane now read through the
-   window)?
-5. **Raw-rect damage granularity** (`extents ∩ clip`): its own issue, or ignore?
-6. **The vng scenario** in the quick tier, or nightly only?
+1. **N and M** are fixed on this branch.
+2. **Border damage on a resized redirected W:** keep ONE report. Xorg reports it twice; document that measured
+   difference instead of matching it.
+3. **Commit cadence:** automated gate per task, commit after each gate; one HW smoke at the end.
+4. **xts:** yes to the `Xlib9` IncludeInferiors cases, if xts runs here; otherwise skip, jos runs it on bee.
+5. **Raw-rect damage granularity:** out of scope.
+6. **The vng scenario** joins the quick tier if its measured runtime is short.
