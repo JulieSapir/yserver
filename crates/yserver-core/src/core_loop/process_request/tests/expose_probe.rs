@@ -700,3 +700,80 @@ fn damage_notifies_follow_the_damage_list_order() {
         ]
     );
 }
+
+/// A window whose background waits for the backing its map allocates is
+/// painted, once the backing exists, where its map exposures paint: its
+/// content less its viewable InputOutput children's border boxes
+/// (ClipByChildren). Painted whole, it covered a bordered child in the
+/// backing they share, border included, and a child's own deferred paint is
+/// its background alone. An InputOnly child draws nothing and leaves no hole.
+#[test]
+fn a_deferred_background_leaves_the_childrens_area_alone() {
+    let mut p = Probe::new();
+    p.redirect_subwindows(ROOT_WINDOW.0);
+    let w = p.create("W", ROOT_WINDOW.0, (0, 0, 178, 178), Bg::Pixel(0xFF_FFFF));
+    let c = p.create("C", w, (10, 10, 50, 50), Bg::Pixel(0xFF_FFFF));
+    // ConfigureWindow(C, CWBorderWidth = 4): its border box is (10, 10) to
+    // (68, 68).
+    let mut body = c.to_le_bytes().to_vec();
+    body.extend_from_slice(&0x0010u16.to_le_bytes());
+    body.extend_from_slice(&[0, 0]);
+    body.extend_from_slice(&4u32.to_le_bytes());
+    p.request(12, 0, &body);
+    // An InputOnly child over the background's bottom right.
+    let mut body = Vec::new();
+    for word in [0x0010_7777_u32, w] {
+        body.extend_from_slice(&word.to_le_bytes());
+    }
+    for half in [120i16, 120, 40, 40] {
+        body.extend_from_slice(&half.to_le_bytes());
+    }
+    body.extend_from_slice(&0u16.to_le_bytes()); // border
+    body.extend_from_slice(&2u16.to_le_bytes()); // InputOnly
+    body.extend_from_slice(&0u32.to_le_bytes()); // CopyFromParent visual
+    body.extend_from_slice(&0u32.to_le_bytes()); // no attributes
+    p.request(1, 0, &body);
+    p.map(c);
+    p.map(0x0010_7777);
+    p.map(w);
+    let host = p
+        .state
+        .resources
+        .window(ResourceId(w))
+        .and_then(|w| w.host_xid)
+        .expect("W's host")
+        .as_raw();
+    let rects: Vec<(i16, i16, u16, u16)> = p
+        .backend
+        .calls()
+        .iter()
+        .filter_map(|call| match call {
+            RecordedCall::PaintWindowBackgroundRect {
+                host_xid,
+                x,
+                y,
+                width,
+                height,
+            } if *host_xid == host => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .collect();
+    assert!(!rects.is_empty(), "W's background is painted");
+    let overlaps_child = |&(x, y, w, h): &(i16, i16, u16, u16)| {
+        let (x, y, w, h) = (i32::from(x), i32::from(y), i32::from(w), i32::from(h));
+        x < 68 && x + w > 10 && y < 68 && y + h > 10
+    };
+    assert!(
+        !rects.iter().any(overlaps_child),
+        "nothing of W's paint covers C or its border: {rects:?}"
+    );
+    let area: u32 = rects
+        .iter()
+        .map(|&(_, _, w, h)| u32::from(w) * u32::from(h))
+        .sum();
+    assert_eq!(
+        area,
+        178 * 178 - 58 * 58,
+        "all of W but C's border box, the InputOnly child's area included: {rects:?}"
+    );
+}

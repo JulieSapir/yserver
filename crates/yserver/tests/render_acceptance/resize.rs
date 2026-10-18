@@ -1348,3 +1348,144 @@ fn bg_none_window_is_seeded_from_its_parent_on_remap() {
         "the remap seeds from the parent"
     );
 }
+
+/// A resize exposes the whole window, and the exposure paints its
+/// background into the redirect backing at the border inset: the ring
+/// stays the border pixel. The background used to go to the backing's
+/// pixmap, whose origin is the window's OUTER corner, so it landed `bw`
+/// up and to the left and painted over the ring's top and left.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_resize_keeps_the_border_of_a_redirected_window_with_a_background() {
+    const W: u32 = 0x1470;
+    const BW: usize = 2;
+    let Some(mut f) = ProtoFixture::new() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    let visual = yserver_core::resources::ROOT_VISUAL.0;
+    // A compositor redirects the root's children.
+    let mut body = Vec::new();
+    body.extend_from_slice(&root.to_le_bytes());
+    body.extend_from_slice(&[1u8, 0, 0, 0]); // CompositeRedirectManual
+    f.req(144, 2, &body);
+    // CWBackPixel (0x02) = white, CWBorderPixel (0x08) = red.
+    or_create_window(
+        &mut f,
+        W,
+        root,
+        24,
+        0,
+        0,
+        100,
+        100,
+        BW as u16,
+        visual,
+        0x0000_000A,
+        &[0x00FF_FFFF, 0x00FF_0000],
+    );
+    wz_map(&mut f, W);
+    wz_configure(&mut f, W, 0x0C, &[160, 120]);
+
+    let (sw, sh, px) = f.backing(W);
+    assert_eq!((sw, sh), (164, 124), "bordered backing extent");
+    let at = |x: usize, y: usize| {
+        let o = (y * sw as usize + x) * 4;
+        [px[o], px[o + 1], px[o + 2], px[o + 3]]
+    };
+    for (x, y) in [(0, 60), (BW - 1, 60), (80, 0), (80, BW - 1)] {
+        assert_eq!(
+            at(x, y),
+            [0x00, 0x00, 0xFF, 0xFF],
+            "the ring keeps the border pixel at ({x},{y})",
+        );
+    }
+    for (x, y) in [(BW, 60), (80, BW), (sw as usize - BW - 1, 60)] {
+        assert_eq!(
+            at(x, y),
+            [0xFF, 0xFF, 0xFF, 0xFF],
+            "the background fills the content at ({x},{y})",
+        );
+    }
+}
+
+/// A resize gives a redirected window a new backing, seeded from the
+/// leaves of the window and its subwindows. A subwindow's border is in
+/// its own leaf, around its content, and must come along: xev's 50x50
+/// subwindow with a 4-pixel border lost its border when a compositor
+/// resized xev's window.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_resize_keeps_a_subwindows_border_in_its_parents_backing() {
+    const W: u32 = 0x1480;
+    const C: u32 = 0x1481;
+    const CBW: usize = 4;
+    let Some(mut f) = ProtoFixture::new() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    let visual = yserver_core::resources::ROOT_VISUAL.0;
+    let mut body = Vec::new();
+    body.extend_from_slice(&root.to_le_bytes());
+    body.extend_from_slice(&[1u8, 0, 0, 0]); // CompositeRedirectManual
+    f.req(144, 2, &body);
+    // White windows; the subwindow's border is red (CWBackPixel 0x02,
+    // CWBorderPixel 0x08).
+    or_create_window(
+        &mut f,
+        W,
+        root,
+        24,
+        0,
+        0,
+        178,
+        178,
+        0,
+        visual,
+        0x0000_0002,
+        &[0x00FF_FFFF],
+    );
+    or_create_window(
+        &mut f,
+        C,
+        W,
+        24,
+        10,
+        10,
+        50,
+        50,
+        CBW as u16,
+        visual,
+        0x0000_000A,
+        &[0x00FF_FFFF, 0x00FF_0000],
+    );
+    wz_map(&mut f, C);
+    wz_map(&mut f, W);
+    wz_configure(&mut f, W, 0x0C, &[400, 300]);
+
+    let (sw, _, px) = f.backing(W);
+    let at = |x: usize, y: usize| {
+        let o = (y * sw as usize + x) * 4;
+        [px[o], px[o + 1], px[o + 2], px[o + 3]]
+    };
+    let red = [0x00, 0x00, 0xFF, 0xFF];
+    // The ring: (10, 10) to (68, 68), 4 wide; a row and a column
+    // through the middle cross all four sides.
+    for across in 0..CBW {
+        for (x, y) in [
+            (10 + across, 39),
+            (67 - across, 39),
+            (39, 10 + across),
+            (39, 67 - across),
+        ] {
+            assert_eq!(at(x, y), red, "the subwindow's border at ({x},{y})");
+        }
+    }
+    assert_eq!(
+        at(39, 39),
+        [0xFF, 0xFF, 0xFF, 0xFF],
+        "its content inside the ring"
+    );
+}

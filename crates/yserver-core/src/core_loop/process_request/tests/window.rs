@@ -3087,3 +3087,61 @@ fn map_redirected_window_with_background_none_reports_no_damage() {
     assert_eq!(comp, ["MapNotify"]);
     assert_eq!(app, PROBE_MAP_EXPOSES);
 }
+
+/// The background an exposure paints goes to the window, not to its
+/// redirect backing's pixmap: the backend resolves the window to the
+/// backing with the offset of the window's border, while the pixmap's
+/// own origin is the window's outer corner. Painted on the pixmap, a
+/// resized window with a border of 2 lost its own border's top and left
+/// and the right and bottom of its subwindows' borders.
+#[test]
+fn an_exposure_of_a_redirected_window_paints_through_the_window() {
+    use crate::{
+        backend::{PixmapHandle, WindowHandle},
+        resources::RedirectedBacking,
+    };
+    const WINDOW: ResourceId = ResourceId(0x0040_0010);
+    const HOST: u32 = 0x0040_0090;
+    const BACKING: u32 = 0x0040_00d0;
+    let mut state = ServerState::new();
+    let _peer = install_client(&mut state, 1);
+    state.resources.create_window(
+        ClientId(1),
+        CreateWindowRequest {
+            depth: 24,
+            window: WINDOW,
+            parent: ROOT_WINDOW,
+            width: 100,
+            height: 80,
+            border_width: 2,
+            background_pixel: Some(0x00ff_ffff),
+            ..Default::default()
+        },
+    );
+    assert!(state.resources.map_window(WINDOW).mapping_changed);
+    let window = state.resources.window_mut(WINDOW).expect("window");
+    window.host_xid = Some(WindowHandle::from_raw_for_test(HOST));
+    window.redirected_backing = Some(RedirectedBacking {
+        host_pixmap: PixmapHandle::from_raw_for_test(BACKING),
+        width: 104,
+        height: 84,
+        depth: 24,
+    });
+    let mut backend = RecordingBackend::new();
+    let region = [x11::xfixes::RegionRect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 80,
+    }];
+    send_window_exposures(&mut state, &mut backend, None, WINDOW, &region, true);
+    let fills: Vec<(u32, i16, i16)> = backend
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            RecordedCall::FillRectangle { host_xid, x, y, .. } => Some((host_xid, x, y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills, vec![(HOST, 0, 0)]);
+}

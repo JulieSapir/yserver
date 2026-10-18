@@ -2398,6 +2398,60 @@ fn seed_backing_drawable(b: &mut KmsBackend, xid: u32) -> crate::kms::render::st
         .expect("seed_backing_drawable allocate")
 }
 
+/// A bordered descendant's ring is in its own leaf, outside its
+/// content, and must be seeded into the backing with the content:
+/// xev's subwindow (50x50 at (10, 10), border 4) inside its unbordered
+/// top-level showed without its border when only the content went.
+#[test]
+fn plan_backing_inferiors_seeds_a_descendants_border_ring() {
+    let mut b = KmsBackend::for_tests();
+    seed_bordered_window(&mut b, 0x100, None, 0, 0, 178, 178, 0);
+    seed_bordered_window(&mut b, 0x200, Some(0x100), 10, 10, 50, 50, 4);
+    let b_id = seed_backing_drawable(&mut b, 0x999);
+
+    let plan = b.plan_backing_inferiors(0x100, b_id);
+    let draws: Vec<(u32, i32, i32, i32, i32, u32, u32)> = plan
+        .iter()
+        .map(|d| {
+            (
+                b.store.get(d.leaf_id).unwrap().xid,
+                d.src_x,
+                d.src_y,
+                d.dst_x,
+                d.dst_y,
+                d.width,
+                d.height,
+            )
+        })
+        .collect();
+    assert_eq!(
+        draws,
+        vec![
+            (0x100, 0, 0, 0, 0, 178, 178),
+            // The child's content, inside its ring.
+            (0x200, 4, 4, 14, 14, 50, 50),
+            // Its ring: top, bottom, left and right, at its outer
+            // origin (10, 10).
+            (0x200, 0, 0, 10, 10, 58, 4),
+            (0x200, 0, 54, 10, 64, 58, 4),
+            (0x200, 0, 4, 10, 14, 4, 50),
+            (0x200, 54, 4, 64, 14, 4, 50),
+        ],
+    );
+}
+
+/// The seed root's own ring is not in the plan: the backing's
+/// allocation paints it.
+#[test]
+fn plan_backing_inferiors_leaves_the_roots_own_ring_alone() {
+    let mut b = KmsBackend::for_tests();
+    seed_bordered_window(&mut b, 0x100, None, 0, 0, 100, 50, 6);
+    let b_id = seed_backing_drawable(&mut b, 0x999);
+
+    let plan = b.plan_backing_inferiors(0x100, b_id);
+    assert_eq!(plan.len(), 1, "only the root's content: {plan:?}");
+}
+
 /// The plan must include the redirected window itself first, then
 /// its mapped descendants bottom-to-top by `stack_rank`, with
 /// offsets accumulated relative to W (== the backing origin).

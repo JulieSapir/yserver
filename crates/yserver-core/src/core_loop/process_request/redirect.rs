@@ -409,16 +409,63 @@ pub(super) fn apply_viewability_delta_to_redirects(
         realize_redirect_backing(state, backend, origin, *window);
     }
     for window in &delta.became_viewable {
-        if state.background_paint_after_backing.remove(window)
-            && let Some((xid, width, height)) = state
-                .resources
-                .window(*window)
-                .and_then(|w| Some((w.host_xid?.as_raw(), w.width, w.height)))
-            && let Err(err) = backend.paint_window_background_rect(origin, xid, 0, 0, width, height)
-        {
-            log::warn!("paint_window_background_rect(0x{xid:x}) failed: {err}");
+        if !state.background_paint_after_backing.remove(window) {
+            continue;
+        }
+        let Some(xid) = state
+            .resources
+            .window(*window)
+            .and_then(|w| Some(w.host_xid?.as_raw()))
+        else {
+            continue;
+        };
+        for r in clipped_by_children(state, *window) {
+            if let Err(err) =
+                backend.paint_window_background_rect(origin, xid, r.x, r.y, r.width, r.height)
+            {
+                log::warn!("paint_window_background_rect(0x{xid:x}) failed: {err}");
+                break;
+            }
         }
     }
+}
+
+/// `window`'s content less its viewable children's border boxes
+/// (ClipByChildren), in its content space: where the map exposures paint its
+/// background (`miPaintWindow` over the exposed region, which excludes the
+/// inferiors). Painted over the whole content instead, a parent sharing a
+/// backing with its children covered them, borders included, which nothing
+/// paints again: a child's deferred paint is its background only. A
+/// redirected window paints its own backing, so what covers it on the
+/// screen does not clip it.
+fn clipped_by_children(state: &ServerState, window: ResourceId) -> Vec<x11::xfixes::RegionRect> {
+    use crate::core_loop::clip_list::{border_size_in_parent, subtract};
+    let Some(w) = state.resources.window(window) else {
+        return Vec::new();
+    };
+    let mut region = vec![x11::xfixes::RegionRect {
+        x: 0,
+        y: 0,
+        width: w.width,
+        height: w.height,
+    }];
+    for child in state.resources.children(window) {
+        // As `clip_list`'s: a viewable InputOutput child clips its parent; an
+        // InputOnly one draws nothing and leaves the parent's background
+        // whole.
+        let viewable = state.resources.window(*child).is_some_and(|c| {
+            c.map_state == MapState::Viewable
+                && c.class == crate::resources::WindowClass::InputOutput
+        });
+        // A Manually redirected child paints its own backing and does not
+        // clip its parent, as in `clip_list`.
+        let transparent = state.composite_redirects.window_mode(*child)
+            == Some(crate::server::CompositeRedirectMode::Manual);
+        if viewable && !transparent {
+            region = subtract(&region, &border_size_in_parent(state, *child));
+        }
+    }
+    region
 }
 
 /// Host xid of a window whose storage follows its viewability; the root and the COW own theirs.

@@ -1,7 +1,9 @@
 use crate::kms::render::{
     backend::{
         SeedInferiorDraw, XBackend,
-        portable::windows::{bordered_storage_extent, default_window_init_color},
+        portable::windows::{
+            border_ring_rects, bordered_storage_extent, default_window_init_color,
+        },
         seam::Platform,
     },
     store::{AllocError, DrawableId, DrawableKind, Storage},
@@ -401,6 +403,14 @@ impl<P: Platform> XBackend<P> {
             let w = u32::from(geom.width).min(content_cap_w);
             let h = u32::from(geom.height).min(content_cap_h);
             self.push_inferior_rects(xid, leaf_id, off_x, off_y, w, h, out);
+            // A descendant's border is part of the subtree's image too,
+            // and it lives in the descendant's own leaf, outside the
+            // content copied above; Xorg's `IncludeInferiors` seed copies
+            // it with the rest (`composite/compalloc.c:562`). W's own ring
+            // is painted into B by `allocate_redirected_backing`.
+            if !is_seed_root {
+                self.push_inferior_ring(xid, leaf_id, off_x, off_y, w, h, out);
+            }
         }
 
         // Recurse mapped children bottom-to-top, same `stack_rank`
@@ -449,34 +459,7 @@ impl<P: Platform> XBackend<P> {
         }
         let src_bw = self.window_border_width(xid);
         let mut emit = |sx: i32, sy: i32, dx: i32, dy: i32, rw: i32, rh: i32| {
-            let (mut sx, mut sy, mut dx, mut dy) = (sx, sy, dx, dy);
-            let (mut rw, mut rh) = (i64::from(rw), i64::from(rh));
-            // Low-side clamp: a negative dst shifts the source and
-            // shrinks the rect. High-side clipping is left to
-            // `render_composite`'s dst-extent clamp.
-            if dx < 0 {
-                sx -= dx;
-                rw += i64::from(dx);
-                dx = 0;
-            }
-            if dy < 0 {
-                sy -= dy;
-                rh += i64::from(dy);
-                dy = 0;
-            }
-            if rw <= 0 || rh <= 0 {
-                return;
-            }
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            out.push(SeedInferiorDraw {
-                leaf_id,
-                src_x: sx,
-                src_y: sy,
-                dst_x: dx,
-                dst_y: dy,
-                width: rw as u32,
-                height: rh as u32,
-            });
+            push_seed_draw(out, leaf_id, (sx, sy), (dx, dy), (rw, rh));
         };
         if let Some(rects) = self.core.shape_bounding.get(&xid) {
             for r in rects {
@@ -497,6 +480,55 @@ impl<P: Platform> XBackend<P> {
         } else {
             #[allow(clippy::cast_possible_wrap)]
             emit(src_bw, src_bw, off_x, off_y, w as i32, h as i32);
+        }
+    }
+
+    /// Emit the leaf→backing rects for one descendant's border ring, the
+    /// annulus around its `w` × `h` content in its own leaf storage, to
+    /// its outer origin in the backing: `(off_x, off_y)`, its content
+    /// origin, less the border width. Only when the leaf was allocated
+    /// with the window's live border width, so that the ring is where
+    /// the geometry says it is.
+    fn push_inferior_ring(
+        &self,
+        xid: u32,
+        leaf_id: crate::kms::render::store::DrawableId,
+        off_x: i32,
+        off_y: i32,
+        w: u32,
+        h: u32,
+        out: &mut Vec<SeedInferiorDraw>,
+    ) {
+        let bw = self.window_border_width(xid);
+        if bw <= 0 || w == 0 || h == 0 || self.storage_content_offset(xid, leaf_id) != bw {
+            return;
+        }
+        let ring = u32::try_from(2 * bw).unwrap_or(0);
+        let inner = ash::vk::Rect2D {
+            offset: ash::vk::Offset2D { x: bw, y: bw },
+            extent: ash::vk::Extent2D {
+                width: w,
+                height: h,
+            },
+        };
+        let outer = ash::vk::Rect2D {
+            offset: ash::vk::Offset2D { x: 0, y: 0 },
+            extent: ash::vk::Extent2D {
+                width: w.saturating_add(ring),
+                height: h.saturating_add(ring),
+            },
+        };
+        for rect in border_ring_rects(outer, inner) {
+            let (x, y) = (rect.offset.x, rect.offset.y);
+            let width = i32::try_from(rect.extent.width).unwrap_or(0);
+            let height = i32::try_from(rect.extent.height).unwrap_or(0);
+            push_seed_draw(
+                out,
+                leaf_id,
+                (x, y),
+                (off_x - bw + x, off_y - bw + y),
+                (width, height),
+            );
         }
     }
 
@@ -1216,4 +1248,42 @@ impl<P: Platform> XBackend<P> {
         }
         Ok(())
     }
+}
+
+/// One leaf→backing copy of a redirect seed, from `src` in the leaf to
+/// `dst` in the backing, `size` big. A negative destination shifts the
+/// source and shrinks the rect; the high side is left to
+/// `render_composite`'s destination clamp.
+fn push_seed_draw(
+    out: &mut Vec<SeedInferiorDraw>,
+    leaf_id: DrawableId,
+    src: (i32, i32),
+    dst: (i32, i32),
+    size: (i32, i32),
+) {
+    let ((mut sx, mut sy), (mut dx, mut dy)) = (src, dst);
+    let (mut rw, mut rh) = (i64::from(size.0), i64::from(size.1));
+    if dx < 0 {
+        sx -= dx;
+        rw += i64::from(dx);
+        dx = 0;
+    }
+    if dy < 0 {
+        sy -= dy;
+        rh += i64::from(dy);
+        dy = 0;
+    }
+    if rw <= 0 || rh <= 0 {
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    out.push(SeedInferiorDraw {
+        leaf_id,
+        src_x: sx,
+        src_y: sy,
+        dst_x: dx,
+        dst_y: dy,
+        width: rw as u32,
+        height: rh as u32,
+    });
 }
