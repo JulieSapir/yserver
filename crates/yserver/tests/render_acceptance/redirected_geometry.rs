@@ -473,3 +473,74 @@ fn a_border_uncovered_by_an_unmap_is_painted() {
         ],
     );
 }
+
+const CYAN: u32 = 0x0000_FFFF;
+
+/// M: C mapped under an already-mapped higher sibling S in a shared
+/// backing. Its ring is `borderClip`-clipped (`miComputeClips`): under S it
+/// stays S's green, elsewhere it is red.
+/// Mutations: drop the occluder subtract; clip to `target.content_bounds()`.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_ring_painted_under_a_higher_sibling_leaves_the_sibling() {
+    const W: u32 = 0x1E10;
+    const C: u32 = 0x1E11;
+    const S: u32 = 0x1E12;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    rg_window(&mut f, W, root, 600, 0, 120, 120, 0, WHITE, 0, 1);
+    rg_window(&mut f, C, W, 10, 10, 50, 50, 4, BLUE, RED, 1);
+    rg_window(&mut f, S, W, 0, 0, 30, 30, 0, GREEN, 0, 1);
+    wz_map(&mut f, W);
+    wz_map(&mut f, S);
+    wz_map(&mut f, C);
+    rg_assert(
+        &mut f,
+        W,
+        "M",
+        &[
+            (11, 20, GREEN),
+            (20, 11, GREEN),
+            (25, 25, GREEN),
+            (40, 40, BLUE),
+            (11, 40, RED),
+            (40, 11, RED),
+        ],
+    );
+}
+
+/// MB: a child's ring stops at its bordered parent's content
+/// (`mi/mivaltree.c:386`). W 100x100 bw 3 red, C (80,20) 40x40 bw 4 cyan,
+/// mapped after W.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_childs_ring_stops_at_its_bordered_parents_content() {
+    const W: u32 = 0x1E20;
+    const C: u32 = 0x1E21;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    rg_window(&mut f, W, root, 700, 120, 100, 100, 3, WHITE, RED, 1);
+    rg_window(&mut f, C, W, 80, 20, 40, 40, 4, BLUE, CYAN, 1);
+    wz_map(&mut f, W);
+    wz_map(&mut f, C);
+    rg_assert(
+        &mut f,
+        W,
+        "MB",
+        &[
+            (84, 40, CYAN),
+            (90, 24, CYAN),
+            (95, 40, BLUE),
+            (104, 40, RED),
+            (104, 24, RED),
+            (104, 70, RED),
+            (1, 1, RED),
+        ],
+    );
+}

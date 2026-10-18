@@ -1146,6 +1146,7 @@ impl<P: Platform> XBackend<P> {
             }
             None => ring,
         };
+        let ring = self.clip_ring_in_shared_backing(host_xid, &geom, &target, ring);
         let rects: Vec<vk::Rect2D> = ring
             .into_iter()
             .map(|r| crate::kms::render::engine::clamp_rect(r, storage_extent))
@@ -1196,6 +1197,56 @@ impl<P: Platform> XBackend<P> {
         self.telemetry.record_paint_submit();
         self.scene.wake_for_damage();
         Ok(())
+    }
+
+    /// A ring painted into an ANCESTOR's backing is cut to the window's
+    /// `borderClip` there (`miComputeClips`): inside its parent's (and
+    /// every ancestor's) content (`mi/mivaltree.c:386`) and under no
+    /// higher sibling. Rings in the window's own storage are untouched.
+    fn clip_ring_in_shared_backing(
+        &self,
+        host_xid: u32,
+        geom: &WindowGeometry,
+        target: &PaintTarget,
+        ring: Vec<vk::Rect2D>,
+    ) -> Vec<vk::Rect2D> {
+        let backing = target.backing_id();
+        let own = self.store.lookup(host_xid);
+        if own == Some(backing)
+            || own.and_then(|id| self.store.redirected_target(id)) == Some(backing)
+        {
+            return ring;
+        }
+        let parent_bounds = geom
+            .parent
+            .and_then(|p| self.resolve_paint_target(p))
+            .filter(|t| t.backing_id() == backing)
+            .and_then(PaintTarget::content_bounds);
+        let ring: Vec<vk::Rect2D> = match parent_bounds {
+            Some(bounds) => ring
+                .into_iter()
+                .flat_map(|r| intersect_rect_with_clip(r, &[bounds]))
+                .collect(),
+            None => ring,
+        };
+        let (cx, cy) = target.offset();
+        let occluders: Vec<vk::Rect2D> = self
+            .copy_area_shared_backing_occluders(host_xid, target)
+            .into_iter()
+            .map(|o| vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: o.offset.x + cx,
+                    y: o.offset.y + cy,
+                },
+                extent: o.extent,
+            })
+            .collect();
+        if occluders.is_empty() {
+            return ring;
+        }
+        ring.into_iter()
+            .flat_map(|r| compute_copy_area_dst_rects(r, &occluders))
+            .collect()
     }
 
     /// The ring's thickness in the frame `target` resolved to.
