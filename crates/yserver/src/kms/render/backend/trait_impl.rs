@@ -504,6 +504,15 @@ impl<P: Platform> Backend for XBackend<P> {
         Self::backend_windows_configure_subwindow(self, _origin, host_xid, config)
     }
 
+    fn paint_window_border_rects(
+        &mut self,
+        _origin: Option<OriginContext>,
+        host_xid: u32,
+        rects: &[yserver_protocol::x11::xfixes::RegionRect],
+    ) -> io::Result<()> {
+        Self::backend_windows_paint_window_border_rects(self, host_xid, rects)
+    }
+
     fn move_subwindows_for_gravity(
         &mut self,
         origin: Option<OriginContext>,

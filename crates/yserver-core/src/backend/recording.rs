@@ -105,6 +105,10 @@ pub enum RecordedCall {
     ReleaseRedirectedBacking(u32),
     RetainBackingStorage(u32),
     DropBackingStorage(u32),
+    PaintWindowBorderRects {
+        host_xid: u32,
+        rects: Vec<yserver_protocol::x11::xfixes::RegionRect>,
+    },
     ReallocateRedirectedBacking {
         host_window: u32,
         old: u32,
@@ -1716,6 +1720,19 @@ impl Backend for RecordingBackend {
         }
         let xid = self.allocate_handle();
         Ok(PixmapHandle::from_raw_panicking(xid))
+    }
+
+    fn paint_window_border_rects(
+        &mut self,
+        _origin: Option<OriginContext>,
+        host_xid: u32,
+        rects: &[yserver_protocol::x11::xfixes::RegionRect],
+    ) -> io::Result<()> {
+        self.record(RecordedCall::PaintWindowBorderRects {
+            host_xid,
+            rects: rects.to_vec(),
+        });
+        Ok(())
     }
 
     fn move_subwindows_for_gravity(

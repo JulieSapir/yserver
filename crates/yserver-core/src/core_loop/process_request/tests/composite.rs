@@ -3573,3 +3573,129 @@ fn a_failed_reallocation_keeps_the_old_backing() {
         "{calls:?}"
     );
 }
+
+/// C: a grow reveals the rest of a bordered child's ring. Xorg paints it
+/// with `PW_BORDER` and reports it on W (`80,80 58x58` covers it).
+#[test]
+fn a_grow_paints_and_damages_a_childs_revealed_border() {
+    use crate::{backend::recording::RecordedCall, server::DamageObject};
+    use yserver_protocol::x11::xfixes::RegionRect;
+    const W: u32 = 0x0010_0081;
+    const W_HOST: u32 = 0x0040_0081;
+    const C: u32 = 0x0010_0082;
+    const C_HOST: u32 = 0x0040_0082;
+    const OLD: u32 = 0x0050_0081;
+    const DMG: u32 = 0x0080_0081;
+    let r = |x, y, width, height| RegionRect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    let mut state = ServerState::new();
+    let _peer = install_client(&mut state, 1);
+    let mut backend = RecordingBackend::new();
+    for (xid, parent, x, y, size, bw) in [
+        (W, crate::resources::ROOT_WINDOW, 300, 300, 100, 0),
+        (C, ResourceId(W), 80, 80, 50, 4),
+    ] {
+        state.resources.create_window(
+            ClientId(1),
+            yserver_protocol::x11::CreateWindowRequest {
+                depth: 24,
+                window: ResourceId(xid),
+                parent,
+                x,
+                y,
+                width: size,
+                height: size,
+                border_width: bw,
+                class: 1,
+                visual: crate::resources::ROOT_VISUAL,
+                ..Default::default()
+            },
+        );
+    }
+    for (xid, host) in [(W, W_HOST), (C, C_HOST)] {
+        let w = state.resources.window_mut(ResourceId(xid)).expect("window");
+        w.host_xid = Some(crate::backend::WindowHandle::from_raw_for_test(host));
+        w.map_state = MapState::Viewable;
+    }
+    state
+        .composite_redirects
+        .redirect_window(
+            ResourceId(W),
+            crate::server::RedirectRecord {
+                owner: ClientId(1),
+                mode: crate::server::CompositeRedirectMode::Manual,
+            },
+        )
+        .unwrap();
+    state
+        .resources
+        .window_mut(ResourceId(W))
+        .expect("W")
+        .redirected_backing = Some(crate::resources::RedirectedBacking {
+        host_pixmap: crate::backend::PixmapHandle::from_raw_for_test(OLD),
+        width: 100,
+        height: 100,
+        depth: 24,
+    });
+    state.damage_objects.insert(
+        DMG,
+        DamageObject {
+            owner: ClientId(1),
+            drawable: ResourceId(W),
+            level: 0,
+            rects: Vec::new(),
+            pending_notify_fired: false,
+            last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
+        },
+    );
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&W.to_le_bytes());
+    body.extend_from_slice(&0x000Cu16.to_le_bytes());
+    body.extend_from_slice(&0u16.to_le_bytes());
+    body.extend_from_slice(&200u32.to_le_bytes());
+    body.extend_from_slice(&200u32.to_le_bytes());
+    process_request(
+        &mut state,
+        &mut backend,
+        ClientId(1),
+        SequenceNumber(1),
+        RequestHeader {
+            opcode: 12,
+            data: 0,
+            length_units: u32::try_from(1 + body.len() / 4).unwrap(),
+        },
+        &body,
+        None,
+    )
+    .expect("ConfigureWindow");
+
+    let ring = vec![
+        r(16, -4, 38, 4),
+        r(50, 0, 4, 16),
+        r(-4, 16, 4, 34),
+        r(50, 16, 4, 34),
+        r(-4, 50, 58, 4),
+    ];
+    let calls = backend.calls();
+    assert!(
+        calls.contains(&RecordedCall::PaintWindowBorderRects {
+            host_xid: C_HOST,
+            rects: ring.clone(),
+        }),
+        "{calls:?}"
+    );
+    let in_w = crate::core_loop::clip_list::translate(ring, 84, 84);
+    let damaged = &state.damage_objects[&DMG].rects;
+    assert!(
+        crate::core_loop::clip_list::subtract(&in_w, damaged).is_empty(),
+        "W's damage {damaged:?} must cover C's revealed ring"
+    );
+}

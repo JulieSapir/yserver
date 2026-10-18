@@ -1448,6 +1448,22 @@ pub trait Backend {
         ))
     }
 
+    /// `miPaintWindow(PW_BORDER)` over `rects` of `host_xid`'s border, in
+    /// its content space (`mi/miexpose.c:445-470`). Default no-op.
+    ///
+    /// # Errors
+    ///
+    /// A failed fill.
+    fn paint_window_border_rects(
+        &mut self,
+        origin: Option<OriginContext>,
+        host_xid: u32,
+        rects: &[yserver_protocol::x11::xfixes::RegionRect],
+    ) -> io::Result<()> {
+        let _ = (origin, host_xid, rects);
+        Ok(())
+    }
+
     /// `compReallocPixmap` (composite/compalloc.c:670-712): give
     /// `host_window` a new backing of `width x height`, seeded from its
     /// parent, and move its route and reason-1 hold off `old`. The caller

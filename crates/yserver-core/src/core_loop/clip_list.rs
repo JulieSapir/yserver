@@ -220,6 +220,20 @@ fn child_universe_with(
     if parent_universe.is_empty() {
         return Vec::new();
     }
+    let universe =
+        uncovered_in_child_space(state, parent_universe, parent, child, also_transparent);
+    intersect(&universe, &win_size(state, child))
+}
+
+/// `parent_universe` less `child`'s higher siblings, in `child`'s content
+/// space: what its `borderSize` is cut to (`miComputeClips`).
+fn uncovered_in_child_space(
+    state: &ServerState,
+    parent_universe: &[RegionRect],
+    parent: ResourceId,
+    child: ResourceId,
+    also_transparent: &[ResourceId],
+) -> Vec<RegionRect> {
     let Some((x, y, bw)) = state
         .resources
         .window(child)
@@ -236,8 +250,67 @@ fn child_universe_with(
             }
         }
     }
-    let universe = translate(universe, -(x + bw), -(y + bw));
-    intersect(&universe, &win_size(state, child))
+    translate(universe, -(x + bw), -(y + bw))
+}
+
+/// The visible part of `w`'s border, in its content space: Xorg's
+/// `borderClip − winSize` (`mi/mivaltree.c:362-380`). A redirected window's
+/// `borderClip` is its own `borderSize` (`mi/mivaltree.c:233-239`). Empty
+/// without a border (`HasBorder`).
+pub(crate) fn border_ring_clip(state: &ServerState, w: ResourceId) -> Vec<RegionRect> {
+    if w == ROOT_WINDOW || !viewable(state, w) {
+        return Vec::new();
+    }
+    let Some((x, y, bw, parent)) = state.resources.window(w).map(|c| {
+        (
+            i32::from(c.x),
+            i32::from(c.y),
+            i32::from(c.border_width),
+            c.parent,
+        )
+    }) else {
+        return Vec::new();
+    };
+    if bw == 0 {
+        return Vec::new();
+    }
+    let own = translate(border_size_in_parent(state, w), -(x + bw), -(y + bw));
+    let clip = if state.composite_redirects.window_mode(w).is_some() {
+        own
+    } else {
+        let universe = not_clipped_by_children(state, parent);
+        intersect(
+            &uncovered_in_child_space(state, &universe, parent, w, &[]),
+            &own,
+        )
+    };
+    subtract(&clip, &win_size(state, w))
+}
+
+/// One window's clip list and visible border ring, for an exposure diff.
+pub(crate) type ClipEntry = (ResourceId, Vec<RegionRect>, Vec<RegionRect>);
+
+/// `clips` with each window's [`border_ring_clip`] alongside.
+pub(crate) fn with_borders(
+    state: &ServerState,
+    clips: Vec<(ResourceId, Vec<RegionRect>)>,
+) -> Vec<ClipEntry> {
+    clips
+        .into_iter()
+        .map(|(w, clip)| {
+            let ring = border_ring_clip(state, w);
+            (w, clip, ring)
+        })
+        .collect()
+}
+
+/// What a change exposes of one window: `region` of its content and
+/// `border` of its border (`after.exposed` and `after.borderExposed`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Exposure {
+    pub(crate) window: ResourceId,
+    pub(crate) region: Vec<RegionRect>,
+    pub(crate) border: Vec<RegionRect>,
 }
 
 /// `w`'s clip list in its content space: what of it shows and is not under
@@ -380,7 +453,7 @@ fn clip_lists_of(
 pub(crate) struct TreeChange {
     parent: ResourceId,
     members: Vec<ResourceId>,
-    before: Vec<(ResourceId, Vec<RegionRect>)>,
+    before: Vec<ClipEntry>,
 }
 
 impl TreeChange {
@@ -410,7 +483,7 @@ impl TreeChange {
                             .is_some_and(|r| extent.iter().any(|e| overlaps(r, *e))))
             })
             .collect();
-        let before = clip_lists_of(state, parent, &members);
+        let before = with_borders(state, clip_lists_of(state, parent, &members));
         Some(Self {
             parent,
             members,
@@ -423,37 +496,39 @@ impl TreeChange {
     /// in the window's own space, `mi/mivaltree.c:453-458`). `whole` gets
     /// its entire clip list instead: a resized window's contents are
     /// forfeit (`mi/miwindow.c:466-472`).
-    pub(crate) fn exposed(
-        self,
-        state: &ServerState,
-        whole: Option<ResourceId>,
-    ) -> Vec<(ResourceId, Vec<RegionRect>)> {
-        let after = clip_lists_of(state, self.parent, &self.members);
+    pub(crate) fn exposed(self, state: &ServerState, whole: Option<ResourceId>) -> Vec<Exposure> {
+        let after = with_borders(state, clip_lists_of(state, self.parent, &self.members));
         newly_exposed(&self.before, after, whole)
     }
 }
 
 /// Per window, what `after` shows that `before` did not: the exposures a
-/// change between the two makes, in `after`'s order.
-/// `whole`, if any, gains its entire clip list.
+/// change between the two makes, in `after`'s order. `whole`, if any,
+/// gains its entire clip list; its border stays a diff (`borderVisible`,
+/// `mi/miwindow.c:418-429`). The border gained is the visible ring less
+/// the old one (`mi/mivaltree.c:362-380`).
 pub(crate) fn newly_exposed(
-    before: &[(ResourceId, Vec<RegionRect>)],
-    after: Vec<(ResourceId, Vec<RegionRect>)>,
+    before: &[ClipEntry],
+    after: Vec<ClipEntry>,
     whole: Option<ResourceId>,
-) -> Vec<(ResourceId, Vec<RegionRect>)> {
+) -> Vec<Exposure> {
     after
         .into_iter()
-        .filter_map(|(w, region)| {
-            let old = before
-                .iter()
-                .find(|(b, _)| *b == w)
-                .map(|(_, r)| r.as_slice())
-                .filter(|_| Some(w) != whole);
-            let gained = match old {
-                Some(old) => subtract(&region, old),
+        .filter_map(|(w, region, ring)| {
+            let old = before.iter().find(|(b, _, _)| *b == w);
+            let region = match old.filter(|_| Some(w) != whole) {
+                Some((_, old, _)) => subtract(&region, old),
                 None => region,
             };
-            (!gained.is_empty()).then_some((w, gained))
+            let border = match old {
+                Some((_, _, old_ring)) => subtract(&ring, old_ring),
+                None => ring,
+            };
+            (!region.is_empty() || !border.is_empty()).then_some(Exposure {
+                window: w,
+                region,
+                border,
+            })
         })
         .collect()
 }
@@ -596,7 +671,7 @@ mod tests {
         change
             .exposed(state, whole.then_some(ResourceId(id)))
             .into_iter()
-            .map(|(w, region)| (w.0, region))
+            .map(|e| (e.window.0, e.region))
             .collect()
     }
 
@@ -708,5 +783,95 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(b, vec![r(0, 0, 230, 170)])]
         );
+    }
+
+    fn set_border(state: &mut ServerState, id: u32, bw: u16) {
+        state
+            .resources
+            .window_mut(ResourceId(id))
+            .unwrap()
+            .border_width = bw;
+    }
+
+    fn redirect_manual(state: &mut ServerState, id: u32) {
+        state
+            .composite_redirects
+            .redirect_window(
+                ResourceId(id),
+                crate::server::RedirectRecord {
+                    owner: yserver_protocol::x11::ClientId(1),
+                    mode: CompositeRedirectMode::Manual,
+                },
+            )
+            .unwrap();
+    }
+
+    fn borders(got: Vec<Exposure>) -> Vec<(u32, Vec<RegionRect>)> {
+        got.into_iter()
+            .filter(|e| !e.border.is_empty())
+            .map(|e| (e.window.0, e.border))
+            .collect()
+    }
+
+    /// `miComputeClips`' `borderExposed` (`mi/mivaltree.c:362-380`) for the
+    /// probe's C: a child at (80,80) 50x50 bw 4 in a redirected W that grows
+    /// from 100 to 200. Its extents match Xorg's border damage `80,80 58x58`.
+    #[test]
+    fn border_exposed_of_a_child_crossing_the_grown_edge() {
+        let mut state = ServerState::with_geometry(1024, 768);
+        let (w, c) = (0x0020_0201, 0x0020_0202);
+        window(&mut state, w, ROOT_WINDOW, (300, 300, 100, 100), 1);
+        redirect_manual(&mut state, w);
+        window(&mut state, c, ResourceId(w), (80, 80, 50, 50), 1);
+        set_border(&mut state, c, 4);
+        let reach = Some(r(300, 300, 200, 200));
+        let change = TreeChange::begin(&state, ResourceId(w), reach).unwrap();
+        configure(&mut state, w, Some((300, 300, 200, 200)), None);
+        let got = borders(change.exposed(&state, Some(ResourceId(w))));
+        assert_eq!(
+            got,
+            vec![(
+                c,
+                vec![
+                    r(16, -4, 38, 4),
+                    r(50, 0, 4, 16),
+                    r(-4, 16, 4, 34),
+                    r(50, 16, 4, 34),
+                    r(-4, 50, 58, 4),
+                ]
+            )]
+        );
+    }
+
+    /// U: a sibling S (0,0) 30x30 over C (10,10) 50x50 bw 4 unmaps; the
+    /// part of C's ring S covered is exposed (Xorg damage `10,10 20x20`).
+    #[test]
+    fn border_exposed_when_an_occluding_sibling_unmaps() {
+        let mut state = ServerState::with_geometry(1024, 768);
+        let (w, c, sib) = (0x0020_0211, 0x0020_0212, 0x0020_0213);
+        window(&mut state, w, ROOT_WINDOW, (400, 300, 120, 120), 1);
+        redirect_manual(&mut state, w);
+        window(&mut state, c, ResourceId(w), (10, 10, 50, 50), 1);
+        set_border(&mut state, c, 4);
+        window(&mut state, sib, ResourceId(w), (0, 0, 30, 30), 1);
+        let before = with_borders(&state, clip_lists_under(&state, ResourceId(sib)));
+        let _ = state.resources.unmap_window(ResourceId(sib));
+        let after = with_borders(&state, clip_lists_under(&state, ResourceId(sib)));
+        let got = borders(newly_exposed(&before, after, None));
+        assert_eq!(got, vec![(c, vec![r(-4, -4, 20, 4), r(-4, 0, 4, 16)])]);
+    }
+
+    /// `HasBorder` is false at `bw == 0`: no border is ever exposed.
+    #[test]
+    fn unbordered_windows_expose_no_border() {
+        let mut state = ServerState::with_geometry(1024, 768);
+        let (w, c, sib) = (0x0020_0221, 0x0020_0222, 0x0020_0223);
+        window(&mut state, w, ROOT_WINDOW, (0, 0, 120, 120), 1);
+        window(&mut state, c, ResourceId(w), (10, 10, 50, 50), 1);
+        window(&mut state, sib, ResourceId(w), (0, 0, 30, 30), 1);
+        let before = with_borders(&state, clip_lists_under(&state, ResourceId(sib)));
+        let _ = state.resources.unmap_window(ResourceId(sib));
+        let after = with_borders(&state, clip_lists_under(&state, ResourceId(sib)));
+        assert!(borders(newly_exposed(&before, after, None)).is_empty());
     }
 }

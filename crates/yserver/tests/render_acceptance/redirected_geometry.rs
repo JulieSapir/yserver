@@ -359,3 +359,117 @@ fn realloc_does_not_round_trip_through_leaves() {
         "the revealed part of C must not come from its stale leaf",
     );
 }
+
+/// Xorg paints a window's newly visible border (`borderExposed`,
+/// `PW_BORDER`) before its exposures (`miHandleValidateExposures`,
+/// mi/miwindow.c:211-240). C: a child (80,80) 50x50 bw 4 crossing W's
+/// edge, W grown 100 -> 200, both map orders: ring red as on Xorg.
+/// Mutation: skip `paint_window_border_region`.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_childs_border_revealed_by_a_grow_is_painted() {
+    for (n, child_first) in [(0u32, true), (1, false)] {
+        let (w, c) = (0x1D10 + 2 * n, 0x1D11 + 2 * n);
+        let Some(mut f) = rg_fixture() else {
+            eprintln!("skipping: no Vk");
+            return;
+        };
+        let root = yserver_core::resources::ROOT_WINDOW.0;
+        rg_window(&mut f, w, root, 300, 300, 100, 100, 0, WHITE, 0, 1);
+        rg_window(&mut f, c, w, 80, 80, 50, 50, 4, BLUE, RED, 1);
+        if child_first {
+            wz_map(&mut f, c);
+            wz_map(&mut f, w);
+        } else {
+            wz_map(&mut f, w);
+            wz_map(&mut f, c);
+        }
+        wz_configure(&mut f, w, 0x0C, &[200, 200]);
+        rg_assert(
+            &mut f,
+            w,
+            if child_first {
+                "C child-first"
+            } else {
+                "C parent-first"
+            },
+            &[
+                (81, 105, RED),
+                (105, 81, RED),
+                (135, 105, RED),
+                (105, 135, RED),
+                (90, 90, BLUE),
+                (120, 120, BLUE),
+            ],
+        );
+    }
+}
+
+/// CF: the same C under an UNREDIRECTED W inside a redirected frame F
+/// (a reparenting WM); the ring lands in F's backing.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_childs_border_revealed_inside_a_redirected_frame_is_painted() {
+    const F: u32 = 0x1D20;
+    const W: u32 = 0x1D21;
+    const C: u32 = 0x1D22;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    rg_window(&mut f, F, root, 300, 500, 220, 220, 0, WHITE, 0, 1);
+    rg_window(&mut f, W, F, 10, 10, 100, 100, 0, WHITE, 0, 1);
+    rg_window(&mut f, C, W, 80, 80, 50, 50, 4, BLUE, RED, 1);
+    wz_map(&mut f, C);
+    wz_map(&mut f, W);
+    wz_map(&mut f, F);
+    wz_configure(&mut f, W, 0x0C, &[200, 200]);
+    rg_assert(
+        &mut f,
+        F,
+        "CF",
+        &[
+            (91, 115, RED),
+            (115, 91, RED),
+            (145, 115, RED),
+            (115, 145, RED),
+            (130, 130, BLUE),
+        ],
+    );
+}
+
+/// U: a sibling over C's top-left ring unmaps; Xorg paints the ring it
+/// uncovers.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_border_uncovered_by_an_unmap_is_painted() {
+    const W: u32 = 0x1D30;
+    const C: u32 = 0x1D31;
+    const S: u32 = 0x1D32;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    rg_window(&mut f, W, root, 400, 300, 120, 120, 0, WHITE, 0, 1);
+    rg_window(&mut f, C, W, 10, 10, 50, 50, 4, BLUE, RED, 1);
+    rg_window(&mut f, S, W, 0, 0, 30, 30, 0, GREEN, 0, 1);
+    wz_map(&mut f, C);
+    wz_map(&mut f, S);
+    wz_map(&mut f, W);
+    rg_assert(&mut f, W, "U before", &[(11, 20, GREEN), (20, 11, GREEN)]);
+    f.req(10, 0, &S.to_le_bytes()); // UnmapWindow
+    rg_assert(
+        &mut f,
+        W,
+        "U",
+        &[
+            (11, 20, RED),
+            (20, 11, RED),
+            (11, 11, RED),
+            (25, 25, BLUE),
+            (5, 5, WHITE),
+        ],
+    );
+}

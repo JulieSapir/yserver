@@ -5,7 +5,7 @@ use crate::{
         process_request::{
             RequestOutcome, XFIXES_MAJOR_OPCODE, XI2_FIRST_ERROR, emit_x11_error,
             emit_x11_error_with_minor, gc_pixmap_cursor::release_displaced_gc_pixmaps,
-            windows::send_window_exposures, write_to_client, xid_out_of_client_range,
+            windows::send_exposures, write_to_client, xid_out_of_client_range,
         },
     },
     resources::ROOT_WINDOW,
@@ -241,9 +241,7 @@ pub(super) fn handle_shape_request(
     let outcome =
         handle_shape_request_ops(state, backend, origin, client_id, sequence, header, body)?;
     if let Some(change) = tree_change {
-        for (w, region) in change.exposed(state, None) {
-            send_window_exposures(state, backend, origin, w, &region, true);
-        }
+        send_exposures(state, backend, origin, change.exposed(state, None), None);
     }
     Ok(outcome)
 }

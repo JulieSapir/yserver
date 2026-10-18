@@ -4,7 +4,7 @@ use crate::kms::{
         backend::{
             LeafContent, SharedBackingMoveSource, WindowGeometry, XBackend,
             portable::{
-                clip::apply_subwindow_mode_clip,
+                clip::{apply_subwindow_mode_clip, intersect_rect_with_clip},
                 draw::{compute_copy_area_dst_rects, depth_for_visual},
             },
             seam::Platform,
@@ -1032,6 +1032,42 @@ impl<P: Platform> XBackend<P> {
         host_xid: u32,
         tile_origin: (i32, i32),
     ) -> io::Result<()> {
+        self.paint_window_border_within(host_xid, tile_origin, None)
+    }
+
+    /// `miPaintWindow(PW_BORDER)` over `region` (content-local) of the
+    /// ring: what core's `borderExposed` names (`mi/mivaltree.c:362-380`).
+    pub(in crate::kms::render::backend) fn backend_windows_paint_window_border_rects(
+        &mut self,
+        host_xid: u32,
+        region: &[xfixes::RegionRect],
+    ) -> io::Result<()> {
+        if region.is_empty() {
+            return Ok(());
+        }
+        let region: Vec<vk::Rect2D> = region
+            .iter()
+            .map(|r| vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: i32::from(r.x),
+                    y: i32::from(r.y),
+                },
+                extent: vk::Extent2D {
+                    width: u32::from(r.width),
+                    height: u32::from(r.height),
+                },
+            })
+            .collect();
+        let tile_origin = self.border_tile_origin(host_xid);
+        self.paint_window_border_within(host_xid, tile_origin, Some(&region))
+    }
+
+    fn paint_window_border_within(
+        &mut self,
+        host_xid: u32,
+        tile_origin: (i32, i32),
+        region: Option<&[vk::Rect2D]>,
+    ) -> io::Result<()> {
         let Some(geom) = self.windows.get(&host_xid).copied() else {
             return Ok(());
         };
@@ -1091,7 +1127,26 @@ impl<P: Platform> XBackend<P> {
         // descendant painting into a redirected ancestor's backing can
         // have part of its ring off that backing, and clamping the
         // annulus's bounding box first would move the ring's edges.
-        let rects: Vec<vk::Rect2D> = border_ring_rects(outer, inner)
+        let ring = border_ring_rects(outer, inner);
+        let ring = match region {
+            Some(region) => {
+                let region: Vec<vk::Rect2D> = region
+                    .iter()
+                    .map(|r| vk::Rect2D {
+                        offset: vk::Offset2D {
+                            x: r.offset.x + cx,
+                            y: r.offset.y + cy,
+                        },
+                        extent: r.extent,
+                    })
+                    .collect();
+                ring.into_iter()
+                    .flat_map(|r| intersect_rect_with_clip(r, &region))
+                    .collect()
+            }
+            None => ring,
+        };
+        let rects: Vec<vk::Rect2D> = ring
             .into_iter()
             .map(|r| crate::kms::render::engine::clamp_rect(r, storage_extent))
             .filter(|r| r.extent.width != 0 && r.extent.height != 0)

@@ -124,6 +124,52 @@ pub(crate) fn send_window_exposures(
     }
 }
 
+/// `miHandleValidateExposures` (`mi/miwindow.c:211-240`): per window, its
+/// exposed border painted (`PW_BORDER`), then `miWindowExposures`. The
+/// border of `skip_border` is left alone.
+pub(crate) fn send_exposures(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    origin: Option<OriginContext>,
+    exposures: Vec<crate::core_loop::clip_list::Exposure>,
+    skip_border: Option<ResourceId>,
+) {
+    for e in exposures {
+        if Some(e.window) != skip_border {
+            paint_window_border_region(state, backend, origin, e.window, &e.border);
+        }
+        send_window_exposures(state, backend, origin, e.window, &e.region, true);
+    }
+}
+
+/// `miPaintWindow(PW_BORDER)` over `region` of `window`'s border (its
+/// content space), and its DAMAGE. Nothing at `bw == 0`.
+pub(crate) fn paint_window_border_region(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    origin: Option<OriginContext>,
+    window: ResourceId,
+    region: &[x11::xfixes::RegionRect],
+) {
+    if region.is_empty() {
+        return;
+    }
+    let Some(host) = state
+        .resources
+        .window(window)
+        .filter(|w| w.border_width > 0)
+        .and_then(|w| w.host_xid)
+    else {
+        return;
+    };
+    if backend
+        .paint_window_border_rects(origin, host.as_raw(), region)
+        .is_ok()
+    {
+        let _dropped = accumulate_damage_region_to_state(state, window, region);
+    }
+}
+
 /// Xorg's `miPaintWindow(PW_BACKGROUND)` (`mi/miexpose.c:398-436`) over
 /// `region` of `window` (its content space, already clipped): nothing when
 /// the background resolves to None or is inhibited, else the fill and its
@@ -505,19 +551,27 @@ pub(super) fn destroy_window_subtree(
             .window(window)
             .is_some_and(|w| w.map_state == MapState::Viewable);
         let clips_before = if viewable_before {
-            crate::core_loop::clip_list::clip_lists_under(state, window)
+            crate::core_loop::clip_list::with_borders(
+                state,
+                crate::core_loop::clip_list::clip_lists_under(state, window),
+            )
         } else {
             Vec::new()
         };
         let _ = state.resources.unmap_window(window);
         // UnmapWindow exposes what the window covered (`dix/window.c:2856-2866`).
         if viewable_before {
-            let after = crate::core_loop::clip_list::clip_lists_under(state, window);
-            for (w, region) in
-                crate::core_loop::clip_list::newly_exposed(&clips_before, after, None)
-            {
-                send_window_exposures(state, backend, origin, w, &region, true);
-            }
+            let after = crate::core_loop::clip_list::with_borders(
+                state,
+                crate::core_loop::clip_list::clip_lists_under(state, window),
+            );
+            send_exposures(
+                state,
+                backend,
+                origin,
+                crate::core_loop::clip_list::newly_exposed(&clips_before, after, None),
+                None,
+            );
         }
         backend.windows_restructured(state);
     }
@@ -634,7 +688,10 @@ pub(super) fn handle_reparent_window(
     if let Some((old_parent, map_state, _)) = unmapped {
         let window = request.window;
         let clips_before = if map_state == MapState::Viewable {
-            crate::core_loop::clip_list::clip_lists_under(state, window)
+            crate::core_loop::clip_list::with_borders(
+                state,
+                crate::core_loop::clip_list::clip_lists_under(state, window),
+            )
         } else {
             Vec::new()
         };
@@ -651,12 +708,17 @@ pub(super) fn handle_reparent_window(
         // What it covered in the old place is exposed (`UnmapWindow`,
         // `dix/window.c:2856-2866`).
         if map_state == MapState::Viewable {
-            let after = crate::core_loop::clip_list::clip_lists_under(state, window);
-            for (w, region) in
-                crate::core_loop::clip_list::newly_exposed(&clips_before, after, None)
-            {
-                send_window_exposures(state, backend, origin, w, &region, true);
-            }
+            let after = crate::core_loop::clip_list::with_borders(
+                state,
+                crate::core_loop::clip_list::clip_lists_under(state, window),
+            );
+            send_exposures(
+                state,
+                backend,
+                origin,
+                crate::core_loop::clip_list::newly_exposed(&clips_before, after, None),
+                None,
+            );
         }
         backend.windows_restructured(state);
         if let Some(w) = state.resources.window_mut(window) {
@@ -2071,9 +2133,16 @@ pub(super) fn handle_configure_window(
         // another is exposed like any other window (#213: awesome maps
         // mpv's frame under the terminal, then raises it).
         if let Some(change) = tree_change {
-            for (w, region) in change.exposed(state, resized.then_some(window_id)) {
-                send_window_exposures(state, backend, origin, w, &region, true);
-            }
+            // A reallocated backing already had its whole ring repainted and
+            // damaged; Xorg reports it a second time, we keep one report.
+            let ring_repainted = old_backing.is_some().then_some(window_id);
+            send_exposures(
+                state,
+                backend,
+                origin,
+                change.exposed(state, resized.then_some(window_id)),
+                ring_repainted,
+            );
         }
     }
     // Xorg miMoveWindow / miResizeWindow / ReflectStackChange end in
@@ -2562,7 +2631,10 @@ pub(super) fn handle_unmap_window(
             .window(window)
             .is_some_and(|w| w.map_state == MapState::Viewable);
         let clips_before = if viewable_before {
-            crate::core_loop::clip_list::clip_lists_under(state, window)
+            crate::core_loop::clip_list::with_borders(
+                state,
+                crate::core_loop::clip_list::clip_lists_under(state, window),
+            )
         } else {
             Vec::new()
         };
@@ -2616,12 +2688,17 @@ pub(super) fn handle_unmap_window(
             // siblings' backgrounds painted there, and Expose sent
             // (`UnmapWindow`, `dix/window.c:2856-2866`).
             if viewable_before {
-                let after = crate::core_loop::clip_list::clip_lists_under(state, window);
-                for (w, region) in
-                    crate::core_loop::clip_list::newly_exposed(&clips_before, after, None)
-                {
-                    send_window_exposures(state, backend, origin, w, &region, true);
-                }
+                let after = crate::core_loop::clip_list::with_borders(
+                    state,
+                    crate::core_loop::clip_list::clip_lists_under(state, window),
+                );
+                send_exposures(
+                    state,
+                    backend,
+                    origin,
+                    crate::core_loop::clip_list::newly_exposed(&clips_before, after, None),
+                    None,
+                );
             }
             // XI1: a device focus on a window that just became
             // unviewable reverts per its revert_to, emitting
@@ -2890,9 +2967,7 @@ pub(super) fn handle_circulate_window(
             });
         // Then ReflectStackChange validates and exposes (`dix/window.c:2149-2176`).
         if let Some(change) = tree_change {
-            for (w, region) in change.exposed(state, None) {
-                send_window_exposures(state, backend, None, w, &region, true);
-            }
+            send_exposures(state, backend, None, change.exposed(state, None), None);
         }
         // Xorg ReflectStackChange (`dix/window.c:2179`).
         backend.windows_restructured(state);
