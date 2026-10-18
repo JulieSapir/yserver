@@ -544,3 +544,42 @@ fn a_childs_ring_stops_at_its_bordered_parents_content() {
         ],
     );
 }
+
+/// N: C, drawn into its redirected parent's backing, is redirected itself
+/// (a tray icon). `compNewPixmap` seeds C's pixmap from the parent's
+/// (composite/compalloc.c:532-560), which holds C's pixels; C's own leaf
+/// is stale. Mutation: always overlay the leaves.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn nested_redirect_seeds_from_the_ancestor_backing() {
+    const W: u32 = 0x1F10;
+    const C: u32 = 0x1F11;
+    const GC: u32 = 0x1F12;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    rg_window(&mut f, W, root, 700, 300, 120, 120, 0, WHITE, 0, 1);
+    rg_window(&mut f, C, W, 10, 10, 50, 50, 3, BLUE, RED, 1);
+    wz_map(&mut f, C);
+    wz_map(&mut f, W);
+    or_create_gc(&mut f, GC, C, GREEN);
+    or_fill(&mut f, C, GC, 0, 0, 20, 20);
+    let mut body = Vec::new();
+    body.extend_from_slice(&C.to_le_bytes());
+    body.extend_from_slice(&[1u8, 0, 0, 0]); // CompositeRedirectManual
+    f.req(144, 1, &body);
+    rg_assert(
+        &mut f,
+        C,
+        "N",
+        &[
+            (1, 1, RED),
+            (3, 3, GREEN),
+            (10, 10, GREEN),
+            (30, 30, BLUE),
+            (52, 52, BLUE),
+        ],
+    );
+}

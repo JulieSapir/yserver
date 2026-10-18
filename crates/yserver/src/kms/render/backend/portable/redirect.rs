@@ -222,6 +222,24 @@ impl<P: Platform> XBackend<P> {
     /// each window's leaf, not the about-to-be-installed route. Keep
     /// the per-window/stacking rules in sync with
     /// `scene::emit_window_subtree` (scene.rs:2406).
+    /// Whether a proper ancestor of `w_xid` paints into its own redirect
+    /// backing, which then holds `w_xid`'s subtree.
+    pub(super) fn has_redirected_ancestor(&self, w_xid: u32) -> bool {
+        let mut cur = self.windows.get(&w_xid).and_then(|g| g.parent);
+        while let Some(xid) = cur {
+            if self
+                .store
+                .lookup(xid)
+                .and_then(|id| self.store.redirected_target(id))
+                .is_some()
+            {
+                return true;
+            }
+            cur = self.windows.get(&xid).and_then(|g| g.parent);
+        }
+        false
+    }
+
     pub(super) fn overlay_backing_inferiors(
         &mut self,
         w_xid: u32,
@@ -232,6 +250,10 @@ impl<P: Platform> XBackend<P> {
             render::engine::{ResolvedSource, SourceDrawable},
             vk::ops::render::CompositeRect,
         };
+        debug_assert!(
+            !self.has_redirected_ancestor(w_xid),
+            "overlay_backing_inferiors(0x{w_xid:x}) under a redirected ancestor reads stale leaves",
+        );
         let plan = self.plan_backing_inferiors(w_xid, b_id);
         if plan.is_empty() {
             return;
@@ -856,7 +878,11 @@ impl<P: Platform> XBackend<P> {
             // parent base, so an already-painted window that won't
             // repaint (compositor handoff) keeps its content instead
             // of the wallpaper seed. MUST run before the route flip.
-            self.overlay_backing_inferiors(w_xid, b_id);
+            // Under a redirected ancestor the subtree's leaves are stale and
+            // the seed above already read the authoritative ancestor backing.
+            if !self.has_redirected_ancestor(w_xid) {
+                self.overlay_backing_inferiors(w_xid, b_id);
+            }
             // Now flip routing — after this, paint against W
             // resolves to B via `resolve_paint_target`. The w_id
             // lookup must still succeed; if not, the redirect
