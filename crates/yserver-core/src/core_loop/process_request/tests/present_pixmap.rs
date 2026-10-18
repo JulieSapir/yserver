@@ -5053,6 +5053,16 @@ fn present_pixmap_copy_to_redirected_window_preserves_window_destination() {
         vec![(0x400304, 0x400303, 0, 0, 13, 17, 640, 480)],
         "PresentPixmap must paint through the destination window xid, not its redirected backing xid, so the backend can retain ClipByChildren and hierarchy stacking while resolving that window to the backing",
     );
+    let completion_hosts: Vec<u32> = backend
+        .enqueued_present_completions
+        .iter()
+        .map(|(_, host)| *host)
+        .collect();
+    assert_eq!(
+        completion_hosts,
+        vec![BACKING_XID],
+        "present_completion_keeps_backing_identity: the completion fence attaches to the backing",
+    );
 }
 
 /// Xorg: the flip check fails on the empty clipList (present_scmd.c:122),

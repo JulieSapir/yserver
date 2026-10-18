@@ -1866,3 +1866,69 @@ fn configure_window_stack_only_on_redirected_window_does_not_emit_damage() {
              DamageNotify; that turns restacks into bogus full-window damage",
     );
 }
+
+/// A child's drawable origin in its parent is `x + bw` (`dix/window.c`,
+/// `drawable.x = parent.x + x + bw`), so damage on a bordered child reaches
+/// the parent shifted by its border too (Xorg: `84,84 10x10`).
+#[test]
+fn a_bordered_childs_damage_reaches_the_parent_at_its_content_origin() {
+    use crate::server::DamageObject;
+    const W: u32 = 0x0010_0031;
+    const C: u32 = 0x0010_0032;
+    const W_DAMAGE: u32 = 0x0080_0031;
+
+    let mut state = ServerState::new();
+    let _peer = install_client(&mut state, 1);
+    for (xid, parent, x, y, w, h, bw) in [
+        (W, ROOT_WINDOW, 0, 0, 200, 200, 0),
+        (C, ResourceId(W), 80, 80, 50, 50, 4),
+    ] {
+        state.resources.create_window(
+            ClientId(1),
+            yserver_protocol::x11::CreateWindowRequest {
+                depth: 24,
+                window: ResourceId(xid),
+                parent,
+                x,
+                y,
+                width: w,
+                height: h,
+                border_width: bw,
+                class: 1,
+                visual: crate::resources::ROOT_VISUAL,
+                ..Default::default()
+            },
+        );
+        let win = state.resources.window_mut(ResourceId(xid)).expect("window");
+        win.map_state = crate::resources::MapState::Viewable;
+    }
+    state.damage_objects.insert(
+        W_DAMAGE,
+        DamageObject {
+            owner: ClientId(1),
+            drawable: ResourceId(W),
+            level: 0,
+            rects: Vec::new(),
+            pending_notify_fired: false,
+            last_reported_geometry: None,
+            list_pos: 0,
+            created: 0,
+        },
+    );
+    crate::core_loop::damage_fanout::accumulate_damage_region_to_state(
+        &mut state,
+        ResourceId(C),
+        &[xfixes::RegionRect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }],
+    );
+    let got: Vec<(i16, i16, u16, u16)> = state.damage_objects[&W_DAMAGE]
+        .rects
+        .iter()
+        .map(|r| (r.x, r.y, r.width, r.height))
+        .collect();
+    assert_eq!(got, vec![(84, 84, 10, 10)]);
+}

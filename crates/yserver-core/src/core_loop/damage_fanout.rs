@@ -383,9 +383,12 @@ pub fn accumulate_damage_region_to_state(
         let Some(current_win) = state.resources.window(current) else {
             break;
         };
+        // The child's content origin in the parent: `x + bw`
+        // (`dix/window.c`, `drawable.x = parent.x + x + bw`).
+        let bw = i32::from(current_win.border_width);
         let (off_x, off_y, parent) = (
-            i32::from(current_win.x),
-            i32::from(current_win.y),
+            i32::from(current_win.x) + bw,
+            i32::from(current_win.y) + bw,
             current_win.parent,
         );
         // Root self-parents (`parent == self`, see resources.rs
@@ -1146,11 +1149,10 @@ mod tests {
         assert!(dmg.pending_notify_fired, "a notify must have been queued");
     }
 
-    /// The ancestor walk translates a negative-origin ring rect by the
-    /// child's own (x, y) — which is exactly right, because a child's
-    /// x/y are its INNER origin in the parent and the ring hangs `bw`
-    /// outside it. A child at (100, 50) with `bw = 2` must therefore
-    /// damage its parent starting at (98, 48).
+    /// The ancestor walk translates by the child's content origin, `x + bw`
+    /// (`dix/window.c:888`): a child's x/y are its OUTER corner, so a
+    /// child at (100, 50) with `bw = 2` damages its parent from (100, 50)
+    /// (Xorg, redirected-backing probe: `80,80 58x58` for (80,80) bw 4).
     #[test]
     fn the_ring_translates_to_the_outer_origin_in_the_parent() {
         let mut state = ServerState::new();
@@ -1179,8 +1181,8 @@ mod tests {
             .rects;
         assert!(
             rects.contains(&xfixes::RegionRect {
-                x: 98,
-                y: 48,
+                x: 100,
+                y: 50,
                 width: 1280,
                 height: 2
             }),
@@ -1189,8 +1191,8 @@ mod tests {
         );
         assert!(
             rects.contains(&xfixes::RegionRect {
-                x: 98,
-                y: 754,
+                x: 100,
+                y: 756,
                 width: 1280,
                 height: 2
             }),

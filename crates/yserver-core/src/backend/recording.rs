@@ -211,6 +211,10 @@ pub enum RecordedCall {
         height: u16,
     },
     ApplyClipState(ClipState),
+    /// `poly_fill_rectangle(host_xid, ..)` called.
+    PolyFillRectangle {
+        host_xid: u32,
+    },
     PutImage {
         host_xid: u32,
         depth: u8,
@@ -2079,10 +2083,11 @@ impl Backend for RecordingBackend {
     fn poly_fill_rectangle(
         &mut self,
         _origin: Option<OriginContext>,
-        _host_xid: u32,
+        host_xid: u32,
         _foreground: u32,
         _rectangles: &[u8],
     ) -> io::Result<()> {
+        self.record(RecordedCall::PolyFillRectangle { host_xid });
         Ok(())
     }
 

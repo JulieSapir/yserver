@@ -28,9 +28,8 @@ pub(crate) enum BackingDamage {
 /// Silently no-ops if the window doesn't exist, has no host XID
 /// yet, or the backend rejects the allocation. The caller doesn't
 /// emit a protocol error in any of those cases — the redirect
-/// record is already in place, so a later paint via
-/// `host_drawable_target` will simply fall back to the window's
-/// own host XID until a future event populates the backing.
+/// record is already in place, and a later paint names the window,
+/// which the backend paints in its own storage until a backing exists.
 ///
 /// Stage 4b: wired into the COMPOSITE `RedirectWindow` /
 /// `RedirectSubwindows` dispatch, gated on

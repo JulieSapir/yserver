@@ -34,6 +34,7 @@ mod masked_copy;
 mod present;
 mod readback_versions;
 mod redirect;
+mod redirected_geometry;
 mod resize;
 mod submit_group;
 mod traps;
@@ -92,7 +93,7 @@ fn brd_bgra(pixel: u32) -> [u8; 4] {
 struct ProtoFixture {
     state: yserver_core::server::ServerState,
     backend: KmsBackend,
-    _peer: std::os::unix::net::UnixStream,
+    peer: std::os::unix::net::UnixStream,
     seq: u16,
 }
 
@@ -125,7 +126,7 @@ impl ProtoFixture {
         Some(Self {
             state,
             backend,
-            _peer: b,
+            peer: b,
             seq: 0,
         })
     }
@@ -184,6 +185,24 @@ impl ProtoFixture {
         self.backend
             .backing_pixels_for_tests(host)
             .expect("privileged backing read")
+    }
+
+    /// Everything client 1 has been sent so far: what reached the socket,
+    /// then what is still queued.
+    fn take_reply(&mut self) -> Vec<u8> {
+        use std::io::Read;
+        let mut out = Vec::new();
+        self.peer.set_nonblocking(true).expect("nonblocking");
+        let mut buf = [0u8; 65536];
+        while let Ok(n) = self.peer.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        let client = self.state.clients.get_mut(&1).expect("client 1");
+        out.extend(client.outbound.drain(..));
+        out
     }
 
     /// Dispatch one request. `body` excludes the 4-byte header.

@@ -1686,11 +1686,9 @@ pub(super) fn handle_present_request(
             let pixmap_exists = state.resources.pixmap(ResourceId(req.pixmap)).is_some();
             let src = state.resources.host_drawable_target(ResourceId(req.pixmap));
             let dst = state.resources.host_drawable_target(ResourceId(req.window));
-            let dst_window_host_xid = state
+            let completion_host = state
                 .resources
-                .window(ResourceId(req.window))
-                .and_then(|window| window.host_xid)
-                .map(|host_xid| host_xid.as_raw());
+                .present_completion_host(ResourceId(req.window));
             if !window_exists {
                 return emit_x11_error_with_minor(
                     state,
@@ -1858,13 +1856,7 @@ pub(super) fn handle_present_request(
                 Some(dst),
             ) = (src, dst)
             {
-                // Keep the destination's window identity for the paint. A
-                // redirected window's HostDrawableTarget names its backing
-                // pixmap, which is useful for completion fencing but loses
-                // ClipByChildren and hierarchy stacking. The backend resolves
-                // this window xid to that same backing after computing the
-                // correct window clip.
-                let paint_dst_host_xid = dst_window_host_xid.unwrap_or_else(|| dst.host_xid());
+                let paint_dst_host_xid = dst.host_xid();
                 // DIAG (2026-07-08, MATE compositor slow-drag smear): log what the
                 // compositor actually presents into the COW so we can tell whether
                 // the `update` region is a full frame or thin drag slivers, and
@@ -1947,7 +1939,7 @@ pub(super) fn handle_present_request(
                     masked_options,
                     src_host_xid: host_xid.as_raw(),
                     paint_dst_host_xid,
-                    completion_dst_host_xid: dst.host_xid(),
+                    completion_dst_host_xid: completion_host.unwrap_or(paint_dst_host_xid),
                     src_width: width,
                     src_height: height,
                     update_rects,
@@ -2143,11 +2135,9 @@ pub(super) fn handle_present_request(
             let pixmap_exists = state.resources.pixmap(ResourceId(req.pixmap)).is_some();
             let src = state.resources.host_drawable_target(ResourceId(req.pixmap));
             let dst = state.resources.host_drawable_target(ResourceId(req.window));
-            let dst_window_host_xid = state
+            let completion_host = state
                 .resources
-                .window(ResourceId(req.window))
-                .and_then(|window| window.host_xid)
-                .map(|host_xid| host_xid.as_raw());
+                .present_completion_host(ResourceId(req.window));
             if !window_exists {
                 return emit_x11_error_with_minor(
                     state,
@@ -2299,7 +2289,7 @@ pub(super) fn handle_present_request(
                 Some(dst),
             ) = (src, dst)
             {
-                let paint_dst_host_xid = dst_window_host_xid.unwrap_or_else(|| dst.host_xid());
+                let paint_dst_host_xid = dst.host_xid();
                 if src_depth != dst.depth() {
                     false
                 } else {
@@ -2338,7 +2328,7 @@ pub(super) fn handle_present_request(
                         masked_options,
                         src_host_xid: host_xid.as_raw(),
                         paint_dst_host_xid,
-                        completion_dst_host_xid: dst.host_xid(),
+                        completion_dst_host_xid: completion_host.unwrap_or(paint_dst_host_xid),
                         src_width: width,
                         src_height: height,
                         update_rects,

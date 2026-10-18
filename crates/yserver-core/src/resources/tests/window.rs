@@ -350,11 +350,10 @@ fn unmap_window_no_ops_on_root() {
 }
 
 #[test]
-fn host_drawable_target_redirected_window_returns_backing_xid() {
-    // L2 plan B.7: a window with `redirected_backing` set routes
-    // paint to the backing's host XID, carrying the backing's
-    // depth. The `nested` ResourceId stays the window itself so
-    // damage and event delivery keep the public XID.
+fn host_drawable_target_redirected_window_returns_the_window() {
+    // A redirected window is still drawn through its own host xid; the
+    // backend resolves it to the backing with the content offset. Only
+    // Present completions fence on the backing pixmap.
     let mut table = ResourceTable::new();
     make_top_level_with_host_xid(&mut table, 0x0010_0002, 0x42);
     let backing = crate::backend::PixmapHandle::from_raw_for_test(0x9999);
@@ -375,11 +374,15 @@ fn host_drawable_target_redirected_window_returns_backing_xid() {
             depth,
         } => {
             assert_eq!(nested, ResourceId(0x0010_0002));
-            assert_eq!(host_xid.as_raw(), 0x9999);
+            assert_eq!(host_xid.as_raw(), 0x42);
             assert_eq!(depth, 24);
         }
-        _ => panic!("expected Window variant routing to backing"),
+        _ => panic!("expected the Window variant"),
     }
+    assert_eq!(
+        table.present_completion_host(ResourceId(0x0010_0002)),
+        Some(0x9999)
+    );
 }
 
 #[test]

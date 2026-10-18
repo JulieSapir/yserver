@@ -958,17 +958,17 @@ fn a_shrink_exposes_and_keeps_the_content_of_a_background_none_window() {
     wz_map(&mut f, W);
     or_create_gc(&mut f, GC, W, 0x0000_FF00);
     or_fill(&mut f, W, GC, 0, 0, 200, 100);
-    f._peer
+    f.peer
         .set_nonblocking(true)
         .expect("nonblocking socketpair");
     let mut sink = [0u8; 65536];
-    while f._peer.read(&mut sink).map(|n| n > 0).unwrap_or(false) {}
+    while f.peer.read(&mut sink).map(|n| n > 0).unwrap_or(false) {}
 
     // The WM retiles when the next window opens.
     wz_configure(&mut f, W, 0x0C, &[100, 100]);
 
     let mut buf = [0u8; 65536];
-    let n = f._peer.read(&mut buf).unwrap_or(0);
+    let n = f.peer.read(&mut buf).unwrap_or(0);
     let exposes: Vec<(u16, u16, u16, u16)> = (0..n / 32)
         .map(|k| &buf[k * 32..k * 32 + 32])
         .filter(|e| e[0] & 0x7f == 12 && u32::from_le_bytes([e[4], e[5], e[6], e[7]]) == W)

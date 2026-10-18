@@ -58,11 +58,11 @@ fn border_press_reports_negative_content_coords_on_the_wire() {
     // Drain whatever the map produced so the reads below see only
     // presses. The socketpair is blocking, so switch to non-blocking
     // and read until empty.
-    f._peer
+    f.peer
         .set_nonblocking(true)
         .expect("nonblocking socketpair");
     let mut sink = [0u8; 4096];
-    while f._peer.read(&mut sink).map(|n| n > 0).unwrap_or(false) {}
+    while f.peer.read(&mut sink).map(|n| n > 0).unwrap_or(false) {}
 
     // (name, root point, expected wire event_x/event_y). Every value is
     // `root - content_origin`; the left/top probes are negative.
@@ -109,7 +109,7 @@ fn border_press_reports_negative_content_coords_on_the_wire() {
         );
 
         let mut buf = [0u8; 4096];
-        let n = f._peer.read(&mut buf).unwrap_or(0);
+        let n = f.peer.read(&mut buf).unwrap_or(0);
         assert!(n >= 32, "{name}: no event delivered ({n} bytes)");
         // Find the ButtonPress (event code 4) among what was written.
         let press_at = (0..n / 32)
@@ -141,7 +141,7 @@ fn border_press_reports_negative_content_coords_on_the_wire() {
             /*is_replay=*/ false,
         );
         // Drain any trailing events (crossings) before the next probe.
-        while f._peer.read(&mut sink).map(|k| k > 0).unwrap_or(false) {}
+        while f.peer.read(&mut sink).map(|k| k > 0).unwrap_or(false) {}
     }
 }
 

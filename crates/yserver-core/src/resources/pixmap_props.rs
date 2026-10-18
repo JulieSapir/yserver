@@ -284,29 +284,9 @@ impl ResourceTable {
         // drops the draw silently, same as before (drawing on InputOnly
         // is undefined / spec-error territory).
         if let Some(window) = self.windows.get(&id.0) {
-            // L2 plan B.7 — if the window is redirected, paint
-            // routes to the off-screen backing instead of the
-            // window's own host XID. The `Window` variant is still
-            // emitted so the caller's damage / scissor logic stays
-            // window-keyed via `nested`; only the host-side paint
-            // XID switches.
-            //
-            // The variant carries the backing's pixmap raw inside
-            // a `WindowHandle` newtype — a typed lie, since the
-            // backend treats both pixmap and window XIDs as raw
-            // `u32` keys against `self.pixmaps` / `self.windows`
-            // (it consults both maps). No production caller
-            // pattern-matches on `Window { host_xid: WindowHandle, .. }`
-            // and routes it back into a window-only API.
-            if let Some(backing) = window.redirected_backing.as_ref() {
-                let host_xid =
-                    crate::backend::WindowHandle::from_raw_panicking(backing.host_pixmap.as_raw());
-                return Some(HostDrawableTarget::Window {
-                    nested: id,
-                    host_xid,
-                    depth: backing.depth,
-                });
-            }
+            // A redirected window is still named by its own xid: the backend
+            // resolves it to the backing with its content offset and
+            // ClipByChildren (`__fbPixOffXWin`, fb/fb.h:445).
             let host_xid = window.host_xid?;
             return Some(HostDrawableTarget::Window {
                 nested: id,
@@ -323,6 +303,20 @@ impl ResourceTable {
             height: pixmap.height,
             depth: pixmap.depth,
         })
+    }
+
+    /// The host drawable a Present completion fences on: a redirected
+    /// window's backing pixmap, otherwise the window or pixmap itself.
+    #[must_use]
+    pub fn present_completion_host(&self, id: ResourceId) -> Option<u32> {
+        if let Some(backing) = self
+            .windows
+            .get(&id.0)
+            .and_then(|w| w.redirected_backing.as_ref())
+        {
+            return Some(backing.host_pixmap.as_raw());
+        }
+        self.host_drawable_target(id).map(|t| t.host_xid())
     }
 }
 

@@ -1571,3 +1571,179 @@ fn copy_area_clip_by_children_still_subtracts_automatic_redirected_child() {
         );
     }
 }
+
+// ── Redirected-backing geometry, D: draws name the window, not its backing ──
+
+const RD_WIN: u32 = 0x0020_0001;
+const RD_WIN_HOST: u32 = 0x0040_0001;
+const RD_BACKING_HOST: u32 = 0x0040_0002;
+const RD_PIXMAP: u32 = 0x0020_0003;
+const RD_PIXMAP_HOST: u32 = 0x0040_0003;
+const RD_GC: u32 = 0x0020_0004;
+
+/// A viewable, bordered, redirected top-level plus a depth-24 pixmap and a GC.
+fn redirected_draw_fixture() -> (ServerState, UnixStream) {
+    let mut state = ServerState::new();
+    let peer = install_client(&mut state, 1);
+    state.resources.create_window(
+        ClientId(1),
+        CreateWindowRequest {
+            depth: 24,
+            window: ResourceId(RD_WIN),
+            parent: ROOT_WINDOW,
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+            border_width: 4,
+            class: 1,
+            visual: crate::resources::ROOT_VISUAL,
+            ..Default::default()
+        },
+    );
+    {
+        let w = state
+            .resources
+            .window_mut(ResourceId(RD_WIN))
+            .expect("window");
+        w.host_xid = Some(crate::backend::WindowHandle::from_raw_for_test(RD_WIN_HOST));
+        w.redirected_backing = Some(crate::resources::RedirectedBacking {
+            host_pixmap: crate::backend::PixmapHandle::from_raw_for_test(RD_BACKING_HOST),
+            width: 108,
+            height: 108,
+            depth: 24,
+        });
+        w.map_state = crate::resources::MapState::Viewable;
+    }
+    state.resources.create_pixmap(
+        ClientId(1),
+        yserver_protocol::x11::CreatePixmapRequest {
+            pixmap: ResourceId(RD_PIXMAP),
+            drawable: ROOT_WINDOW,
+            width: 10,
+            height: 10,
+            depth: 24,
+        },
+    );
+    let _ = state.resources.set_pixmap_host_xid(
+        ResourceId(RD_PIXMAP),
+        crate::backend::PixmapHandle::from_raw_for_test(RD_PIXMAP_HOST),
+    );
+    state.resources.create_gc(
+        ClientId(1),
+        CreateGcRequest {
+            gc: ResourceId(RD_GC),
+            drawable: ResourceId(RD_WIN),
+            function: None,
+            plane_mask: None,
+            foreground: None,
+            background: None,
+            line_width: None,
+            line_style: None,
+            cap_style: None,
+            join_style: None,
+            fill_style: None,
+            fill_rule: None,
+            tile: None,
+            stipple: None,
+            tile_x_origin: None,
+            tile_y_origin: None,
+            font: None,
+            subwindow_mode: None,
+            graphics_exposures: Some(false),
+            clip_x_origin: None,
+            clip_y_origin: None,
+            clip_mask: None,
+            dash_offset: None,
+            dashes: None,
+            arc_mode: None,
+        },
+    );
+    (state, peer)
+}
+
+fn run_draw(state: &mut ServerState, opcode: u8, data: u8, body: &[u8]) -> Vec<RecordedCall> {
+    let mut backend = RecordingBackend::new();
+    process_request(
+        state,
+        &mut backend,
+        ClientId(1),
+        SequenceNumber(1),
+        RequestHeader {
+            opcode,
+            data,
+            length_units: u32::try_from(1 + body.len().div_ceil(4)).unwrap(),
+        },
+        body,
+        None,
+    )
+    .expect("process_request");
+    backend.calls()
+}
+
+/// Xorg draws a redirected window at its content origin inside the pixmap
+/// (`__fbPixOffXWin`, fb/fb.h:445); only the window xid carries that offset
+/// and ClipByChildren to the backend.
+#[test]
+fn poly_fill_rect_on_a_redirected_window_names_the_window() {
+    let (mut state, _peer) = redirected_draw_fixture();
+    let calls = run_draw(&mut state, 70, 0, &poly_fill_rectangle_body(RD_WIN, RD_GC));
+    let hosts: Vec<u32> = calls
+        .iter()
+        .filter_map(|c| match c {
+            RecordedCall::PolyFillRectangle { host_xid } => Some(*host_xid),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hosts, vec![RD_WIN_HOST], "{calls:?}");
+}
+
+#[test]
+fn put_image_on_a_redirected_window_names_the_window() {
+    let (mut state, _peer) = redirected_draw_fixture();
+    let mut body = Vec::new();
+    body.extend_from_slice(&RD_WIN.to_le_bytes());
+    body.extend_from_slice(&RD_GC.to_le_bytes());
+    body.extend_from_slice(&1u16.to_le_bytes());
+    body.extend_from_slice(&1u16.to_le_bytes());
+    body.extend_from_slice(&0i16.to_le_bytes());
+    body.extend_from_slice(&0i16.to_le_bytes());
+    body.push(0); // left pad
+    body.push(24); // depth
+    body.extend_from_slice(&[0, 0]);
+    body.extend_from_slice(&0x0000_00ffu32.to_le_bytes());
+    // format ZPixmap (2) rides in the header data byte.
+    let calls = run_draw(&mut state, 72, 2, &body);
+    let hosts: Vec<u32> = calls
+        .iter()
+        .filter_map(|c| match c {
+            RecordedCall::PutImage { host_xid, .. } => Some(*host_xid),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hosts, vec![RD_WIN_HOST], "{calls:?}");
+}
+
+#[test]
+fn copy_plane_onto_a_redirected_window_names_the_window() {
+    let (mut state, _peer) = redirected_draw_fixture();
+    let mut body = Vec::new();
+    body.extend_from_slice(&RD_PIXMAP.to_le_bytes());
+    body.extend_from_slice(&RD_WIN.to_le_bytes());
+    body.extend_from_slice(&RD_GC.to_le_bytes());
+    for v in [0i16, 0, 0, 0] {
+        body.extend_from_slice(&v.to_le_bytes());
+    }
+    body.extend_from_slice(&10u16.to_le_bytes());
+    body.extend_from_slice(&10u16.to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    let calls = run_draw(&mut state, 63, 0, &body);
+    let dsts: Vec<u32> = calls
+        .iter()
+        .filter_map(|c| match c {
+            RecordedCall::CopyPlane { dst_host_xid, .. } => Some(*dst_host_xid),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dsts, vec![RD_WIN_HOST], "{calls:?}");
+}

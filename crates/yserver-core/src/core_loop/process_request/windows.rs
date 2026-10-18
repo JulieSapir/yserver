@@ -145,12 +145,11 @@ pub(crate) fn paint_window_background(
     if background_paint_inhibited(state, window) {
         return Ok(());
     }
-    // Painted through the window itself, which the backend resolves to its
-    // redirect backing with the content offset a bordered window's backing
-    // has; `host_drawable_target` would name the backing pixmap, whose
-    // origin is the window's outer corner, and put the background
-    // `border_width` up and to the left of the region.
-    let Some(host) = state.resources.window(window).and_then(|w| w.host_xid) else {
+    let Some(host) = state
+        .resources
+        .host_drawable_target(window)
+        .map(|t| t.host_xid())
+    else {
         return Ok(());
     };
     let mut result = Ok(());
@@ -158,7 +157,7 @@ pub(crate) fn paint_window_background(
     for r in region {
         result = backend.clear_area(
             origin,
-            host.as_raw(),
+            host,
             bg.background_pixel,
             bg.background_pixmap_host_xid.map(|h| h.as_raw()),
             r.x,

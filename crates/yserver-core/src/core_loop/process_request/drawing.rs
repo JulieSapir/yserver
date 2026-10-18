@@ -1395,19 +1395,8 @@ pub(super) fn handle_copy_area(
     let src = state.resources.host_drawable_target(request.src);
     let dst = state.resources.host_drawable_target(request.dst);
     if let (Some(src), Some(dst)) = (src.as_ref(), dst.as_ref()) {
-        // Keep window identity so the backend applies its content offset
-        // and clip before resolving a redirect backing. Named pixmaps still
-        // address the entire backing, including its border.
-        let src_host = state
-            .resources
-            .window(request.src)
-            .and_then(|w| w.host_xid)
-            .map_or_else(|| src.host_xid(), |h| h.as_raw());
-        let dst_host = state
-            .resources
-            .window(request.dst)
-            .and_then(|w| w.host_xid)
-            .map_or_else(|| dst.host_xid(), |h| h.as_raw());
+        let src_host = src.host_xid();
+        let dst_host = dst.host_xid();
         if src.depth() != dst.depth() {
             return emit_x11_error(
                 state,
