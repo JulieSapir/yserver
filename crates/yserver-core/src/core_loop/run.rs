@@ -2481,7 +2481,6 @@ fn run_core_with_inventory(
                                 setup_reply,
                             } => {
                                 if let Err(err) = handle_client_setup_complete(
-                                    poll.registry(),
                                     &sender,
                                     &setup_registry,
                                     state,
@@ -2830,10 +2829,9 @@ fn run_core_with_inventory(
                     // WRITABLE. If the peer disappeared, mark the
                     // client for disconnect.
                     if !ev.is_writable() {
-                        // mio always reports both READABLE+WRITABLE
-                        // as readiness even when only one was asked
-                        // for; the writer fd's READABLE wakeups are
-                        // ignored — the reader thread owns reads.
+                        // The writer fd is registered WRITABLE only, but
+                        // a hangup or error can still be reported on its
+                        // own; the reader thread sees the disconnect.
                         continue;
                     }
                     let Some(client) = state.clients.get_mut(&client_id.0) else {
@@ -4221,16 +4219,24 @@ fn reconcile_client_writable_interest(
             continue;
         }
         let raw = std::os::fd::AsRawFd::as_raw_fd(&*client.writer.lock().unwrap());
-        let interest = if needs_writable {
-            Interest::READABLE | Interest::WRITABLE
+        // The writer fd is in the poller only while output waits for room:
+        // the reader thread owns reads, so a READABLE registration would
+        // only wake this loop for every byte the client sends -- and on a
+        // kernel whose edge-triggered readiness also counts the other
+        // direction's traffic, for every byte the server sends too.
+        let changed = if needs_writable {
+            let token = client_token(yserver_protocol::x11::ClientId(*id));
+            match registry.register(&mut SourceFd(&raw), token, Interest::WRITABLE) {
+                // Registered by somebody else meanwhile: take it over.
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                    registry.reregister(&mut SourceFd(&raw), token, Interest::WRITABLE)
+                }
+                other => other,
+            }
         } else {
-            Interest::READABLE
+            registry.deregister(&mut SourceFd(&raw))
         };
-        match registry.reregister(
-            &mut SourceFd(&raw),
-            client_token(yserver_protocol::x11::ClientId(*id)),
-            interest,
-        ) {
+        match changed {
             Ok(()) => client.watching_writable = needs_writable,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 // fd already deregistered (disconnect path); nothing
@@ -4546,13 +4552,13 @@ pub(crate) fn evaluate_idletime_alarms_post_poll(
 ///   - install a `ClientState` for `id`
 ///   - drop the entry from the setup-thread teardown registry (the
 ///     setup thread is exiting)
-///   - register the writer fd with the poller (no interest yet — I2
-///     re-registers `WRITABLE` only when there's pending outbound)
+///   - leave the writer fd out of the poller: the reader thread owns
+///     reads, and I2 registers it `WRITABLE` only while outbound waits
+///     for room, deregistering it once that drains
 ///   - spawn the reader thread (the only path that produces
 ///     `Message::Request` for this client)
 #[allow(clippy::too_many_arguments)]
 fn handle_client_setup_complete(
-    registry: &mio::Registry,
     sender: &CoreSender,
     setup_registry: &SetupRegistry,
     state: &mut ServerState,
@@ -4568,7 +4574,6 @@ fn handle_client_setup_complete(
     use std::sync::{Arc, Mutex, atomic::AtomicU16};
     let writer = stream.try_clone()?;
     writer.set_nonblocking(true)?;
-    let writer_fd = writer.as_raw_fd();
 
     let (reader_control_tx, reader_control_rx) = crossbeam_channel::unbounded();
 
@@ -4600,17 +4605,6 @@ fn handle_client_setup_complete(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&id);
-
-    // Initial interest is READABLE — mio doesn't accept empty interest.
-    // I2 reregisters WRITABLE-only when `client.outbound` becomes
-    // non-empty and back to READABLE when it drains. The reader thread
-    // already polls the peer fd directly, so this registration's only
-    // wake-up role today is the eventual WRITABLE-on-drain edge.
-    registry.register(
-        &mut SourceFd(&writer_fd),
-        crate::core_loop::poll_tokens::client_token(id),
-        Interest::READABLE,
-    )?;
 
     const BIG_REQUESTS_MAJOR_OPCODE: u8 = 135;
     // Read the transport off the stream before it is moved into the

@@ -2154,6 +2154,149 @@ fn reconcile_writable_interest_tracks_outbound_state() {
     drop(peer);
 }
 
+/// A client's writer fd is in the poller only while output waits for
+/// room: starting unregistered, reconcile registers it WRITABLE when
+/// output queues on a full socket, the drain's WRITABLE edge arrives,
+/// reconcile deregisters it, and bytes the client sends wake nothing.
+#[test]
+fn reconcile_registers_an_unregistered_writer_only_while_output_waits() {
+    use crate::server::ClientState;
+    use mio::{Events, Poll};
+    use std::{
+        collections::{HashMap, HashSet, VecDeque},
+        io::{Read, Write},
+        os::unix::net::UnixStream,
+        sync::{Arc, Mutex, atomic::AtomicU16},
+    };
+    use yserver_protocol::x11::{ClientByteOrder, ClientId as Cid};
+
+    // Whether a poll of `timeout` reports `token` at all, and writable.
+    fn woke(poll: &mut Poll, token: mio::Token, timeout: Duration) -> (bool, bool) {
+        let mut events = Events::with_capacity(8);
+        poll.poll(&mut events, Some(timeout)).unwrap();
+        let mut seen = (false, false);
+        for ev in events.iter().filter(|ev| ev.token() == token) {
+            seen.0 = true;
+            seen.1 |= ev.is_writable();
+        }
+        seen
+    }
+
+    let mut poll = Poll::new().unwrap();
+    let (mut peer, writer) = UnixStream::pair().unwrap();
+    writer.set_nonblocking(true).unwrap();
+    peer.set_nonblocking(true).unwrap();
+    let writer_arc = Arc::new(Mutex::new(crate::transport::Transport::Unix(writer)));
+    let token = client_token(Cid(7));
+
+    let mut state = ServerState::new();
+    state.clients.insert(
+        7,
+        ClientState {
+            writer: writer_arc,
+            byte_order: ClientByteOrder::LittleEndian,
+            last_sequence: Arc::new(AtomicU16::new(0)),
+            resource_id_base: 0,
+            resource_id_mask: 0,
+            event_masks: HashMap::new(),
+            save_set: HashSet::new(),
+            big_requests_enabled: false,
+            xi2_masks: HashMap::new(),
+            xi1_event_classes: HashSet::new(),
+            xi1_window_event_classes: HashMap::new(),
+            outbound: VecDeque::new(),
+            watching_writable: false,
+            write_failed: false,
+            focused_window: crate::resources::ROOT_WINDOW,
+            reader_control: None,
+            is_local: true,
+            fd_passing: true,
+            internal: false,
+        },
+    );
+
+    // Unregistered and idle: the client's bytes wake nothing.
+    peer.write_all(&[0x55; 32]).unwrap();
+    assert_eq!(
+        woke(&mut poll, token, Duration::from_millis(50)),
+        (false, false)
+    );
+
+    // Fill the send buffer until WouldBlock (see the test above for why
+    // a fixed-size write is not enough), then queue output.
+    let chunk = vec![0xABu8; 64 * 1024];
+    let mut filled = false;
+    for _ in 0..1024 {
+        match state.clients[&7].writer.lock().unwrap().write(&chunk) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                filled = true;
+                break;
+            }
+            Err(err) => panic!("unexpected error filling the send buffer: {err}"),
+        }
+    }
+    assert!(filled, "kernel send buffer never reported WouldBlock");
+    state
+        .clients
+        .get_mut(&7)
+        .unwrap()
+        .outbound
+        .extend([1u8, 2, 3]);
+
+    // Reconcile takes the register path, not the AlreadyExists fallback.
+    let disc = reconcile_client_writable_interest(poll.registry(), &mut state);
+    assert!(disc.is_empty());
+    assert!(state.clients[&7].watching_writable);
+
+    // Registered WRITABLE on a full socket: the client's bytes still
+    // wake nothing.
+    peer.write_all(&[0x55; 32]).unwrap();
+    assert_eq!(
+        woke(&mut poll, token, Duration::from_millis(50)),
+        (false, false)
+    );
+
+    // The peer drains: the WRITABLE edge arrives.
+    let mut sink = vec![0u8; 64 * 1024];
+    loop {
+        match peer.read(&mut sink) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(err) => panic!("unexpected error draining the peer: {err}"),
+        }
+    }
+    assert_eq!(woke(&mut poll, token, Duration::from_secs(1)), (true, true));
+
+    // Reconcile drains outbound and deregisters the fd.
+    let disc = reconcile_client_writable_interest(poll.registry(), &mut state);
+    assert!(disc.is_empty());
+    assert!(state.clients[&7].outbound.is_empty());
+    assert!(!state.clients[&7].watching_writable);
+    // epoll reports a second deregister as NotFound; kqueue's deregister
+    // in mio ignores ENOENT, so this check is Linux-only.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::fd::AsRawFd;
+        let raw = state.clients[&7].writer.lock().unwrap().as_raw_fd();
+        let err = poll
+            .registry()
+            .deregister(&mut mio::unix::SourceFd(&raw))
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    // Deregistered: neither the client's bytes nor a writable socket
+    // wake anything.
+    peer.write_all(&[0x55; 32]).unwrap();
+    assert_eq!(
+        woke(&mut poll, token, Duration::from_millis(50)),
+        (false, false)
+    );
+}
+
 /// Multi-device regression: two DRM fds of the same kind must get
 /// distinct poll tokens, and readiness on the second fd must carry
 /// that exact fd through `Backend::on_page_flip_ready`.
