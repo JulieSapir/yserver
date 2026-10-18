@@ -1482,7 +1482,7 @@ fn disconnect_teardown_failure_sets_cow_teardown_failed() {
 // had just chosen to keep. This test pins release-then-allocate
 // ORDER — flipping it back would regress the hardware smoke bug.
 #[test]
-fn rotate_redirected_backing_on_resize_releases_old_then_allocates_new() {
+fn rotate_redirected_backing_on_resize_reallocates_and_returns_old_retained() {
     use crate::backend::recording::RecordedCall;
 
     const WINDOW_XID: u32 = 0x0010_0001;
@@ -1527,7 +1527,7 @@ fn rotate_redirected_backing_on_resize_releases_old_then_allocates_new() {
         });
     }
 
-    rotate_redirected_backing_on_resize(
+    let old = rotate_redirected_backing_on_resize(
         &mut state,
         &mut backend,
         None,
@@ -1538,35 +1538,32 @@ fn rotate_redirected_backing_on_resize_releases_old_then_allocates_new() {
         0,
     );
 
+    // compReallocPixmap: OLD is retained, a new backing is made, and OLD
+    // comes back still held for the content copy and gravity carries.
     let calls = backend.calls();
-    // RetainBackingStorage comes first to keep OLD's storage
-    // alive across the release→copy gap (see
-    // `rotate_redirected_backing_retains_old_storage_across_release_then_drops_after_copy`).
-    // Release must then precede Allocate so the backend's
-    // idempotent `host_window_to_backing[W]` lookup misses on
-    // the subsequent allocate.
-    assert_eq!(
-        calls[0],
-        RecordedCall::RetainBackingStorage(OLD_BACKING),
-        "step 1 must be RetainBackingStorage on OLD — keeps storage \
-             alive across the release→copy gap so the no-alias case \
-             doesn't drop the rotate copy",
-    );
+    assert_eq!(calls[0], RecordedCall::RetainBackingStorage(OLD_BACKING));
     assert_eq!(
         calls[1],
-        RecordedCall::ReleaseRedirectedBacking(OLD_BACKING),
-        "step 2 must be ReleaseRedirectedBacking on the OLD backing — \
-             release-before-allocate is load-bearing (see fn doc-comment)",
-    );
-    assert_eq!(
-        calls[2],
-        RecordedCall::AllocateRedirectedBacking {
+        RecordedCall::ReallocateRedirectedBacking {
             host_window: HOST_XID,
+            old: OLD_BACKING,
             width: 100,
             height: 75,
             depth: 32,
         },
-        "step 3 must be AllocateRedirectedBacking at the NEW size",
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, RecordedCall::ReleaseRedirectedBacking(_))),
+        "a resize must not unredirect (no leaf round trip): {calls:?}",
+    );
+    assert_eq!(old.map(|h| h.as_raw()), Some(OLD_BACKING));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, RecordedCall::DropBackingStorage(_))),
+        "OLD stays retained until the caller finishes the rotate: {calls:?}",
     );
 
     // Window resource now points at the freshly-allocated backing
@@ -1946,8 +1943,9 @@ fn rotate_redirected_backing_on_shrink_allocates_the_new_bordered_extent() {
 
     let calls = backend.calls();
     assert!(
-        calls.contains(&RecordedCall::AllocateRedirectedBacking {
+        calls.contains(&RecordedCall::ReallocateRedirectedBacking {
             host_window: ROTATE_HOST_XID,
+            old: old_backing,
             width: 1280,
             height: 708,
             depth: 32,
@@ -2020,8 +2018,9 @@ fn rotate_redirected_backing_on_bordered_grow_still_rotates_and_copies_content()
 
     let calls = backend.calls();
     assert!(
-        calls.contains(&RecordedCall::AllocateRedirectedBacking {
+        calls.contains(&RecordedCall::ReallocateRedirectedBacking {
             host_window: ROTATE_HOST_XID,
+            old: old_backing,
             width: 1282,
             height: 708,
             depth: 32,
@@ -2116,7 +2115,7 @@ fn redirected_window_fixture(
 // RecordingBackend; the v2-side alias_registry incref/decref
 // semantics are exercised by the v2 backend's own tests.
 #[test]
-fn rotate_redirected_backing_retains_old_storage_across_release_then_drops_after_copy() {
+fn rotate_redirected_backing_retains_old_storage_until_finish() {
     use crate::backend::recording::RecordedCall;
 
     const WINDOW_XID: u32 = 0x0010_0001;
@@ -2161,7 +2160,7 @@ fn rotate_redirected_backing_retains_old_storage_across_release_then_drops_after
         });
     }
 
-    rotate_redirected_backing_on_resize(
+    let old = rotate_redirected_backing_on_resize(
         &mut state,
         &mut backend,
         None,
@@ -2171,56 +2170,26 @@ fn rotate_redirected_backing_retains_old_storage_across_release_then_drops_after
         true,
         0,
     );
+    finish_redirected_backing_rotate(&mut backend, None, old);
 
     let calls = backend.calls();
-    let retain_idx = calls
-        .iter()
-        .position(|c| matches!(c, RecordedCall::RetainBackingStorage(x) if *x == OLD_BACKING));
-    let release_idx = calls
-        .iter()
-        .position(|c| matches!(c, RecordedCall::ReleaseRedirectedBacking(x) if *x == OLD_BACKING));
-    let allocate_idx = calls.iter().position(|c| {
-        matches!(c, RecordedCall::AllocateRedirectedBacking { host_window, .. } if *host_window == HOST_XID)
-    });
-    let copy_idx = calls.iter().position(|c| {
+    let pos = |f: &dyn Fn(&RecordedCall) -> bool| calls.iter().position(f);
+    let r = pos(&|c| matches!(c, RecordedCall::RetainBackingStorage(x) if *x == OLD_BACKING))
+        .expect("retain OLD");
+    let a = pos(&|c| {
+        matches!(c, RecordedCall::ReallocateRedirectedBacking { host_window, old, .. }
+            if *host_window == HOST_XID && *old == OLD_BACKING)
+    })
+    .expect("reallocate");
+    let c = pos(&|c| {
         matches!(c, RecordedCall::CopyArea { src_host_xid, .. } if *src_host_xid == OLD_BACKING)
-    });
-    let drop_idx = calls
-        .iter()
-        .position(|c| matches!(c, RecordedCall::DropBackingStorage(x) if *x == OLD_BACKING));
-
-    let r = retain_idx.expect(
-        "rotate must retain OLD storage before releasing — otherwise the no-alias \
-             case frees storage before copy_area can read it (observed as `copy_area dropped \
-             — src unknown` in HW smoke)",
-    );
-    let rel = release_idx.expect("rotate must still release OLD's W→B map slot");
-    let a = allocate_idx.expect("rotate must allocate NEW");
-    let c = copy_idx.expect("rotate must copy OLD→NEW");
-    let d = drop_idx.expect(
-        "rotate must drop the retain after copy — leaving storage alive forever \
-             would leak the backing across every resize",
-    );
-
+    })
+    .expect("copy OLD→NEW");
+    let d = pos(&|c| matches!(c, RecordedCall::DropBackingStorage(x) if *x == OLD_BACKING))
+        .expect("finish drops the retain");
     assert!(
-        r < rel,
-        "Retain(idx={r}) must precede Release(idx={rel}) — release's decref would \
-             otherwise hit refcount=0 and free OLD's storage before copy. Calls: {calls:?}",
-    );
-    assert!(
-        rel < a,
-        "Release(idx={rel}) must precede Allocate(idx={a}) — host_window_to_backing[W] \
-             idempotency would otherwise return OLD instead of allocating fresh. Calls: {calls:?}",
-    );
-    assert!(
-        a < c,
-        "Allocate(idx={a}) must precede Copy(idx={c}) — copy needs NEW as destination. \
-             Calls: {calls:?}",
-    );
-    assert!(
-        c < d,
-        "Copy(idx={c}) must precede Drop(idx={d}) — dropping the retain before the copy \
-             defeats the purpose of taking it. Calls: {calls:?}",
+        r < a && a < c && c < d,
+        "retain < realloc < copy < drop: {calls:?}"
     );
 }
 
@@ -2283,21 +2252,15 @@ fn rotate_redirected_backing_on_move_forces_reallocate_even_when_size_matches() 
     assert!(
         calls.iter().any(|c| matches!(
             c,
-            RecordedCall::ReleaseRedirectedBacking(x) if *x == OLD_BACKING
-        )),
-        "forced move-rotate must release OLD even when size matches; got {calls:?}",
-    );
-    assert!(
-        calls.iter().any(|c| matches!(
-            c,
-            RecordedCall::AllocateRedirectedBacking {
+            RecordedCall::ReallocateRedirectedBacking {
                 host_window,
+                old,
                 width,
                 height,
                 depth: 32,
-            } if *host_window == HOST_XID && *width == W && *height == H
+            } if *host_window == HOST_XID && *old == OLD_BACKING && *width == W && *height == H
         )),
-        "forced move-rotate must allocate a fresh backing at the same size; got {calls:?}",
+        "forced move-rotate must reallocate at the same size; got {calls:?}",
     );
     let new_backing = state
         .resources
@@ -3472,4 +3435,141 @@ fn clear_area_on_an_inhibited_root_paints_nothing() {
     .expect("handle_clear_area");
     assert_eq!(root_fills(&state, &backend), []);
     assert_eq!(damage_event_count(&mut comp), 0);
+}
+
+/// `miResizeWindow` on a redirected W (mi/miwindow.c:342-620,
+/// composite/compalloc.c:670-712, composite/compwindow.c:489-528): the
+/// pixmap is reallocated first, W's content copied from OLD, then the
+/// gravity-moved children carried from OLD, and only then is OLD freed.
+#[test]
+fn resize_call_order_matches_xorg() {
+    use crate::backend::recording::RecordedCall;
+    const W: u32 = 0x0010_0071;
+    const W_HOST: u32 = 0x0040_0071;
+    const C: u32 = 0x0010_0072;
+    const C_HOST: u32 = 0x0040_0072;
+    const OLD: u32 = 0x0050_0071;
+
+    let mut state = ServerState::new();
+    let _peer = install_client(&mut state, 1);
+    let mut backend = RecordingBackend::new();
+    for (xid, parent, x, y, size, bw, gravity) in [
+        (W, crate::resources::ROOT_WINDOW, 0, 0, 100, 0, None),
+        (C, ResourceId(W), 60, 60, 30, 3, Some(9u8)), // SouthEast
+    ] {
+        state.resources.create_window(
+            ClientId(1),
+            yserver_protocol::x11::CreateWindowRequest {
+                depth: 24,
+                window: ResourceId(xid),
+                parent,
+                x,
+                y,
+                width: size,
+                height: size,
+                border_width: bw,
+                class: 1,
+                visual: crate::resources::ROOT_VISUAL,
+                win_gravity: gravity,
+                ..Default::default()
+            },
+        );
+    }
+    for (xid, host) in [(W, W_HOST), (C, C_HOST)] {
+        let w = state.resources.window_mut(ResourceId(xid)).expect("window");
+        w.host_xid = Some(crate::backend::WindowHandle::from_raw_for_test(host));
+        w.map_state = MapState::Viewable;
+    }
+    state
+        .resources
+        .window_mut(ResourceId(W))
+        .expect("W")
+        .redirected_backing = Some(crate::resources::RedirectedBacking {
+        host_pixmap: crate::backend::PixmapHandle::from_raw_for_test(OLD),
+        width: 100,
+        height: 100,
+        depth: 24,
+    });
+
+    let mut body = Vec::new();
+    body.extend_from_slice(&W.to_le_bytes());
+    body.extend_from_slice(&0x000Cu16.to_le_bytes()); // width | height
+    body.extend_from_slice(&0u16.to_le_bytes());
+    body.extend_from_slice(&200u32.to_le_bytes());
+    body.extend_from_slice(&200u32.to_le_bytes());
+    process_request(
+        &mut state,
+        &mut backend,
+        ClientId(1),
+        SequenceNumber(1),
+        RequestHeader {
+            opcode: 12,
+            data: 0,
+            length_units: u32::try_from(1 + body.len() / 4).unwrap(),
+        },
+        &body,
+        None,
+    )
+    .expect("ConfigureWindow");
+
+    let calls = backend.calls();
+    let pos = |f: &dyn Fn(&RecordedCall) -> bool| calls.iter().position(f);
+    let cfg = pos(
+        &|c| matches!(c, RecordedCall::ConfigureSubwindow { host_xid, .. } if *host_xid == W_HOST),
+    )
+    .expect("configure W");
+    let realloc =
+        pos(&|c| matches!(c, RecordedCall::ReallocateRedirectedBacking { old, .. } if *old == OLD))
+            .expect("reallocate");
+    let copy =
+        pos(&|c| matches!(c, RecordedCall::CopyArea { src_host_xid, .. } if *src_host_xid == OLD))
+            .expect("content copy from OLD");
+    let carry = pos(&|c| {
+        matches!(c, RecordedCall::MoveSubwindowsForGravity { moves, carry_from }
+            if *carry_from == Some(OLD) && moves == &vec![(C_HOST, 160, 160)])
+    })
+    .expect("gravity carry from OLD");
+    let drop = pos(&|c| matches!(c, RecordedCall::DropBackingStorage(x) if *x == OLD))
+        .expect("OLD dropped");
+    assert!(
+        cfg < realloc && realloc < copy && copy < carry && carry < drop,
+        "configure < realloc < copy < carry < drop: {calls:?}"
+    );
+}
+
+/// A failed reallocation leaves W on OLD: its record still names OLD,
+/// the rotate retain is dropped again, and nothing copies from OLD.
+#[test]
+fn a_failed_reallocation_keeps_the_old_backing() {
+    use crate::backend::recording::RecordedCall;
+    let (mut state, mut backend, old_backing) = redirected_window_fixture(100, 50, 0);
+    backend.reallocate_fails = true;
+    let old = rotate_redirected_backing_on_resize(
+        &mut state,
+        &mut backend,
+        None,
+        ResourceId(ROTATE_WINDOW_XID),
+        100,
+        75,
+        false,
+        0,
+    );
+    assert_eq!(old, None);
+    let backing = state
+        .resources
+        .window(ResourceId(ROTATE_WINDOW_XID))
+        .and_then(|w| w.redirected_backing)
+        .expect("still redirected");
+    assert_eq!(backing.host_pixmap.as_raw(), old_backing);
+    let calls = backend.calls();
+    assert!(
+        calls.contains(&RecordedCall::DropBackingStorage(old_backing)),
+        "{calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, RecordedCall::CopyArea { .. })),
+        "{calls:?}"
+    );
 }

@@ -1448,6 +1448,64 @@ pub trait Backend {
         ))
     }
 
+    /// `compReallocPixmap` (composite/compalloc.c:670-712): give
+    /// `host_window` a new backing of `width x height`, seeded from its
+    /// parent, and move its route and reason-1 hold off `old`. The caller
+    /// keeps `old` retained; nothing is read back from window leaves.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` by default. On error the window stays on `old`.
+    fn reallocate_redirected_backing(
+        &mut self,
+        origin: Option<OriginContext>,
+        host_window: WindowHandle,
+        old: PixmapHandle,
+        width: u16,
+        height: u16,
+        depth: u8,
+    ) -> io::Result<PixmapHandle> {
+        let _ = (origin, host_window, old, width, height, depth);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "reallocate_redirected_backing not supported",
+        ))
+    }
+
+    /// Move children repositioned by `win_gravity` (`(host_xid, x, y)`).
+    /// With `carry_from`, a child sharing its parent's backing takes its
+    /// pixels from that old backing (`compCopyWindow` from `pOldPixmap`,
+    /// composite/compwindow.c:489-528); otherwise each child moves as a
+    /// plain `configure_subwindow`.
+    ///
+    /// # Errors
+    ///
+    /// The first failing move.
+    fn move_subwindows_for_gravity(
+        &mut self,
+        origin: Option<OriginContext>,
+        moves: &[(u32, i16, i16)],
+        carry_from: Option<PixmapHandle>,
+    ) -> io::Result<()> {
+        let _ = carry_from;
+        for &(host_xid, x, y) in moves {
+            self.configure_subwindow(
+                origin,
+                host_xid,
+                crate::host_x11::HostSubwindowConfig {
+                    x: Some(x),
+                    y: Some(y),
+                    width: None,
+                    height: None,
+                    border_width: None,
+                    sibling: None,
+                    stack_mode: None,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     /// L2 plan B.6c: release a redirect's reason-1 hold on a
     /// backing pixmap. The backend decrements the alias registry's
     /// refcount and frees the underlying pixmap if no

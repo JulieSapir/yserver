@@ -912,6 +912,73 @@ impl<P: Platform> XBackend<P> {
         Ok(backing)
     }
 
+    /// `compReallocPixmap` (composite/compalloc.c:670-712): a new backing
+    /// seeded from the parent like `compNewPixmap`, with W's route and its
+    /// reason-1 hold moved off `old`. No leaf is read or rewritten: under
+    /// the redirect the old backing is authoritative and the caller copies
+    /// from it. On error nothing has changed.
+    pub(in crate::kms::render::backend) fn backend_redirect_reallocate_redirected_backing(
+        &mut self,
+        origin: Option<OriginContext>,
+        host_window: WindowHandle,
+        old: PixmapHandle,
+        width: u16,
+        height: u16,
+        depth: u8,
+    ) -> io::Result<PixmapHandle> {
+        let w_xid = host_window.as_raw();
+        if self.core.host_window_to_backing.get(&w_xid) != Some(&old) {
+            return Err(io::Error::other(format!(
+                "reallocate_redirected_backing(0x{w_xid:x}): 0x{:x} is not its backing",
+                old.as_raw()
+            )));
+        }
+        let Some(old_id) = self.store.lookup(old.as_raw()) else {
+            return Err(io::Error::other(format!(
+                "reallocate_redirected_backing(0x{w_xid:x}): old backing not in store"
+            )));
+        };
+        let backing = self.create_pixmap(origin, depth, width, height)?;
+        let Some(b_id) = self.store.lookup(backing.as_raw()) else {
+            let _ = self.free_pixmap(origin, backing.as_raw());
+            return Err(io::Error::other(format!(
+                "reallocate_redirected_backing(0x{w_xid:x}): new backing not in store"
+            )));
+        };
+        if let Some(d) = self.store.get(b_id) {
+            crate::kms::vk::mem_accounting::recategorise(
+                d.storage.memory,
+                crate::kms::vk::mem_accounting::MemCategory::RedirectBacking,
+            );
+        }
+        self.store
+            .set_content_offset(b_id, self.window_border_width(w_xid));
+        self.seed_backing_from_parent(w_xid, b_id);
+        if let Some(w_id) = self.store.lookup(w_xid) {
+            self.store.set_redirected_target(w_id, Some(b_id));
+        }
+        self.store.set_scene_participating(old_id, false);
+        if self.core.alias_registry.decref(old) {
+            self.free_pixmap(origin, old.as_raw())?;
+        }
+        self.core.alias_registry.insert(
+            backing,
+            crate::kms::core::AliasEntry {
+                refcount: 1,
+                width,
+                height,
+                depth,
+            },
+        );
+        self.core.host_window_to_backing.insert(w_xid, backing);
+        self.scene.wake_for_damage();
+        if self.store.lookup(w_xid).is_some() {
+            let tile_origin = self.border_tile_origin(w_xid);
+            let _ = self.paint_window_border(w_xid, tile_origin);
+        }
+        Ok(backing)
+    }
+
     /// Stage 4b: real `release_redirected_backing`. Mirrors v1
     /// (`kms/backend.rs:9547-9566`) — clear the
     /// `host_window_to_backing` entry, drop the Reason-1 hold,

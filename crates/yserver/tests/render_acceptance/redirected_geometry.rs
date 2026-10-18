@@ -10,7 +10,7 @@ const WHITE: u32 = 0x00FF_FFFF;
 const GREEN: u32 = 0x0000_FF00;
 
 /// CWBackPixel | CWBorderPixel | CWWinGravity.
-const RG_MASK: u32 = 0x0000_001A;
+const RG_MASK: u32 = 0x0000_002A;
 
 /// A fixture with `RedirectSubwindows(root, Manual)` set, as a compositor does.
 fn rg_fixture() -> Option<ProtoFixture> {
@@ -240,4 +240,122 @@ fn get_image_and_copy_area_read_a_redirected_window_through_its_content() {
             "CopyArea from window ({x},{y})"
         );
     }
+}
+
+/// G fixture: W `size` square at root, white; a SouthEast-gravity child
+/// 30x30 bw 3 (blue, red border) at `(c_at, c_at)`; both mapped.
+fn rg_gravity(f: &mut ProtoFixture, w: u32, c: u32, size: u16, c_at: i16) {
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    rg_window(f, w, root, 0, 0, size, size, 0, WHITE, 0, 1);
+    rg_window(f, c, w, c_at, c_at, 30, 30, 3, BLUE, RED, 9);
+    wz_map(f, c);
+    wz_map(f, w);
+}
+
+/// `compCopyWindow` copies each gravity group from `pOldPixmap`
+/// (composite/compwindow.c:489-528) into the reallocated pixmap.
+/// Xorg: ring red, content blue at the new place, vacated area white.
+/// Mutation: `carry_from = None`.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn gravity_moves_a_child_into_the_grown_area_with_its_pixels() {
+    const W: u32 = 0x1C10;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    rg_gravity(&mut f, W, 0x1C11, 100, 60);
+    rg_assert(&mut f, W, "before", &[(61, 75, RED), (75, 75, BLUE)]);
+    wz_configure(&mut f, W, 0x0C, &[200, 200]);
+    rg_assert(
+        &mut f,
+        W,
+        "G",
+        &[
+            (161, 178, RED),
+            (194, 178, RED),
+            (178, 161, RED),
+            (178, 194, RED),
+            (178, 178, BLUE),
+            (75, 75, WHITE),
+            (61, 75, WHITE),
+        ],
+    );
+}
+
+/// GS: the child moves up-left on a shrink (green before this branch; guard).
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn gravity_moves_a_child_up_left_on_shrink() {
+    const W: u32 = 0x1C20;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    rg_gravity(&mut f, W, 0x1C21, 200, 160);
+    wz_configure(&mut f, W, 0x0C, &[100, 100]);
+    rg_assert(
+        &mut f,
+        W,
+        "GS",
+        &[
+            (61, 78, RED),
+            (94, 78, RED),
+            (78, 61, RED),
+            (78, 94, RED),
+            (78, 78, BLUE),
+        ],
+    );
+}
+
+/// While W is redirected its backing is authoritative and the leaves of
+/// its subtree are stale; `compReallocPixmap` seeds only from the parent
+/// (`compNewPixmap`, composite/compalloc.c:532-560), never from them. C has
+/// no background, so the part the grow reveals keeps whatever the seed put
+/// there, and must not be C's stale leaf.
+/// Mutation: overlay the leaves in `reallocate_redirected_backing`.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn realloc_does_not_round_trip_through_leaves() {
+    const W: u32 = 0x1C30;
+    const C: u32 = 0x1C31;
+    const GC: u32 = 0x1C32;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    let visual = yserver_core::resources::ROOT_VISUAL.0;
+    rg_window(&mut f, W, root, 0, 0, 100, 100, 0, WHITE, 0, 1);
+    // CWBackPixmap None.
+    or_create_window(
+        &mut f,
+        C,
+        W,
+        24,
+        80,
+        10,
+        40,
+        30,
+        0,
+        visual,
+        0x0000_0001,
+        &[0],
+    );
+    wz_map(&mut f, C);
+    wz_map(&mut f, W);
+    or_create_gc(&mut f, GC, C, BLUE);
+    or_fill(&mut f, C, GC, 0, 0, 40, 30);
+    let c_host = f.host_xid(C);
+    assert!(
+        f.backend
+            .fill_leaf_rect_for_tests(c_host, 0, 0, 40, 30, GREEN)
+    );
+    wz_configure(&mut f, W, 0x0C, &[150, 150]);
+    rg_assert(&mut f, W, "C's copied part", &[(85, 15, BLUE)]);
+    assert_ne!(
+        rg_pix(&mut f, W, 110, 15),
+        or_bgr(GREEN),
+        "the revealed part of C must not come from its stale leaf",
+    );
 }

@@ -105,6 +105,17 @@ pub enum RecordedCall {
     ReleaseRedirectedBacking(u32),
     RetainBackingStorage(u32),
     DropBackingStorage(u32),
+    ReallocateRedirectedBacking {
+        host_window: u32,
+        old: u32,
+        width: u16,
+        height: u16,
+        depth: u8,
+    },
+    MoveSubwindowsForGravity {
+        moves: Vec<(u32, i16, i16)>,
+        carry_from: Option<u32>,
+    },
     AllocateRedirectedBacking {
         host_window: u32,
         width: u16,
@@ -521,6 +532,8 @@ pub struct RecordingBackend {
     /// Canned direct-Present result plus observed candidates. A successful
     /// result lets request-layer tests prove M2b bypasses Copy entirely.
     pub present_direct_result: bool,
+    /// `reallocate_redirected_backing` fails (after recording the call).
+    pub reallocate_fails: bool,
     pub present_direct_candidates: Vec<PresentScanoutCandidate>,
     /// `(event, dst_host_xid)` passed to `enqueue_present_completion`, in call order.
     pub enqueued_present_completions: Vec<(CompletedPresentEvent, u32)>,
@@ -672,6 +685,7 @@ impl RecordingBackend {
             fail_copy_area: false,
             fail_fill_rectangle: false,
             present_direct_result: false,
+            reallocate_fails: false,
             present_direct_candidates: Vec::new(),
             enqueued_present_completions: Vec::new(),
             arm_present_syncobj_wait_result: None,
@@ -1678,6 +1692,42 @@ impl Backend for RecordingBackend {
         backing: PixmapHandle,
     ) -> io::Result<()> {
         self.record(RecordedCall::ReleaseRedirectedBacking(backing.as_raw()));
+        Ok(())
+    }
+
+    fn reallocate_redirected_backing(
+        &mut self,
+        _origin: Option<OriginContext>,
+        host_window: WindowHandle,
+        old: PixmapHandle,
+        width: u16,
+        height: u16,
+        depth: u8,
+    ) -> io::Result<PixmapHandle> {
+        self.record(RecordedCall::ReallocateRedirectedBacking {
+            host_window: host_window.as_raw(),
+            old: old.as_raw(),
+            width,
+            height,
+            depth,
+        });
+        if self.reallocate_fails {
+            return Err(io::Error::other("reallocate_fails"));
+        }
+        let xid = self.allocate_handle();
+        Ok(PixmapHandle::from_raw_panicking(xid))
+    }
+
+    fn move_subwindows_for_gravity(
+        &mut self,
+        _origin: Option<OriginContext>,
+        moves: &[(u32, i16, i16)],
+        carry_from: Option<PixmapHandle>,
+    ) -> io::Result<()> {
+        self.record(RecordedCall::MoveSubwindowsForGravity {
+            moves: moves.to_vec(),
+            carry_from: carry_from.map(PixmapHandle::as_raw),
+        });
         Ok(())
     }
 

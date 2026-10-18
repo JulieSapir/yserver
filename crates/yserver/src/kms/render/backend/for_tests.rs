@@ -266,6 +266,40 @@ impl KmsBackend {
             .is_ok()
     }
 
+    /// Fill a rect of a window's OWN leaf storage, ignoring any redirect
+    /// route: what a stale leaf holds, for tests that prove it is not read.
+    #[doc(hidden)]
+    pub fn fill_leaf_rect_for_tests(
+        &mut self,
+        host_xid: u32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        pixel: u32,
+    ) -> bool {
+        let Some(id) = self.store.lookup(host_xid) else {
+            return false;
+        };
+        let Some(depth) = self.store.get(id).map(|d| d.depth) else {
+            return false;
+        };
+        let color = decode_x11_pixel_for_storage(pixel, depth, GpuCore::format_for_depth(depth));
+        let rect = ash::vk::Rect2D {
+            offset: ash::vk::Offset2D { x, y },
+            extent: ash::vk::Extent2D { width, height },
+        };
+        self.engine
+            .fill_rect(
+                &mut self.store,
+                &mut self.platform.gpu,
+                crate::kms::render::target::Dst::server_internal(id),
+                rect,
+                color,
+            )
+            .is_ok()
+    }
+
     /// Test accessor: the rasterised `(width, height, bgra_bytes)` of a
     /// cursor record by its host xid. Used by the acceptance harness to
     /// verify `create_cursor`'s depth-1 source/mask roundtrip through

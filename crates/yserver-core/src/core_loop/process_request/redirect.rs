@@ -593,31 +593,13 @@ pub(super) fn reapply_redirect_mode_after_map(
 /// compositor a fresh backing object at the window's new position
 /// instead of reusing the original named pixmap indefinitely.
 ///
-/// Sequence when the window is redirected (release-then-allocate
-/// order is load-bearing — see below):
-///   1. Snapshot the existing backing handle.
-///   2. Release the old backing's reason-1 hold via
-///      `release_redirected_backing`. If `composite_named_pixmaps`
-///      aliases still reference it, refcount stays > 0 and the
-///      backing survives — its content is frozen at pre-resize.
-///      If no aliases hold it, the backing is freed. This also
-///      clears the backend's `host_window_to_backing[W]` slot so the
-///      next allocate doesn't short-circuit on the now-stale entry.
-///   3. Allocate a new backing at the new (width, height, depth).
-///      With the slot cleared in step 2, the backend's idempotent
-///      lookup misses and we actually get fresh storage sized to
-///      `new_width × new_height`.
-///   4. Repoint `Window.redirected_backing` at the new backing.
-///
-/// Release-then-allocate order is mandatory because the backend's
-/// `allocate_redirected_backing` is idempotent on
-/// `host_window_to_backing[W]`: an allocate-then-release pass would
-/// return the EXISTING backing handle (ignoring `new_width` /
-/// `new_height`), and the subsequent release would then destroy the
-/// very pixmap we just decided to keep. Hardware smoke caught this
-/// when marco resized a 25-tall mate-panel to 28 tall: the next
-/// `NameWindowPixmap` returned `NotFound` because the backing had
-/// been freed under it.
+/// When the bordered extent changes this is `compReallocPixmap`
+/// (composite/compalloc.c:670-712): the backend reallocates W's backing
+/// seeded from the parent (no leaf round trip), the content is copied NW
+/// from OLD, and OLD is returned still retained so the caller can carry
+/// gravity-moved children out of it before
+/// [`finish_redirected_backing_rotate`] drops it. `None` when nothing was
+/// reallocated, including on failure, where W stays on OLD.
 ///
 /// `composite_named_pixmaps` is updated to point at the new backing
 /// and new geometry. Each alias drops one hold on OLD and takes one
@@ -648,7 +630,7 @@ pub(super) fn rotate_redirected_backing_on_resize(
     new_height: u16,
     force_reallocate: bool,
     old_border_width: u16,
-) {
+) -> Option<crate::backend::PixmapHandle> {
     let snapshot = state.resources.window(window).and_then(|w| {
         w.redirected_backing.as_ref().map(|b| {
             (
@@ -661,13 +643,8 @@ pub(super) fn rotate_redirected_backing_on_resize(
             )
         })
     });
-    let Some((old_backing, old_width, old_height, host_window, depth, border_width)) = snapshot
-    else {
-        return;
-    };
-    let Some(host_window) = host_window else {
-        return;
-    };
+    let (old_backing, old_width, old_height, host_window, depth, border_width) = snapshot?;
+    let host_window = host_window?;
     // #133 step 3 (3.3): the caller's `new_width`/`new_height` are the
     // window's CONTENT size; the backing is the bordered extent (see
     // `activate_redirect_backing_for`). Identity at `bw == 0`.
@@ -710,49 +687,25 @@ pub(super) fn rotate_redirected_backing_on_resize(
                 alias.height = new_height;
             }
         }
-        return;
+        return None;
     }
 
-    // Take a rotate-scoped retain on OLD's storage BEFORE the
-    // release. Without it, the no-alias case (no NameWindowPixmap
-    // outstanding on this backing) sees release_redirected_backing's
-    // alias_registry.decref hit refcount=0 → free_pixmap → store
-    // entry dropped → the copy_area below reads from a freed handle
-    // (observed as `copy_area dropped — src unknown` in HW smoke
-    // 2026-05-20 17:28:10Z). Paired with `drop_backing_storage`
-    // after the copy.
+    // `compReallocPixmap` (composite/compalloc.c:670-712): a new pixmap
+    // seeded from the parent, with OLD kept (`cw->pOldPixmap`) until
+    // `compCopyWindow` has carried the content and the gravity children
+    // out of it. The rotate retain holds OLD's storage until the caller's
+    // [`finish_redirected_backing_rotate`]. A failure leaves W on OLD.
     if let Err(err) = backend.retain_backing_storage(origin, old_backing) {
         log::warn!(
             "rotate_redirected_backing_on_resize: retain_backing_storage(0x{:x}) failed: {err}",
             old_backing.as_raw()
         );
+        return None;
     }
-
-    // Release the old backing FIRST so the backend's
-    // `host_window_to_backing[W]` slot is clear before the allocate
-    // below — otherwise allocate's idempotent short-circuit would
-    // hand back the about-to-be-released handle and we'd free the
-    // very pixmap we just chose to keep. Composite spec lets the
-    // backing survive (alias-frozen) if `NameWindowPixmap` references
-    // still hold it via the alias registry; the rotate-retain above
-    // covers the no-alias case.
-    if let Err(err) = backend.release_redirected_backing(origin, old_backing) {
-        log::warn!(
-            "rotate_redirected_backing_on_resize: release_redirected_backing(0x{:x}) failed: {err}",
-            old_backing.as_raw()
-        );
-        // Don't bail — try the allocate anyway. Worst case the
-        // allocate also fails and we just leave the window unrouted;
-        // better than leaving the OLD backing pointing somewhere
-        // stale.
-    }
-
-    // Now allocate fresh at the new size. With the slot cleared by
-    // the release above, the idempotent short-circuit misses and we
-    // get a backing actually sized to `new_width × new_height`.
-    let new_backing = match backend.allocate_redirected_backing(
+    let new_backing = match backend.reallocate_redirected_backing(
         origin,
         host_window,
+        old_backing,
         new_width,
         new_height,
         depth,
@@ -761,16 +714,11 @@ pub(super) fn rotate_redirected_backing_on_resize(
         Err(err) => {
             log::warn!(
                 "rotate_redirected_backing_on_resize(0x{:x}, {new_width}x{new_height}): \
-                 allocate failed: {err}",
+                 reallocate failed, keeping the old backing: {err}",
                 window.0
             );
-            // Clear redirected_backing on the resource since we no
-            // longer have a valid backing — the old one was just
-            // released and the new allocate failed.
-            if let Some(w) = state.resources.window_mut(window) {
-                w.redirected_backing = None;
-            }
-            return;
+            finish_redirected_backing_rotate(backend, origin, Some(old_backing));
+            return None;
         }
     };
     if let Some(w) = state.resources.window_mut(window) {
@@ -901,16 +849,6 @@ pub(super) fn rotate_redirected_backing_on_resize(
         );
     }
 
-    // Drop the rotate-scoped retain we took before release. If no
-    // other holds remain (no NameWindowPixmap aliases), this is the
-    // final ref and OLD's storage is freed here.
-    if let Err(err) = backend.drop_backing_storage(origin, old_backing) {
-        log::warn!(
-            "rotate_redirected_backing_on_resize: drop_backing_storage(0x{:x}) failed: {err}",
-            old_backing.as_raw()
-        );
-    }
-
     if let Some(mode) = effective_redirect_mode_for_window(state, window) {
         // See activate_redirect_backing_for: B always scene-
         // participating so the post-6ffd370 scene's damage
@@ -972,6 +910,25 @@ pub(super) fn rotate_redirected_backing_on_resize(
     // No-op for an unbordered window, for the root and for a
     // non-viewable one (the gate lives in `accumulate_damage_to_state`).
     let _dropped = accumulate_damage_border_to_state(state, window);
+    Some(old_backing)
+}
+
+/// Drop the rotate retain on the OLD backing once the content copy and the
+/// gravity carries have read it (`compFreeOldPixmap`, compalloc.c).
+pub(super) fn finish_redirected_backing_rotate(
+    backend: &mut dyn Backend,
+    origin: Option<OriginContext>,
+    old_backing: Option<crate::backend::PixmapHandle>,
+) {
+    let Some(old_backing) = old_backing else {
+        return;
+    };
+    if let Err(err) = backend.drop_backing_storage(origin, old_backing) {
+        log::warn!(
+            "finish_redirected_backing_rotate: drop_backing_storage(0x{:x}) failed: {err}",
+            old_backing.as_raw()
+        );
+    }
 }
 
 /// A window's outer (border-inclusive) rect in its parent's content

@@ -504,6 +504,15 @@ impl<P: Platform> Backend for XBackend<P> {
         Self::backend_windows_configure_subwindow(self, _origin, host_xid, config)
     }
 
+    fn move_subwindows_for_gravity(
+        &mut self,
+        origin: Option<OriginContext>,
+        moves: &[(u32, i16, i16)],
+        carry_from: Option<PixmapHandle>,
+    ) -> io::Result<()> {
+        Self::backend_windows_move_subwindows_for_gravity(self, origin, moves, carry_from)
+    }
+
     fn reparent_subwindow(
         &mut self,
         _origin: Option<OriginContext>,
@@ -692,6 +701,26 @@ impl<P: Platform> Backend for XBackend<P> {
     /// follows the same one-shot walk, in stable sibling z-order,
     /// so overlapping frame/decor children seed into the backing in
     /// the same order they would appear on screen.
+    fn reallocate_redirected_backing(
+        &mut self,
+        origin: Option<OriginContext>,
+        host_window: WindowHandle,
+        old: PixmapHandle,
+        width: u16,
+        height: u16,
+        depth: u8,
+    ) -> io::Result<PixmapHandle> {
+        Self::backend_redirect_reallocate_redirected_backing(
+            self,
+            origin,
+            host_window,
+            old,
+            width,
+            height,
+            depth,
+        )
+    }
+
     fn allocate_redirected_backing(
         &mut self,
         origin: Option<OriginContext>,

@@ -806,7 +806,49 @@ impl<P: Platform> XBackend<P> {
         Some(SharedBackingMoveSource {
             occluders: self.copy_area_shared_backing_occluders(host_xid, &target),
             target,
+            from_old_backing: false,
+            src_bounds: None,
         })
+    }
+
+    /// Re-base a move source captured in `new` (the reallocated backing)
+    /// onto `old`, which still holds the pre-resize pixels. The owner's
+    /// content inset is each allocation's own.
+    pub(in crate::kms::render::backend) fn rebase_move_source(
+        &self,
+        source: SharedBackingMoveSource,
+        new: DrawableId,
+        old: DrawableId,
+    ) -> SharedBackingMoveSource {
+        if source.target.backing_id() != new {
+            return source;
+        }
+        let Some((old_inset, old_extent)) = self
+            .store
+            .get(old)
+            .map(|o| (o.content_offset, o.storage.extent))
+        else {
+            return source;
+        };
+        let d = old_inset - self.store.get(new).map_or(0, |n| n.content_offset);
+        let (x, y) = source.target.offset();
+        let inset = u32::try_from(old_inset).unwrap_or(0);
+        let src_bounds = ash::vk::Rect2D {
+            offset: ash::vk::Offset2D {
+                x: old_inset,
+                y: old_inset,
+            },
+            extent: ash::vk::Extent2D {
+                width: old_extent.width.saturating_sub(2 * inset),
+                height: old_extent.height.saturating_sub(2 * inset),
+            },
+        };
+        SharedBackingMoveSource {
+            target: PaintTarget::new(old, (x + d, y + d), None, source.target.x11_depth()),
+            occluders: source.occluders,
+            from_old_backing: true,
+            src_bounds: Some(src_bounds),
+        }
     }
 
     /// Copy what [`Self::shared_backing_move_source`] captured to the
@@ -828,12 +870,13 @@ impl<P: Platform> XBackend<P> {
             return;
         };
         let backing = target.backing_id();
-        if backing != source.target.backing_id() {
+        let src_backing = source.target.backing_id();
+        if backing != src_backing && !source.from_old_backing {
             return;
         }
         let old_origin = source.target.offset();
         let new_origin = target.offset();
-        if old_origin == new_origin {
+        if old_origin == new_origin && backing == src_backing {
             return;
         }
         // Window-local CONTENT space, the occluders' frame: the outer
@@ -873,14 +916,21 @@ impl<P: Platform> XBackend<P> {
                 },
                 extent: piece.extent,
             };
+            let src_rect = match source.src_bounds {
+                Some(bounds) => match intersect_rect_with_clip(src_rect, &[bounds]).first() {
+                    Some(r) => *r,
+                    None => continue,
+                },
+                None => src_rect,
+            };
             let dst_pos = ash::vk::Offset2D {
-                x: new_origin.0 + piece.offset.x,
-                y: new_origin.1 + piece.offset.y,
+                x: src_rect.offset.x + delta.0,
+                y: src_rect.offset.y + delta.1,
             };
             if let Err(e) = self.engine.copy_area(
                 &mut self.store,
                 self.platform.gpu_mut(),
-                Src::server_internal(backing),
+                Src::server_internal(src_backing),
                 Dst::server_internal(backing),
                 src_rect,
                 dst_pos,

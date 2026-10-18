@@ -17,10 +17,10 @@ use crate::{
             present_ext::{discard_stale_present_event, fire_present_configure_notify_for_window},
             redirect::{
                 BackingDamage, apply_viewability_delta_to_redirects,
-                effective_redirect_mode_for_window, has_redirected_ancestor,
-                realize_storage_for_delta, reapply_redirect_mode_after_map,
-                release_storage_for_delta, rotate_redirected_backing_on_resize,
-                sync_redirect_backing,
+                effective_redirect_mode_for_window, finish_redirected_backing_rotate,
+                has_redirected_ancestor, realize_storage_for_delta,
+                reapply_redirect_mode_after_map, release_storage_for_delta,
+                rotate_redirected_backing_on_resize, sync_redirect_backing,
             },
             selection::drop_selections_owned_by_windows,
             write_to_client,
@@ -1895,46 +1895,18 @@ pub(super) fn handle_configure_window(
         // above the fold and reveals it by growing the client's holder;
         // without gravity the client stays parked and renders as a black
         // rectangle over the frame (air/silence HW 2026-07-02).
-        if let Some((ow, oh)) = old_size {
-            let moved = state.resources.apply_win_gravity(
-                window_id,
-                ow,
-                oh,
-                geometry.width,
-                geometry.height,
-            );
-            for (child, nx, ny) in moved {
-                if let Some(h) = state.resources.window(child).and_then(|w| w.host_xid) {
-                    let _ = backend.configure_subwindow(
-                        origin,
-                        h.as_raw(),
-                        crate::host_x11::HostSubwindowConfig {
-                            x: Some(nx),
-                            y: Some(ny),
-                            width: None,
-                            height: None,
-                            border_width: None,
-                            sibling: None,
-                            stack_mode: None,
-                        },
-                    );
-                }
-                // GravityNotify → child (StructureNotify) and its parent
-                // (SubstructureNotify), mirroring ConfigureNotify delivery.
-                let _dropped =
-                    emit_window_event_to_state(state, child, 0x0002_0000, |buf, seq, order| {
-                        x11::encode_gravity_notify_event(buf, seq, order, child, child, nx, ny);
-                    });
-                let _dropped =
-                    emit_window_event_to_state(state, window_id, 0x0008_0000, |buf, seq, order| {
-                        x11::encode_gravity_notify_event(buf, seq, order, window_id, child, nx, ny);
-                    });
-            }
-        }
+        let moved = old_size.map_or_else(Vec::new, |(ow, oh)| {
+            state
+                .resources
+                .apply_win_gravity(window_id, ow, oh, geometry.width, geometry.height)
+        });
         let resized =
             old_size.is_some_and(|(ow, oh)| geometry.width != ow || geometry.height != oh);
         let old_border_width = before_geom.map_or(geometry.border_width, |g| g.4);
-        if resized || old_border_width != geometry.border_width {
+        // `miResizeWindow` (mi/miwindow.c:342-620): the realloc happens
+        // first, then each gravity group is copied from the OLD pixmap
+        // (`compCopyWindow`, composite/compwindow.c:489-528).
+        let old_backing = if resized || old_border_width != geometry.border_width {
             rotate_redirected_backing_on_resize(
                 state,
                 backend,
@@ -1944,7 +1916,35 @@ pub(super) fn handle_configure_window(
                 geometry.height,
                 false,
                 old_border_width,
-            );
+            )
+        } else {
+            None
+        };
+        if !moved.is_empty() {
+            let host_moves: Vec<(u32, i16, i16)> = moved
+                .iter()
+                .filter_map(|&(child, nx, ny)| {
+                    state
+                        .resources
+                        .window(child)
+                        .and_then(|w| w.host_xid)
+                        .map(|h| (h.as_raw(), nx, ny))
+                })
+                .collect();
+            let _ = backend.move_subwindows_for_gravity(origin, &host_moves, old_backing);
+        }
+        finish_redirected_backing_rotate(backend, origin, old_backing);
+        for (child, nx, ny) in moved {
+            // GravityNotify → child (StructureNotify) and its parent
+            // (SubstructureNotify), mirroring ConfigureNotify delivery.
+            let _dropped =
+                emit_window_event_to_state(state, child, 0x0002_0000, |buf, seq, order| {
+                    x11::encode_gravity_notify_event(buf, seq, order, child, child, nx, ny);
+                });
+            let _dropped =
+                emit_window_event_to_state(state, window_id, 0x0008_0000, |buf, seq, order| {
+                    x11::encode_gravity_notify_event(buf, seq, order, window_id, child, nx, ny);
+                });
         }
         // NOTE (Issue 2 — 2026-07-01): a pure move MUST NOT rotate the
         // redirected backing. picom glx holds a one-time `NameWindowPixmap`

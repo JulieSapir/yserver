@@ -2,7 +2,7 @@ use crate::kms::{
     cpu_types::{Rectangle16, Repeat},
     render::{
         backend::{
-            LeafContent, WindowGeometry, XBackend,
+            LeafContent, SharedBackingMoveSource, WindowGeometry, XBackend,
             portable::{
                 clip::apply_subwindow_mode_clip,
                 draw::{compute_copy_area_dst_rects, depth_for_visual},
@@ -2025,6 +2025,67 @@ impl<P: Platform> XBackend<P> {
         host_xid: u32,
         config: HostSubwindowConfig,
     ) -> io::Result<()> {
+        let move_source = self.shared_backing_move_source(host_xid, &config);
+        self.configure_subwindow_geometry(host_xid, config, move_source)
+    }
+
+    /// Children moved by `win_gravity` after their parent's resize. With
+    /// `carry_from` (the parent's backing before a realloc) every source
+    /// is captured first, at the old positions, in that old backing; the
+    /// copies run after all moves, bottom to top, as `miResizeWindow`
+    /// copies each gravity group from `pOldPixmap` (mi/miwindow.c:543-575,
+    /// composite/compwindow.c:489-528).
+    pub(in crate::kms::render::backend) fn backend_windows_move_subwindows_for_gravity(
+        &mut self,
+        origin: Option<OriginContext>,
+        moves: &[(u32, i16, i16)],
+        carry_from: Option<PixmapHandle>,
+    ) -> io::Result<()> {
+        let config = |x: i16, y: i16| HostSubwindowConfig {
+            x: Some(x),
+            y: Some(y),
+            width: None,
+            height: None,
+            border_width: None,
+            sibling: None,
+            stack_mode: None,
+        };
+        let old = carry_from.and_then(|h| self.store.lookup(h.as_raw()));
+        let Some(old) = old else {
+            for &(host_xid, x, y) in moves {
+                self.backend_windows_configure_subwindow(origin, host_xid, config(x, y))?;
+            }
+            return Ok(());
+        };
+        let mut sources = Vec::with_capacity(moves.len());
+        for &(host_xid, x, y) in moves {
+            let source = self
+                .shared_backing_move_source(host_xid, &config(x, y))
+                .map(|src| {
+                    let new = src.target.backing_id();
+                    self.rebase_move_source(src, new, old)
+                });
+            sources.push((host_xid, source));
+        }
+        for &(host_xid, x, y) in moves {
+            self.configure_subwindow_geometry(host_xid, config(x, y), None)?;
+        }
+        sources.sort_by_key(|(xid, _)| self.windows.get(xid).map_or(0, |g| g.stack_rank));
+        for (host_xid, source) in sources {
+            if let Some(source) = source {
+                self.carry_shared_backing_pixels_on_move(host_xid, source);
+            }
+        }
+        self.scene.wake_for_damage();
+        Ok(())
+    }
+
+    fn configure_subwindow_geometry(
+        &mut self,
+        host_xid: u32,
+        config: HostSubwindowConfig,
+        move_source: Option<SharedBackingMoveSource>,
+    ) -> io::Result<()> {
         P::exit_tearing_for_window(self, host_xid, "window_configured");
         // The compositor's root-stage Present remains authoritative while an
         // unrelated client window moves. The updated desktop arrives in its
@@ -2034,7 +2095,6 @@ impl<P: Platform> XBackend<P> {
         if P::direct_frame_references_host_drawable(self, host_xid) {
             P::request_direct_unflip(self, "configure_direct_frame_drawable");
         }
-        let move_source = self.shared_backing_move_source(host_xid, &config);
         let Some(geom) = self.windows.get_mut(&host_xid) else {
             // Window not tracked — log + skip (e.g., configure
             // before register). v1 tolerates this.

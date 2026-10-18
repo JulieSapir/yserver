@@ -188,6 +188,13 @@ struct SharedBackingMoveSource {
     /// Higher siblings over the window at its OLD position, in its
     /// local content space: those pixels are theirs, not the window's.
     occluders: Vec<ash::vk::Rect2D>,
+    /// `target` is in the parent's OLD backing after a realloc
+    /// (`compCopyWindow` from `pOldPixmap`), not the current one.
+    from_old_backing: bool,
+    /// With `from_old_backing`: the owner's old content rect in that
+    /// backing; nothing outside it was the window's (`borderClip` was
+    /// clipped by the old parent).
+    src_bounds: Option<ash::vk::Rect2D>,
 }
 
 /// Cooking state owned by one temporarily floating keyboard slave. Its XKB
