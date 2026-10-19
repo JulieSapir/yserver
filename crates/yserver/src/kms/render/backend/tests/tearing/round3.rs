@@ -187,7 +187,13 @@ fn transparent_cursor_is_hidden_for_direct_scanout_and_define_cursor_handoff() {
     assert!(backend.pstate.scanout_m2.pending.is_none());
     assert_direct_queue_drained(&backend);
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert!(backend.pstate.tearing.deferred_cursor_wake.is_none());
     assert!(!backend.scene.has_pending_page_flips());
     assert!(!backend.scene.cursor_transition_pending());
@@ -212,7 +218,13 @@ fn transparent_cursor_is_hidden_for_direct_scanout_and_define_cursor_handoff() {
     assert!(backend.pstate.scanout_m2.active());
     assert!(backend.pstate.scanout_m2.hold_direct);
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert_direct_queue_drained(&backend);
     assert_eq!(
         backend.scene.cursor_mode(),
@@ -281,7 +293,13 @@ fn define_visible_cursor_rebinds_held_vsync_direct_scanout() {
     assert!(backend.pstate.scanout_m2.active());
     assert!(backend.pstate.scanout_m2.hold_direct);
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     Backend::maybe_composite(&mut backend).expect("keep held direct scanout with rebound cursor");
 
     assert!(matches!(
@@ -301,7 +319,13 @@ fn define_visible_cursor_rebinds_held_vsync_direct_scanout() {
     assert!(backend.pstate.scanout_m2.active());
     assert!(backend.pstate.scanout_m2.hold_direct);
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert_direct_queue_drained(&backend);
     assert_commit_sequence(&recorder, &[AtomicCommitKind::Scene]);
     backend.platform.wait_idle_bounded();

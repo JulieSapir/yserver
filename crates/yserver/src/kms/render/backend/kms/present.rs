@@ -340,7 +340,7 @@ impl KmsBackend {
                 .is_some_and(|frame| frame.awaiting_outputs.contains(&output_idx)),
             self.pstate
                 .scanout_m2
-                .unflip_awaiting_outputs
+                .unflip_outputs_to_replace
                 .contains(&output_idx),
         )
     }
@@ -899,6 +899,7 @@ impl KmsBackend {
             completion_output_idx,
             completion_clock: None,
             awaiting_outputs: HashSet::new(),
+            accepted_event_id: None,
             async_outcome: crate::drm::async_flip::AsyncOutcome::NotRequested,
         };
 

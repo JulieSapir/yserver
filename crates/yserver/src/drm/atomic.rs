@@ -453,6 +453,7 @@ impl AtomicCommitSink {
         .map(|_| ())
     }
 
+    #[allow(dead_code)] // retained for event requests whose callers do not consume identity
     pub(crate) fn submit_tearing(
         &self,
         device: &Device,

@@ -1296,7 +1296,7 @@ fn scanout_read_route_is_per_output_during_a_composed_unflip() {
     let fallback_id = seed_window(&mut b, target_xid, None, 0, 0);
     install_direct_frame_for_target_test(&mut b, target_xid, fallback_id, true);
     // Composed unflip retired on output 0, still awaited on output 1.
-    b.pstate.scanout_m2.unflip_awaiting_outputs = outputs_set(&[1]);
+    b.pstate.scanout_m2.unflip_outputs_to_replace = outputs_set(&[1]);
 
     assert!(
         b.direct_scanout_frame_for_output(0).is_none(),

@@ -1862,7 +1862,13 @@ fn non_async_authoritative_present_resets_probation_during_reentry_barrier() {
     assert!(!backend.scene.root_overlay.is_empty());
     Backend::maybe_composite(&mut backend).expect("submit grouped composed unflip");
     assert!(backend.pstate.scanout_m2.unflip_requested);
-    assert!(!backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        !backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     retire_composed_frame(&mut backend, &mut state, 9);
     assert!(backend.pstate.scanout_m2.reentry_blocked_until_composed);
     assert!(backend.pstate.scanout_m2.current.is_none());
@@ -3487,7 +3493,13 @@ fn entry_from_held_direct_with_visible_hw_cursor_runs_handoff() {
 
     Backend::maybe_composite(&mut backend).expect("submit grouped cursor handoff");
     assert!(backend.pstate.scanout_m2.current.is_some());
-    assert!(!backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        !backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert!(backend.pstate.scanout_m2.unflip_shadow_ready);
     assert!(backend.platform.any_cursor_plane_visible());
     assert_eq!(
@@ -3538,7 +3550,13 @@ fn entry_from_held_direct_with_visible_hw_cursor_runs_handoff() {
     assert!(backend.pstate.tearing.is_on());
     assert!(!backend.pstate.scanout_m2.active());
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert!(!backend.pstate.scanout_m2.unflip_shadow_ready);
     assert!(!backend.scene.has_pending_page_flips());
     assert_direct_queue_drained(&backend);
@@ -3848,7 +3866,7 @@ fn handoff_keeps_newest_copy_not_retained_direct_frame() {
         backend
             .pstate
             .scanout_m2
-            .unflip_awaiting_outputs
+            .unflip_outputs_to_replace
             .contains(&0)
     );
     assert!(backend.platform.any_cursor_plane_visible());
@@ -3881,7 +3899,13 @@ fn handoff_keeps_newest_copy_not_retained_direct_frame() {
     assert!(backend.pstate.tearing.is_on());
     assert!(!backend.pstate.scanout_m2.active());
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert!(!backend.pstate.scanout_m2.unflip_shadow_ready);
     assert!(!backend.platform.any_cursor_plane_visible());
     assert!(!backend.scene.has_pending_page_flips());

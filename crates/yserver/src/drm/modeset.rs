@@ -1575,7 +1575,7 @@ pub(crate) fn submit_direct_scanout(
     cursor_positions: &[CursorPlanePosition],
     timing: crate::drm::async_flip::FlipTiming,
     tearing_context: crate::drm::atomic::TearingCommitContext,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     if planes.is_empty() {
         return Err(io::Error::other("scanout M2: empty plane transaction"));
     }
@@ -1604,7 +1604,14 @@ pub(crate) fn submit_direct_scanout(
             crate::drm::async_flip::FlipTiming::Vsync => AtomicCommitFlags::empty(),
             crate::drm::async_flip::FlipTiming::Async => AtomicCommitFlags::PAGE_FLIP_ASYNC,
         };
-    atomic_commit_sink.submit_tearing(device, flags, kind, request, &events, tearing_context)
+    atomic_commit_sink.submit_tearing_with_commit_id(
+        device,
+        flags,
+        kind,
+        request,
+        &events,
+        tearing_context,
+    )
 }
 
 /// `TEST_ONLY` the exact request `submit_direct_scanout` would commit, cursor
@@ -1697,7 +1704,7 @@ pub(crate) fn submit_composed_scanout(
     atomic_commit_sink: &AtomicCommitSink,
     planes: &[ComposedScanoutPlaneState<'_>],
     cursor_positions: &[CursorPlanePosition],
-) -> io::Result<()> {
+) -> io::Result<u64> {
     if planes.is_empty() {
         return Err(io::Error::other("scanout M2: empty composed transaction"));
     }
@@ -1757,7 +1764,7 @@ pub(crate) fn submit_composed_scanout(
     } else {
         AtomicCommitKind::SceneWithCursor
     };
-    atomic_commit_sink.submit(
+    atomic_commit_sink.submit_with_commit_id(
         device,
         AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK,
         kind,

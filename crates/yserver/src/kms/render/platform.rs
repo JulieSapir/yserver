@@ -531,10 +531,6 @@ pub struct PlatformBackend {
     /// Readiness observer for copied-scanout render completions. The live
     /// implementation only polls the original completion fd.
     pub(crate) render_completion_readiness: Rc<dyn flip_events::RenderCompletionReadiness>,
-    #[cfg(test)]
-    #[allow(dead_code)] // Task 3 installs and inspects the recording readiness seam
-    pub(crate) test_render_completion_readiness:
-        Option<Rc<flip_events::RecordingRenderCompletionReadiness>>,
     pending_scanout_render_completions: std::collections::VecDeque<PendingScanoutRenderCompletion>,
     next_scanout_render_job_id: u64,
 

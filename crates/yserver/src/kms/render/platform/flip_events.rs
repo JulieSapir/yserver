@@ -327,8 +327,7 @@ impl PlatformBackend {
         &mut self,
         readiness: Rc<RecordingRenderCompletionReadiness>,
     ) {
-        self.render_completion_readiness = readiness.clone();
-        self.test_render_completion_readiness = Some(readiness);
+        self.render_completion_readiness = readiness;
     }
 
     pub(super) fn prune_present_clocks_to_live_outputs(&mut self) {

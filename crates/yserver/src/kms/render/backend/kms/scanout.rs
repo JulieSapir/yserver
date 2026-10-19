@@ -611,12 +611,11 @@ impl KmsBackend {
         );
         let async_outcome = if attempt_timing == crate::drm::async_flip::FlipTiming::Async {
             match result {
-                Ok(()) => {
+                Ok(_) => {
                     let shape = async_shape
                         .as_ref()
                         .expect("async submit carries its shape");
                     self.platform.async_ledger.note_accepted(stream, shape);
-                    result = Ok(());
                     crate::drm::async_flip::AsyncOutcome::Accepted
                 }
                 Err(error) if error.raw_os_error() == Some(libc::EINVAL) => {
@@ -655,7 +654,7 @@ impl KmsBackend {
                 .reject_atomic_cursor_commit(&cursor_positions, &error.to_string());
             self.handle_cursor_move_outcome(outcome);
         }
-        result?;
+        let accepted_event_id = result?;
         if attempt_timing == crate::drm::async_flip::FlipTiming::Vsync
             || matches!(
                 async_outcome,
@@ -666,6 +665,7 @@ impl KmsBackend {
                 .cursor_plane_scene_commit_submitted(&cursor_positions);
         }
         frame.awaiting_outputs = (0..self.platform.outputs.len()).collect();
+        frame.accepted_event_id = Some(accepted_event_id);
         frame.async_outcome = async_outcome;
         Ok(async_outcome)
     }
@@ -828,6 +828,7 @@ impl KmsBackend {
         self.pstate.scanout_m2.unflip_requested = false;
         self.pstate.scanout_m2.unflip_reason = None;
         self.pstate.scanout_m2.unflip_last_reason = None;
+        self.pstate.scanout_m2.unflip_outputs_to_replace.clear();
         self.pstate.scanout_m2.unflip_awaiting_outputs.clear();
         self.pstate.scanout_m2.reentry_blocked_until_composed = false;
         self.pstate.scanout_m2.reset_eligible_root_probation();
@@ -915,7 +916,7 @@ impl KmsBackend {
                 .as_ref()
                 .map(|frame| &frame.awaiting_outputs),
             self.pstate.scanout_m2.current.is_some(),
-            &self.pstate.scanout_m2.unflip_awaiting_outputs,
+            &self.pstate.scanout_m2.unflip_outputs_to_replace,
         )?;
         match slot {
             DirectFrameSlot::Pending => self.pstate.scanout_m2.pending.as_ref(),
@@ -1103,10 +1104,13 @@ impl KmsBackend {
                 .reject_atomic_cursor_commit(&cursor_positions, &error.to_string());
             self.handle_cursor_move_outcome(outcome);
         }
-        result?;
+        let accepted_event_id = result?;
         self.platform
             .cursor_plane_scene_commit_submitted(&cursor_positions);
-        self.pstate.scanout_m2.unflip_awaiting_outputs = (0..output_count).collect();
+        self.pstate.scanout_m2.unflip_outputs_to_replace = (0..output_count).collect();
+        self.pstate.scanout_m2.unflip_awaiting_outputs = (0..output_count)
+            .map(|output_idx| (output_idx, accepted_event_id))
+            .collect();
         let describe_frame = |frame: &DirectPresentFrame| {
             (
                 frame.source_id.as_u64(),
@@ -1128,17 +1132,52 @@ impl KmsBackend {
         Ok(true)
     }
 
+    /// Install only accepted per-output scene commits as degraded-unflip
+    /// retirement obligations. Copied render readiness alone has no KMS ID.
+    pub(in crate::kms::render::backend) fn record_accepted_degraded_unflip_replacements(&mut self) {
+        if !self.pstate.scanout_m2.degraded_composed_unflip {
+            return;
+        }
+        let outputs = self
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for output_idx in outputs {
+            if let Some(event_id) = self.scene.pending_page_flip_event_id(output_idx) {
+                self.pstate
+                    .scanout_m2
+                    .unflip_awaiting_outputs
+                    .insert(output_idx, event_id);
+            }
+        }
+    }
+
     pub(in crate::kms::render::backend) fn retire_direct_output(
         &mut self,
         output_idx: usize,
+        event_id: Option<u64>,
         clock: yserver_core::backend::PresentClockSample,
     ) -> bool {
-        if self
+        if let Some(&accepted_replacement_id) = self
             .pstate
             .scanout_m2
             .unflip_awaiting_outputs
-            .remove(&output_idx)
+            .get(&output_idx)
         {
+            if event_id != Some(accepted_replacement_id) {
+                return false;
+            }
+            self.pstate
+                .scanout_m2
+                .unflip_awaiting_outputs
+                .remove(&output_idx);
+            self.pstate
+                .scanout_m2
+                .unflip_outputs_to_replace
+                .remove(&output_idx);
             let degraded = self.pstate.scanout_m2.degraded_composed_unflip;
             let cursor_handoff =
                 !degraded && self.pstate.scanout_m2.unflip_reason == Some("tearing_cursor_handoff");
@@ -1146,7 +1185,7 @@ impl KmsBackend {
                 self.scene
                     .retire_external_cursor_handoff(output_idx, &mut self.platform);
             }
-            if self.pstate.scanout_m2.unflip_awaiting_outputs.is_empty() {
+            if self.pstate.scanout_m2.unflip_outputs_to_replace.is_empty() {
                 self.stop_direct_after_scanout_replaced(if degraded {
                     "degraded composed unflip"
                 } else {
@@ -1171,9 +1210,20 @@ impl KmsBackend {
             }
             return true;
         }
+        if self
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .contains(&output_idx)
+        {
+            return false;
+        }
         let Some(pending) = self.pstate.scanout_m2.pending.as_mut() else {
             return false;
         };
+        if pending.accepted_event_id != event_id {
+            return false;
+        }
         if !pending.awaiting_outputs.remove(&output_idx) {
             return false;
         }
@@ -2018,7 +2068,7 @@ impl KmsBackend {
             self.scene.cursor_mode(),
             crate::kms::render::scene::CursorPlaneMode::Sw
         ) || (self.pstate.scanout_m2.unflip_reason == Some("tearing_cursor_handoff")
-            && !self.pstate.scanout_m2.unflip_awaiting_outputs.is_empty())
+            && !self.pstate.scanout_m2.unflip_outputs_to_replace.is_empty())
     }
 
     /// Earliest time a cursor-only software-scene wake may be composed while
@@ -2052,6 +2102,8 @@ impl KmsBackend {
         let direct_transaction_waiting = self.pstate.scanout_m2.pending.is_some()
             || self.pstate.scanout_m2.queued_successor.is_some()
             || self.pstate.scanout_m2.unflip_requested;
+        let degraded_replacement_needs_submit = self.pstate.scanout_m2.degraded_composed_unflip
+            && !self.pstate.scanout_m2.unflip_outputs_to_replace.is_empty();
         let unflip_waiting_for_cursor = self.pstate.scanout_m2.current.is_some()
             && self.pstate.scanout_m2.unflip_requested
             && self.platform.cursor_commit_in_flight_for_outputs(&outputs);
@@ -2064,7 +2116,7 @@ impl KmsBackend {
         let cursor_compose_blocked = self
             .tearing_cursor_compose_deadline(self.monotonic_now())
             .is_some();
-        (self.scene_wants_scene() && !cursor_compose_blocked)
+        ((self.scene_wants_scene() || degraded_replacement_needs_submit) && !cursor_compose_blocked)
             || (!cursor_compose_blocked
                 && !direct_transaction_waiting
                 && self.platform.has_eligible_atomic_cursor_move())
@@ -2117,6 +2169,7 @@ impl KmsBackend {
             {
                 self.telemetry.record_missed_pageflip();
             }
+            self.record_accepted_degraded_unflip_replacements();
             if self.platform.gpu.renderer_failed {
                 break;
             }
@@ -2174,7 +2227,7 @@ impl KmsBackend {
                 continue;
             }
             self.record_atomic_cursor_commit_retirement(output_idx);
-            let direct_retired = self.retire_direct_output(output_idx, clock);
+            let direct_retired = self.retire_direct_output(output_idx, matched_event_id, clock);
             let scene_retired = !direct_retired
                 && self.scene.handle_page_flip_complete(
                     output_idx,
@@ -2479,7 +2532,10 @@ impl KmsBackend {
                 self.telemetry.maybe_emit(self.engine.pending_count());
                 return Ok(());
             }
-            if self.pstate.scanout_m2.current.is_some() && self.pstate.scanout_m2.unflip_requested {
+            if self.pstate.scanout_m2.current.is_some()
+                && self.pstate.scanout_m2.unflip_requested
+                && !self.pstate.scanout_m2.degraded_composed_unflip
+            {
                 match self.submit_composed_unflip() {
                     Ok(true) => {
                         self.pstate
@@ -2511,13 +2567,23 @@ impl KmsBackend {
                         // planes this tick, and `retire_direct_output` releases the
                         // direct frame only after every output has retired on the
                         // composed framebuffer.
-                        self.pstate.scanout_m2.unflip_awaiting_outputs =
+                        self.pstate.scanout_m2.unflip_outputs_to_replace =
                             (0..self.platform.outputs.len()).collect();
+                        self.pstate.scanout_m2.unflip_awaiting_outputs.clear();
                         self.pstate.scanout_m2.degraded_composed_unflip = true;
                         self.scene.mark_scene_structure_dirty();
                     }
                 }
             }
+        }
+        if self.pstate.scanout_m2.degraded_composed_unflip
+            && !self.pstate.scanout_m2.unflip_outputs_to_replace.is_empty()
+        {
+            // A failed per-output replacement can leave the scene clean after
+            // another output's accepted frame retires. Keep the scene tick
+            // eligible until every direct output has an accepted replacement;
+            // its normal readiness and retry gates still control submission.
+            self.scene.mark_scene_structure_dirty();
         }
         let composed_outputs = if self
             .tearing_cursor_compose_deadline(self.monotonic_now())
@@ -2527,6 +2593,9 @@ impl KmsBackend {
         } else {
             self.compose_tick()
         };
+        // `scene.tick` drains already-signalled copied completions itself,
+        // without entering backend_scanout_on_scanout_render_completion.
+        self.record_accepted_degraded_unflip_replacements();
         if let Some(composed) = &composed_outputs
             && self.pstate.scanout_m2.reentry_blocked_until_composed
             && composed.len() == self.platform.outputs.len()

@@ -21,6 +21,13 @@ use std::{
 };
 use yserver_core::backend::Backend;
 
+pub(crate) struct DirectPresentSetup {
+    pub(crate) candidate: yserver_core::backend::PresentScanoutCandidate,
+    pub(crate) event: yserver_core::backend::CompletedPresentEvent,
+    pub(crate) source_id: crate::kms::render::store::DrawableId,
+    pub(crate) target_xid: u32,
+}
+
 /// How the P1 scene fixture reaches KMS. These are test setup choices, not
 /// production route or recovery types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +44,7 @@ pub(crate) struct RecordingSceneFixture {
     pub(crate) events: AtomicEventFixture,
     /// Copied routes only: withholds delivery of real source completions.
     pub(crate) readiness: Option<Rc<RecordingRenderCompletionReadiness>>,
+    extra_drawables: Vec<u32>,
 }
 
 impl RecordingSceneFixture {
@@ -70,6 +78,7 @@ impl RecordingSceneFixture {
         Ok(Some(Self {
             events: AtomicEventFixture::from_backend(backend),
             readiness,
+            extra_drawables: Vec::new(),
         }))
     }
 
@@ -78,7 +87,130 @@ impl RecordingSceneFixture {
         Ok(backend.map(|backend| Self {
             events: AtomicEventFixture::from_backend(backend),
             readiness: None,
+            extra_drawables: Vec::new(),
         }))
+    }
+
+    /// Install a live root-sized Present source and fallback window before a
+    /// direct lifecycle test begins. The framebuffer is synthetic, while the
+    /// Vulkan images let the normal unflip materialization path run.
+    pub(crate) fn install_direct_present(
+        &mut self,
+        present_id: u64,
+        options: u32,
+    ) -> DirectPresentSetup {
+        use crate::kms::render::store::DrawableKind;
+        use yserver_core::backend::{CompletedPresentEvent, PresentScanoutCandidate, PresentWake};
+
+        let backend = &mut self.events.backend;
+        let width = backend.platform.fb_w;
+        let height = backend.platform.fb_h;
+        let suffix = u32::try_from(present_id).expect("test Present id fits XID");
+        let target_xid = 0x7300 + suffix * 0x10;
+        let source_xid = target_xid + 1;
+        let old_target = super::super::seed_window(backend, target_xid, None, 0, 0);
+        let target = backend
+            .windows
+            .get_mut(&target_xid)
+            .expect("direct fallback window");
+        target.width = width;
+        target.height = height;
+        backend.core.top_level_order.push(target_xid);
+        backend.store.detach_xid(target_xid);
+        backend.store_decref_with_invalidate(old_target);
+        let target_storage = backend
+            .platform
+            .gpu
+            .allocate_drawable_storage(width, height, 24)
+            .expect("allocate direct fallback image");
+        backend
+            .store
+            .allocate(target_xid, DrawableKind::Window, 24, true, target_storage)
+            .expect("register direct fallback image");
+        let source_storage = backend
+            .platform
+            .gpu
+            .allocate_drawable_storage(width, height, 24)
+            .expect("allocate direct source image");
+        let source_id = backend
+            .store
+            .allocate(source_xid, DrawableKind::Pixmap, 24, false, source_storage)
+            .expect("register direct source image");
+        Backend::put_image(backend, None, target_xid, 24, 1, 1, 0, 0, &[0, 0, 0, 0])
+            .expect("initialize direct fallback image through Backend");
+        Backend::put_image(backend, None, source_xid, 24, 1, 1, 0, 0, &[0, 0, 0, 0])
+            .expect("initialize direct source image through Backend");
+
+        let mut crtcs: Vec<_> = backend
+            .platform
+            .outputs
+            .iter()
+            .map(|layout| layout.output.crtc)
+            .collect();
+        crtcs.sort_by_key(|crtc| u32::from(*crtc));
+        let shape = crate::drm::async_flip::AsyncShape {
+            fourcc: 0x3432_5258,
+            modifier: 0,
+            pitch: u32::from(width) * 4,
+            width: u32::from(width),
+            height: u32::from(height),
+            crtcs,
+            direct: true,
+        };
+        backend.pstate.scanout_m1.entries.insert(
+            source_id,
+            crate::kms::render::backend::ScanoutM1ProbeEntry::accepted_with_shape(
+                crate::drm::modeset::DirectScanoutProbeFramebuffer::for_tests(raw(0x8100 + suffix)),
+                shape,
+            ),
+        );
+
+        let crtc_id = u32::from(backend.platform.outputs[0].output.crtc);
+        let crtc_epoch = backend.present_crtc_clock_epoch(crtc_id);
+        let candidate = PresentScanoutCandidate {
+            client_id: 1,
+            present_id,
+            crtc_id,
+            crtc_epoch,
+            src_pixmap_xid: source_xid,
+            dst_window_xid: target_xid,
+            src_host_xid: source_xid,
+            paint_dst_host_xid: target_xid,
+            completion_dst_host_xid: target_xid,
+            src_width: width,
+            src_height: height,
+            x_off: 0,
+            y_off: 0,
+            valid_region_xid: 0,
+            update_region_xid: 0,
+            update_is_full: true,
+            explicit_sync: false,
+            options,
+        };
+        let event = CompletedPresentEvent {
+            client_id: yserver_protocol::x11::ClientId(1),
+            serial: u32::try_from(present_id).expect("test Present serial fits"),
+            host_xid: source_xid,
+            dst_host_xid: target_xid,
+            options,
+            present_id,
+            window_generation: 0,
+            crtc_id,
+            crtc_epoch,
+            msc_offset: 0,
+            completion_clock: None,
+            wake: PresentWake::Pixmap { idle_fence_xid: 0 },
+            completion_mode: yserver_protocol::x11::present::COMPLETE_MODE_COPY,
+            emit_idle: true,
+        };
+        self.extra_drawables.extend([target_xid, source_xid]);
+        Backend::set_cursor_hidden(backend, true);
+        DirectPresentSetup {
+            candidate,
+            event,
+            source_id,
+            target_xid,
+        }
     }
 
     /// DRM fd of the KMS device that owns output `output_idx` (the sink for a
@@ -163,8 +295,12 @@ impl RecordingSceneFixture {
         assert!(!direct.hold_direct, "direct ownership remains held");
         assert!(!direct.unflip_requested, "an unflip is still required");
         assert!(
-            direct.unflip_awaiting_outputs.is_empty(),
+            direct.unflip_outputs_to_replace.is_empty(),
             "outputs still await an unflip replacement"
+        );
+        assert!(
+            direct.unflip_awaiting_outputs.is_empty(),
+            "accepted unflip replacement identities remain"
         );
         assert!(
             direct.unflip_fallback_source.is_none(),
@@ -266,6 +402,7 @@ impl RecordingSceneFixture {
             .map(|(&fd, recorder)| (fd, recorder.records().len()))
             .collect();
         let mut submitted_frame = false;
+        let mut scene_damage_requested = false;
         if let Some(readiness) = &self.readiness {
             readiness.resume_ready_jobs();
         }
@@ -277,6 +414,19 @@ impl RecordingSceneFixture {
                     .scene
                     .pending_pool_release_count_for_tests()
                     == 0
+                && !self.events.backend.scene.has_pending_page_flips()
+                && self
+                    .events
+                    .backend
+                    .platform
+                    .for_tests_pending_scanout_render_job_ids()
+                    .is_empty()
+                && self.events.backend.platform.devices.iter().all(|device| {
+                    device
+                        .atomic_commit_sink
+                        .for_tests_pending_page_flip_entry_count()
+                        == 0
+                })
             {
                 break;
             }
@@ -285,22 +435,25 @@ impl RecordingSceneFixture {
             }
 
             Backend::before_block(&mut self.events.backend);
-            let root = self.events.backend.core.window_id;
-            let width = self.events.backend.platform.fb_w;
-            let height = self.events.backend.platform.fb_h;
-            Backend::clear_area(
-                &mut self.events.backend,
-                None,
-                root,
-                0,
-                None,
-                0,
-                0,
-                width,
-                height,
-                (0, 0),
-            )
-            .expect("damage root through Backend while draining scene pool releases");
+            if !scene_damage_requested {
+                let root = self.events.backend.core.window_id;
+                let width = self.events.backend.platform.fb_w;
+                let height = self.events.backend.platform.fb_h;
+                Backend::clear_area(
+                    &mut self.events.backend,
+                    None,
+                    root,
+                    0,
+                    None,
+                    0,
+                    0,
+                    width,
+                    height,
+                    (0, 0),
+                )
+                .expect("damage root through Backend while draining scene pool releases");
+                scene_damage_requested = true;
+            }
             Backend::maybe_composite(&mut self.events.backend)
                 .expect("drain deferred scene pool releases through a damaged Backend tick");
             // A copied frame submits to KMS only once its source render
@@ -366,8 +519,6 @@ impl RecordingSceneFixture {
             for fd in completion_fds {
                 Backend::on_page_flip_ready(&mut self.events.backend, &mut self.events.state, fd);
             }
-            Backend::maybe_composite(&mut self.events.backend)
-                .expect("finish normal scene completion work through Backend");
         }
         // Mutation: suppress root damage; this eventual-submission assertion
         // must fail because maybe_composite then skips scene.tick.
@@ -431,7 +582,10 @@ impl RecordingSceneFixture {
         // Wait for the GPU work the normal drains observed as retired before
         // any drawable it referenced is freed.
         self.events.wait_for_submitted_gpu_work();
-        for xid in [0x6a00, 0x6a01, 0x6a02, root, 0x6a10, 0x6a11, 0x6a12] {
+        for xid in [0x6a00, 0x6a01, 0x6a02, root, 0x6a10, 0x6a11, 0x6a12]
+            .into_iter()
+            .chain(self.extra_drawables.iter().copied())
+        {
             if self.events.backend.store.lookup(xid).is_some() {
                 Backend::free_pixmap(&mut self.events.backend, None, xid)
                     .expect("free recording scene drawable through Backend");

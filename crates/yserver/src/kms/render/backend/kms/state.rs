@@ -237,6 +237,9 @@ pub(in crate::kms::render::backend) struct DirectPresentFrame {
     pub(in crate::kms::render::backend) completion_clock:
         Option<yserver_core::backend::PresentClockSample>,
     pub(in crate::kms::render::backend) awaiting_outputs: HashSet<usize>,
+    /// Commit accepted by the live grouped direct submission. Test-only
+    /// directly constructed frames have no event identity.
+    pub(in crate::kms::render::backend) accepted_event_id: Option<u64>,
     pub(in crate::kms::render::backend) async_outcome: crate::drm::async_flip::AsyncOutcome,
 }
 
@@ -277,7 +280,12 @@ pub(in crate::kms::render::backend) struct ScanoutM2State {
     /// Most recent request before submission, useful for distinguishing the
     /// initiating event from the gate that finally drove the atomic unflip.
     pub(in crate::kms::render::backend) unflip_last_reason: Option<&'static str>,
-    pub(in crate::kms::render::backend) unflip_awaiting_outputs: HashSet<usize>,
+    /// Outputs still showing a direct framebuffer until an accepted
+    /// replacement completes. This remains populated before a degraded
+    /// replacement has been accepted.
+    pub(in crate::kms::render::backend) unflip_outputs_to_replace: HashSet<usize>,
+    /// Accepted replacement identity for each output, when one exists.
+    pub(in crate::kms::render::backend) unflip_awaiting_outputs: HashMap<usize, u64>,
     pub(in crate::kms::render::backend) reentry_blocked_until_composed: bool,
     pub(in crate::kms::render::backend) eligible_root_streak: u8,
     pub(in crate::kms::render::backend) unflip_fallback_source: Option<DrawableId>,
@@ -302,7 +310,8 @@ impl ScanoutM2State {
             unflip_requested: false,
             unflip_reason: None,
             unflip_last_reason: None,
-            unflip_awaiting_outputs: HashSet::new(),
+            unflip_outputs_to_replace: HashSet::new(),
+            unflip_awaiting_outputs: HashMap::new(),
             reentry_blocked_until_composed: false,
             eligible_root_streak: 0,
             unflip_fallback_source: None,

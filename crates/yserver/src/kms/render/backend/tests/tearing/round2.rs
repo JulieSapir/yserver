@@ -205,7 +205,7 @@ fn finish_held_direct_cursor_test(
         "the grouped unflip carries the bound cursor position when visible"
     );
     assert_eq!(
-        backend.pstate.scanout_m2.unflip_awaiting_outputs,
+        backend.pstate.scanout_m2.unflip_outputs_to_replace,
         (0..backend.platform.outputs.len()).collect()
     );
     retire_composed_frame(backend, state, first_frame);
@@ -228,7 +228,13 @@ fn finish_held_direct_cursor_test(
     assert!(!backend.pstate.scanout_m2.active());
     assert!(!backend.pstate.scanout_m2.hold_direct);
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert!(!backend.pstate.scanout_m2.reentry_blocked_until_composed);
     assert_direct_queue_drained(backend);
     assert_tearing_off(backend);
@@ -1251,7 +1257,13 @@ fn task5_handoff_unflip_starts_cursor_compose_interval() {
     retire_composed_frame(&mut backend, &mut state, 75);
     assert!(backend.pstate.scanout_m2.current.is_none());
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert_eq!(
         backend.pstate.tearing.deferred_cursor_wake,
         Some(compose_time + interval)
@@ -1269,7 +1281,13 @@ fn task5_handoff_unflip_starts_cursor_compose_interval() {
     assert!(backend.pstate.tearing.last_cursor_compose.is_some());
     assert!(!backend.pstate.scanout_m2.active());
     assert!(!backend.pstate.scanout_m2.unflip_requested);
-    assert!(backend.pstate.scanout_m2.unflip_awaiting_outputs.is_empty());
+    assert!(
+        backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace
+            .is_empty()
+    );
     assert!(backend.pstate.scanout_m2.pending.is_none());
     assert!(backend.pstate.scanout_m2.queued_successor.is_none());
     assert!(!backend.scene.has_pending_page_flips());

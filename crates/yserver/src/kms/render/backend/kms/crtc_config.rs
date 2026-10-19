@@ -59,7 +59,7 @@ impl KmsBackend {
                     || self
                         .pstate
                         .scanout_m2
-                        .unflip_awaiting_outputs
+                        .unflip_outputs_to_replace
                         .contains(output_idx)
                     || self
                         .platform

@@ -1265,6 +1265,7 @@ fn grouped_direct_waits_all_outputs_and_uses_selected_reference_sample() {
         completion_output_idx: 0,
         completion_clock: None,
         awaiting_outputs: std::collections::HashSet::from([0, 1]),
+        accepted_event_id: Some(0x5a),
         async_outcome: crate::drm::async_flip::AsyncOutcome::NotRequested,
     });
 
@@ -1278,7 +1279,7 @@ fn grouped_direct_waits_all_outputs_and_uses_selected_reference_sample() {
         ust: 9_999,
         source: PresentClockSource::PageFlip,
     };
-    assert!(b.retire_direct_output(0, reference));
+    assert!(b.retire_direct_output(0, Some(0x5a), reference));
     assert!(b.pstate.scanout_m2.completed.is_empty());
     assert!(b.pstate.scanout_m2.current.is_none());
     assert_eq!(
@@ -1291,7 +1292,7 @@ fn grouped_direct_waits_all_outputs_and_uses_selected_reference_sample() {
         "the selected CRTC sample is cached without completing early"
     );
 
-    assert!(b.retire_direct_output(1, other));
+    assert!(b.retire_direct_output(1, Some(0x5a), other));
     assert_eq!(b.pstate.scanout_m2.completed.len(), 1);
     assert_eq!(
         b.pstate.scanout_m2.completed[0].completion_clock,
@@ -1302,7 +1303,7 @@ fn grouped_direct_waits_all_outputs_and_uses_selected_reference_sample() {
     assert!(b.pstate.scanout_m2.current.is_some());
     assert!(b.pstate.scanout_m2.idled.is_empty());
     assert!(
-        !b.retire_direct_output(1, other),
+        !b.retire_direct_output(1, Some(0x5a), other),
         "a duplicate retirement cannot emit a second completion"
     );
     assert_eq!(b.pstate.scanout_m2.completed.len(), 1);
@@ -1381,7 +1382,7 @@ fn async_fullscreen_direct_successors_coalesce_until_flip_retirement() {
         ust: 1_000,
         source: PresentClockSource::PageFlip,
     };
-    assert!(b.retire_direct_output(0, first_clock));
+    assert!(b.retire_direct_output(0, None, first_clock));
 
     assert_eq!(
         b.pstate
@@ -1414,7 +1415,7 @@ fn async_fullscreen_direct_successors_coalesce_until_flip_retirement() {
         ust: 1_100,
         source: PresentClockSource::PageFlip,
     };
-    assert!(b.retire_direct_output(0, second_clock));
+    assert!(b.retire_direct_output(0, None, second_clock));
     assert_eq!(
         b.pstate
             .scanout_m2
@@ -2795,7 +2796,10 @@ fn cursor_einval_rolls_back_and_hide_recovery_is_motion_driven_and_bounded() {
     assert_eq!(recorder.records().len(), 3);
     assert_atomic_cursorless_scene_record(&recorder.records()[2], position);
     assert_eq!(
-        recovered_backend.pstate.scanout_m2.unflip_awaiting_outputs,
+        recovered_backend
+            .pstate
+            .scanout_m2
+            .unflip_outputs_to_replace,
         std::collections::HashSet::from([0, 1]),
     );
     assert_atomic_cursor_quiescent(&recovered_backend);
@@ -3506,7 +3510,7 @@ fn direct_successor_waits_for_retirement_and_carries_motion() {
     );
     assert_atomic_cursor_properties(&records[4], &unflip_positions);
     assert_eq!(
-        backend.pstate.scanout_m2.unflip_awaiting_outputs,
+        backend.pstate.scanout_m2.unflip_outputs_to_replace,
         std::collections::HashSet::from([0, 1]),
     );
     assert_atomic_cursor_quiescent(&backend);
@@ -3991,7 +3995,7 @@ fn shape_triggered_composed_unflip_records_cursor_positions_for_both_outputs() {
     );
     assert_atomic_cursor_properties(&records[0], &positions);
     assert_eq!(
-        backend.pstate.scanout_m2.unflip_awaiting_outputs,
+        backend.pstate.scanout_m2.unflip_outputs_to_replace,
         std::collections::HashSet::from([0, 1])
     );
     assert!(positions.iter().all(|position| {

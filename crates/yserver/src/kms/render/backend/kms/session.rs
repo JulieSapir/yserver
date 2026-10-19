@@ -343,13 +343,15 @@ impl KmsBackend {
             self.platform.fb_dimensions(),
             self.pstate.tearing.is_on(),
         );
-        match self.scene.tick(
+        let result = self.scene.tick(
             &input,
             &mut self.store,
             &mut self.platform,
             &mut self.telemetry,
             cow_host_xid,
-        ) {
+        );
+        self.record_accepted_degraded_unflip_replacements();
+        match result {
             Ok(_) => Ok(()),
             Err(e) => Err(io::Error::other(format!(
                 "render composite_and_flip: {e:?}"
