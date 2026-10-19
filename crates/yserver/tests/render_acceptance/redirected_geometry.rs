@@ -583,3 +583,74 @@ fn nested_redirect_seeds_from_the_ancestor_backing() {
         ],
     );
 }
+
+/// RP: fvwm3's resize. Two background-None covers are raised over frame F
+/// (background None), F shrinks 400 -> 250 wide (the NorthEast button and
+/// right border move left 150 under the covers), then the covers are
+/// reparented out while mapped. Xorg's ReparentWindow unmaps them first
+/// (`dix/window.c:2518-2519`), so the button and border are repainted
+/// where the covers were. Mutation: skip the backend unmap on reparent.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_cover_reparented_out_of_a_redirected_frame_uncovers_what_it_covered() {
+    const PARK: u32 = 0x2010;
+    const F: u32 = 0x2011;
+    const T: u32 = 0x2012;
+    const B: u32 = 0x2013;
+    const R: u32 = 0x2014;
+    const C: u32 = 0x2015;
+    const HT: u32 = 0x2016;
+    const HR: u32 = 0x2017;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    let visual = yserver_core::resources::ROOT_VISUAL.0;
+    // CWBackPixmap None | CWWinGravity NorthWest.
+    let none = |f: &mut ProtoFixture, wid: u32, parent: u32, x: i16, y: i16, w: u16, h: u16| {
+        or_create_window(f, wid, parent, 24, x, y, w, h, 0, visual, 0x21, &[0, 1]);
+    };
+    let reparent = |f: &mut ProtoFixture, wid: u32, parent: u32| {
+        let mut body = Vec::new();
+        body.extend_from_slice(&wid.to_le_bytes());
+        body.extend_from_slice(&parent.to_le_bytes());
+        body.extend_from_slice(&(-1i16).to_le_bytes());
+        body.extend_from_slice(&(-1i16).to_le_bytes());
+        f.req(7, 0, &body);
+    };
+    rg_window(&mut f, PARK, root, -10, -10, 10, 10, 0, WHITE, 0, 1);
+    none(&mut f, F, root, 0, 720, 400, 100);
+    rg_window(&mut f, T, F, 0, 0, 340, 20, 0, BLUE, 0, 1);
+    rg_window(&mut f, B, F, 340, 0, 20, 20, 0, RED, 0, 3);
+    rg_window(&mut f, R, F, 395, 20, 5, 80, 0, GREEN, 0, 3);
+    rg_window(&mut f, C, F, 0, 20, 395, 80, 0, WHITE, 0, 1);
+    f.req(9, 0, &F.to_le_bytes()); // MapSubwindows
+    wz_map(&mut f, F);
+    none(&mut f, HT, PARK, -1, -1, 1, 1);
+    none(&mut f, HR, PARK, -1, -1, 1, 1);
+    reparent(&mut f, HT, F);
+    reparent(&mut f, HR, F);
+    wz_configure(&mut f, HT, 0x40, &[0]); // Raise
+    wz_configure(&mut f, HR, 0x40, &[0]);
+    wz_configure(&mut f, HT, 0x0F, &[0, 0, 400, 20]);
+    wz_map(&mut f, HT);
+    wz_configure(&mut f, HR, 0x0F, &[245, 0, 155, 100]);
+    wz_map(&mut f, HR);
+    wz_configure(&mut f, T, 0x0C, &[190, 20]);
+    wz_configure(&mut f, C, 0x0C, &[245, 80]);
+    wz_configure(&mut f, F, 0x0C, &[250, 100]);
+    reparent(&mut f, HT, PARK);
+    reparent(&mut f, HR, PARK);
+    rg_assert(
+        &mut f,
+        F,
+        "RP",
+        &[
+            (100, 10, BLUE),
+            (200, 10, RED),
+            (247, 50, GREEN),
+            (100, 50, WHITE),
+        ],
+    );
+}

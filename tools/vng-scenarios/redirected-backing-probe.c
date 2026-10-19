@@ -16,6 +16,10 @@
  *   M   a child mapped under a higher sibling, R then raised
  *   MB  a child's border crossing its bordered redirected parent's edge
  *   N   nested redirect of a child already drawn into its parent's backing
+ *   RP  a background-None cover reparented out of a redirected frame after
+ *       the frame shrank (fvwm3's resize): what it covered is repainted
+ *   UG  an UnmapGravity child on a parent shrink and grow: unmapped, with
+ *       UnmapNotify, and what it covered repainted
  *
  * Damage coverage (union, banded) goes to stdout; raw rectangles go to
  * damage-raw.log only: Xorg reports extents ∩ clip per op, yserver a region.
@@ -495,6 +499,55 @@ static void case_cf(void) {
     XUnmapWindow(d, f);
 }
 
+static Window mk_none(Window parent, int x, int y, int w, int h, int grav) {
+    XSetWindowAttributes a;
+    a.background_pixmap = None;
+    a.override_redirect = True;
+    a.win_gravity = grav;
+    return XCreateWindow(d, parent, x, y, w, h, 0, 24, InputOutput, CopyFromParent,
+                         CWBackPixmap | CWOverrideRedirect | CWWinGravity, &a);
+}
+
+/* RP: frame F (bg None) with title T, button B (NE), right border R (NE)
+ * and client area C; two bg-None covers raised over it, F shrunk 400 -> 250
+ * wide (B and R move left 150 under the covers), then the covers are
+ * reparented out while still mapped. */
+static void case_rp(void) {
+    Window park = mk(root, -10, -10, 10, 10, 0, WHITE, 0, NorthWestGravity);
+    Window f = mk_none(root, 0, 720, 400, 100, NorthWestGravity);
+    Window t = mk(f, 0, 0, 340, 20, 0, BLUE, 0, NorthWestGravity);
+    Window b = mk(f, 340, 0, 20, 20, 0, RED, 0, NorthEastGravity);
+    mk(f, 395, 20, 5, 80, 0, GREEN, 0, NorthEastGravity);
+    Window c = mk(f, 0, 20, 395, 80, 0, WHITE, 0, NorthWestGravity);
+    XMapSubwindows(d, f);
+    XMapWindow(d, f);
+    Window ht = mk_none(park, -1, -1, 1, 1, NorthWestGravity);
+    Window hr = mk_none(park, -1, -1, 1, 1, NorthWestGravity);
+    settle();
+    XReparentWindow(d, ht, f, -1, -1);
+    XReparentWindow(d, hr, f, -1, -1);
+    XRaiseWindow(d, ht);
+    XRaiseWindow(d, hr);
+    XMoveResizeWindow(d, ht, 0, 0, 400, 20);
+    XMapWindow(d, ht);
+    XMoveResizeWindow(d, hr, 245, 0, 155, 100);
+    XMapWindow(d, hr);
+    settle();
+    XResizeWindow(d, t, 190, 20);
+    XResizeWindow(d, c, 245, 80);
+    XResizeWindow(d, f, 250, 100);
+    XReparentWindow(d, ht, park, -1, -1);
+    XReparentWindow(d, hr, park, -1, -1);
+    settle();
+    XWindowAttributes ba;
+    XGetWindowAttributes(d, b, &ba);
+    printf("RP.button-at=%d,%d\n", ba.x, ba.y);
+    const int p[][2] = {{100, 10}, {200, 10}, {247, 50}, {100, 50}};
+    sample("RP", f, p, 4);
+    XDestroyWindow(d, f);
+    XDestroyWindow(d, park);
+}
+
 int main(void) {
     d = XOpenDisplay(NULL);
     if (!d) return 1;
@@ -520,6 +573,7 @@ int main(void) {
     case_n();
     case_gs();
     case_cf();
+    case_rp();
     printf("done\n");
     fclose(raw);
     return 0;

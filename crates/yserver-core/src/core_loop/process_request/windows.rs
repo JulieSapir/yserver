@@ -685,8 +685,18 @@ pub(super) fn handle_reparent_window(
     } else {
         None
     };
+    let unmapped_host = unmapped
+        .and_then(|_| state.resources.window(request.window))
+        .and_then(|w| w.host_xid)
+        .map(|h| h.as_raw());
     if let Some((old_parent, map_state, _)) = unmapped {
         let window = request.window;
+        // The backend too, before the repaint below: a window it still
+        // holds mapped clips the background fill of what it covered in a
+        // shared backing.
+        if let Some(host) = unmapped_host {
+            let _ = backend.unmap_subwindow(origin, host);
+        }
         let clips_before = if map_state == MapState::Viewable {
             crate::core_loop::clip_list::with_borders(
                 state,
@@ -831,6 +841,11 @@ pub(super) fn handle_reparent_window(
             backend.sync_top_level_order(state);
         }
     }
+    // Xorg's MapWindow in the new place (`dix/window.c:2587-2588`), before
+    // storage and redirect reconcile as in `handle_map_window`.
+    if let Some(host) = unmapped_host {
+        let _ = backend.map_subwindow(origin, host);
+    }
     // Before the reconcile below, so a GRANT backing finds the leaf that carries its route.
     realize_storage_for_delta(state, backend, origin, &result.delta);
     let window = result.window;
@@ -871,6 +886,9 @@ pub(super) fn handle_reparent_window(
     // After the reconcile, so a revoke still sees the backing it tears down.
     apply_viewability_delta_to_redirects(state, backend, origin, &result.delta);
     release_storage_for_delta(state, backend, origin, &result.delta);
+    if unmapped_host.is_some() {
+        reapply_redirect_mode_after_map(state, backend, origin, window);
+    }
     let _dropped = fanout_event_to_clients(state, &on_window, |buf, seq, order| {
         x11::encode_reparent_notify_event(
             buf,

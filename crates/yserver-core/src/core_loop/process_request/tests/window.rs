@@ -3145,3 +3145,91 @@ fn an_exposure_of_a_redirected_window_paints_through_the_window() {
         .collect();
     assert_eq!(fills, vec![(HOST, 0, 0)]);
 }
+
+/// Xorg ReparentWindow unmaps a mapped window before it moves
+/// (`UnmapWindow(pWin, FALSE)`, `dix/window.c:2518-2519`), so the repaint
+/// of what it covered is not clipped by it, then maps it in the new place
+/// (`dix/window.c:2589-2590`). The backend must see it unmapped before that
+/// repaint: a cover left mapped there clips the lower sibling's background
+/// fill in a shared backing (fvwm3's resize, variant B of the measurement).
+#[test]
+fn reparent_of_a_mapped_window_unmaps_it_on_the_backend_before_the_exposure_paint() {
+    let mut state = ServerState::new();
+    let _peer = install_client(&mut state, 1);
+    let [frame, lower, cover, park] =
+        [0x0010_0300, 0x0010_0301, 0x0010_0302, 0x0010_0303].map(ResourceId);
+    for (id, parent, x, bg) in [
+        (frame, ROOT_WINDOW, 0, None),
+        (lower, frame, 0, Some(0x00ff_0000)),
+        (cover, frame, 0, None),
+        (park, ROOT_WINDOW, 100, None),
+    ] {
+        state.resources.create_window(
+            ClientId(1),
+            CreateWindowRequest {
+                depth: 24,
+                window: id,
+                parent,
+                x,
+                width: 40,
+                height: 40,
+                class: 1,
+                visual: crate::resources::ROOT_VISUAL,
+                background_pixel: bg,
+                ..Default::default()
+            },
+        );
+        state.resources.window_mut(id).expect("window").host_xid =
+            Some(crate::backend::WindowHandle::from_raw_for_test(id.0));
+    }
+    for w in [lower, cover, frame, park] {
+        let _ = state.resources.map_window(w);
+    }
+    let mut backend = RecordingBackend::new();
+    let mut body = Vec::new();
+    body.extend_from_slice(&cover.0.to_le_bytes());
+    body.extend_from_slice(&park.0.to_le_bytes());
+    body.extend_from_slice(&0i16.to_le_bytes());
+    body.extend_from_slice(&0i16.to_le_bytes());
+    handle_reparent_window(
+        &mut state,
+        &mut backend,
+        None,
+        ClientId(1),
+        SequenceNumber(1),
+        &body,
+    )
+    .expect("ReparentWindow");
+    let calls = backend.calls();
+    let at = |pred: &dyn Fn(&RecordedCall) -> bool, what: &str| {
+        calls
+            .iter()
+            .position(pred)
+            .unwrap_or_else(|| panic!("{what} not recorded: {calls:?}"))
+    };
+    let unmap = at(
+        &|c| matches!(c, RecordedCall::UnmapSubwindow(x) if *x == cover.0),
+        "unmap_subwindow(cover)",
+    );
+    let paint = at(
+        &|c| matches!(c, RecordedCall::FillRectangle { host_xid, .. } if *host_xid == lower.0),
+        "the lower sibling's exposure paint",
+    );
+    let reparent = at(
+        &|c| matches!(c, RecordedCall::ReparentSubwindow { host_xid, .. } if *host_xid == cover.0),
+        "reparent_subwindow(cover)",
+    );
+    let map = at(
+        &|c| matches!(c, RecordedCall::MapSubwindow(x) if *x == cover.0),
+        "map_subwindow(cover)",
+    );
+    assert!(
+        unmap < paint,
+        "unmapped before the exposure paint: {calls:?}"
+    );
+    assert!(reparent < map, "mapped again in the new place: {calls:?}");
+    assert_eq!(
+        state.resources.window(cover).map(|w| w.map_state),
+        Some(MapState::Viewable)
+    );
+}
