@@ -1398,3 +1398,50 @@ fn kms_pointer_authority_integrates_physical_relative_motion_in_kms() {
     assert!(backend.core.pending_pointer_events.is_empty());
     assert_eq!(state.sync_pending.len(), 2);
 }
+
+/// A warp moves the pointer with an XI2 Motion and no RawMotion: Xorg's
+/// `ProcWarpPointer` reaches `miPointerMove`, whose `GetPointerEvents`
+/// passes `POINTER_NORAW`. A motion from the device has both.
+#[test]
+fn a_warp_has_no_raw_motion() {
+    use yserver_core::{core_loop::HostInputEvent, resources::ROOT_WINDOW, server::ServerState};
+    let mut b = KmsBackend::for_tests();
+    let mut state = ServerState::new();
+    let mut peer = kbd_map_client_id(&mut state, 9);
+    state
+        .clients
+        .get_mut(&9)
+        .unwrap()
+        .xi2_masks
+        .insert((ROOT_WINDOW, 1), (1 << 6) | (1 << 17));
+
+    b.warp_pointer_root(&mut state, 40, 30);
+    let warp: Vec<_> = xi2_events(&kbd_map_drain(&mut peer))
+        .iter()
+        .map(|e| e.0)
+        .collect();
+    assert_eq!(warp, vec![6], "a warp's Motion, and no RawMotion");
+
+    b.on_host_input(
+        &mut state,
+        HostInputEvent::PointerMotion {
+            x: 49,
+            y: 30,
+            time: 0,
+            relative: true,
+            dx: 9,
+            dy: 0,
+            motion_delta: None,
+            origin: yserver_core::core_loop::InputOrigin::NestedHost,
+        },
+    );
+    let kinds: Vec<_> = xi2_events(&kbd_map_drain(&mut peer))
+        .iter()
+        .map(|e| e.0)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![17, 6],
+        "the device's RawMotion, then its Motion"
+    );
+}

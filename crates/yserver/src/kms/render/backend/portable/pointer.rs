@@ -854,23 +854,36 @@ impl<P: Platform> XBackend<P> {
         x: i32,
         y: i32,
     ) {
-        // Route through the absolute-motion input path: updates the
-        // tracked cursor (and HW cursor plane) and fans out the
-        // motion/crossing events WarpPointer is specified to generate
-        // ("as if the user had instantaneously moved the pointer").
-        self.on_host_input(
+        // Route through the absolute-motion path: updates the tracked
+        // cursor (and HW cursor plane) and fans out the motion/crossing
+        // events WarpPointer is specified to generate ("as if the user had
+        // instantaneously moved the pointer"), but no XI2 raw motion: a
+        // warp is not the device's (Xorg's miPointerMove passes
+        // POINTER_NORAW; `warp_pointer_event_fanout_to_state`).
+        #[allow(clippy::cast_precision_loss)]
+        self.process_pointer_absolute(
             state,
-            yserver_core::core_loop::HostInputEvent::PointerMotion {
-                origin: yserver_core::core_loop::InputOrigin::NestedHost,
-                x,
-                y,
-                time: 0,
-                relative: false,
-                dx: 0,
-                dy: 0,
-                motion_delta: None,
-            },
+            x as f32,
+            y as f32,
+            false,
+            0,
+            0,
+            yserver_core::core_loop::InputOrigin::NestedHost,
         );
+        // As `on_host_input`'s drain: the absolute motion's barrier
+        // bypass holds until its queued events reach the fanout.
+        let previous_barrier_bypass = state.barrier_bypass;
+        state.barrier_bypass =
+            previous_barrier_bypass || std::mem::take(&mut self.core.pending_motion_barrier_bypass);
+        let pending = std::mem::take(&mut self.core.pending_pointer_events);
+        let xid_map = self.core.xid_map.clone();
+        for ev in pending {
+            let _dropped =
+                yserver_core::core_loop::pointer_fanout::warp_pointer_event_fanout_to_state(
+                    state, self, &xid_map, ev,
+                );
+        }
+        state.barrier_bypass = previous_barrier_bypass;
         #[allow(clippy::cast_possible_truncation)]
         let (warped_x, warped_y) = (self.core.cursor_x as i32, self.core.cursor_y as i32);
         P::host_pointer_warped(self, warped_x, warped_y);

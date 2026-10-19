@@ -365,7 +365,35 @@ pub fn pointer_event_fanout_to_state(
         handle_grabs,
         is_replay,
         is_replay,
+        false,
         &mut info,
+    );
+    implicit_pointer_grab_lifecycle(state, &event, &info);
+    if !info.queued {
+        release_passive_grab_on_button_release(state, event.kind, event.origin);
+    }
+    dropped
+}
+
+/// Fan out the events of a warp: `WarpPointer`, a confine grab pulling the
+/// pointer in, or the pointer moved onto a CRTC after a layout change.
+///
+/// As [`pointer_event_fanout_to_state`], except that no XI2 raw event is
+/// generated. A raw event describes the device, and a warp did not come
+/// from one: Xorg's `ProcWarpPointer` (and `CheckPhysLimits`) call
+/// `SetCursorPosition(..., TRUE)`, which `miPointerWarpCursor` turns into
+/// `miPointerMove`, whose `GetPointerEvents` passes `POINTER_NORAW`; and
+/// `fill_pointer_events` (dix/getevents.c) makes no raw event under that
+/// flag. RECORD still sees the motion, as before.
+pub fn warp_pointer_event_fanout_to_state(
+    state: &mut ServerState,
+    backend: &mut dyn crate::backend::Backend,
+    xid_map: &HostXidMap,
+    event: HostPointerEvent,
+) -> Vec<ClientId> {
+    let mut info = ImplicitGrabFanoutInfo::default();
+    let dropped = pointer_event_fanout_to_state_inner(
+        state, backend, xid_map, event, true, false, false, true, &mut info,
     );
     implicit_pointer_grab_lifecycle(state, &event, &info);
     if !info.queued {
@@ -388,7 +416,7 @@ pub fn replay_frozen_pointer_event_to_state(
 ) -> Vec<ClientId> {
     let mut info = ImplicitGrabFanoutInfo::default();
     let dropped = pointer_event_fanout_to_state_inner(
-        state, backend, xid_map, event, false, false, true, &mut info,
+        state, backend, xid_map, event, false, false, true, false, &mut info,
     );
     implicit_pointer_grab_lifecycle(state, &event, &info);
     if !info.queued {
@@ -512,6 +540,7 @@ fn pointer_event_fanout_to_state_inner(
     handle_grabs: bool,
     is_replay: bool,
     suppress_raw: bool,
+    warp: bool,
     info: &mut ImplicitGrabFanoutInfo,
 ) -> Vec<ClientId> {
     // Reject stale/suspended physical events and invalid XTEST targets before
@@ -1993,7 +2022,11 @@ fn pointer_event_fanout_to_state_inner(
     }
 
     // XI2 raw events.
-    if !suppress_raw && let Some(raw_evtype) = xi2_raw_evtype {
+    // None for a warp ([`warp_pointer_event_fanout_to_state`]).
+    if !suppress_raw
+        && !warp
+        && let Some(raw_evtype) = xi2_raw_evtype
+    {
         // mieq processes the attached slave first, then copies ET_Raw* to its
         // master by rewriting deviceid and retaining sourceid. Keep that
         // order for clients selecting both forms. Master-only origins have
