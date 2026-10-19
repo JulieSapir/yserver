@@ -3233,3 +3233,111 @@ fn reparent_of_a_mapped_window_unmaps_it_on_the_backend_before_the_exposure_pain
         Some(MapState::Viewable)
     );
 }
+
+/// Xorg `miResizeWindow` unmaps each UnmapGravity child of a viewable
+/// window whose size changes, `UnmapWindow(pChild, TRUE)`
+/// (`mi/miwindow.c:389-398`): after the parent's ConfigureNotify
+/// (`dix/window.c:2365-2381`, before `ResizeWindow`), an UnmapNotify with
+/// from_configure, before the GravityNotify of the other children
+/// (`ResizeChildrenWinSize`, `mi/miwindow.c:444`). Measured order on Xorg
+/// (redirected-backing-probe UG): ConfigureNotify W, UnmapNotify on G then
+/// on W, GravityNotify on K then on W. A pure move (`MoveWindow`) and an
+/// unviewable parent leave the child mapped.
+#[test]
+fn a_parent_resize_unmaps_an_unmap_gravity_child() {
+    let mut state = ServerState::new();
+    let mut peer = install_client(&mut state, 1);
+    let [w, g, k] = [0x0010_0400, 0x0010_0401, 0x0010_0402].map(ResourceId);
+    for (id, parent, x, width, gravity) in [
+        (w, ROOT_WINDOW, 0, 200, 1),
+        (k, w, 180, 20, 3), // NorthEast
+        (g, w, 0, 100, 0),  // Unmap
+    ] {
+        state.resources.create_window(
+            ClientId(1),
+            CreateWindowRequest {
+                depth: 24,
+                window: id,
+                parent,
+                x,
+                width,
+                height: 20,
+                class: 1,
+                visual: crate::resources::ROOT_VISUAL,
+                win_gravity: Some(gravity),
+                ..Default::default()
+            },
+        );
+    }
+    for id in [k, g, w] {
+        let _ = state.resources.map_window(id);
+    }
+    let masks = &mut state.clients.get_mut(&1).expect("client").event_masks;
+    masks.insert(w, 0x0002_0000 | 0x0008_0000); // Structure | SubstructureNotify
+    masks.insert(g, 0x0002_0000);
+    masks.insert(k, 0x0002_0000);
+    let _ = read_all_available(&mut peer);
+    let configure = |state: &mut ServerState, mask: u16, values: &[u32]| {
+        let mut backend = RecordingBackend::new();
+        handle_configure_window(
+            state,
+            &mut backend,
+            None,
+            ClientId(1),
+            SequenceNumber(1),
+            &cw_restack_body(w.0, mask, values),
+        )
+        .expect("ConfigureWindow");
+    };
+    let events = |bytes: &[u8]| -> Vec<(u8, u32, u32, u8)> {
+        bytes
+            .chunks(32)
+            .filter(|e| e.len() == 32 && matches!(e[0] & 0x7f, 18 | 22 | 24))
+            .map(|e| {
+                let at = |o: usize| u32::from_le_bytes([e[o], e[o + 1], e[o + 2], e[o + 3]]);
+                (
+                    e[0] & 0x7f,
+                    at(4),
+                    at(8),
+                    if e[0] & 0x7f == 18 { e[12] } else { 0 },
+                )
+            })
+            .collect()
+    };
+
+    // A pure move is MoveWindow: no UnmapGravity unmap.
+    configure(&mut state, 0x0003, &[10, 10]);
+    let _ = read_all_available(&mut peer);
+    assert_eq!(
+        state.resources.window(g).map(|win| win.map_state),
+        Some(MapState::Viewable),
+        "a move keeps the UnmapGravity child mapped"
+    );
+
+    configure(&mut state, 0x0004, &[150]);
+    assert_eq!(
+        events(&read_all_available(&mut peer)),
+        vec![
+            (22, w.0, w.0, 0),
+            (18, g.0, g.0, 1),
+            (18, w.0, g.0, 1),
+            (24, k.0, k.0, 0),
+            (24, w.0, k.0, 0),
+        ],
+        "ConfigureNotify, UnmapNotify(from_configure) on G then W, GravityNotify",
+    );
+    assert_eq!(
+        state.resources.window(g).map(|win| win.map_state),
+        Some(MapState::Unmapped)
+    );
+
+    // Under an unmapped parent the child stays mapped (`WasViewable`).
+    let _ = state.resources.map_window(g);
+    let _ = state.resources.unmap_window(w);
+    configure(&mut state, 0x0004, &[120]);
+    assert_ne!(
+        state.resources.window(g).map(|win| win.map_state),
+        Some(MapState::Unmapped),
+        "an unviewable parent's resize leaves the child mapped"
+    );
+}

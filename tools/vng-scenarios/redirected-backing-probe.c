@@ -548,6 +548,74 @@ static void case_rp(void) {
     XDestroyWindow(d, park);
 }
 
+/* Structure events in arrival order, windows named. */
+static void ug_events(const char *tag, Window const *wins, const char *const *names, int n) {
+    while (XPending(d)) {
+        XEvent e;
+        XNextEvent(d, &e);
+        switch (e.type) {
+        case ConfigureNotify:
+            printf("%s.event=ConfigureNotify ev=%s win=%s %dx%d\n", tag, child_name(e.xconfigure.event, wins, names, n),
+                   child_name(e.xconfigure.window, wins, names, n), e.xconfigure.width, e.xconfigure.height);
+            break;
+        case UnmapNotify:
+            printf("%s.event=UnmapNotify ev=%s win=%s from_configure=%d\n", tag,
+                   child_name(e.xunmap.event, wins, names, n), child_name(e.xunmap.window, wins, names, n),
+                   e.xunmap.from_configure);
+            break;
+        case MapNotify:
+            printf("%s.event=MapNotify ev=%s win=%s\n", tag, child_name(e.xmap.event, wins, names, n),
+                   child_name(e.xmap.window, wins, names, n));
+            break;
+        case GravityNotify:
+            printf("%s.event=GravityNotify ev=%s win=%s %d,%d\n", tag, child_name(e.xgravity.event, wins, names, n),
+                   child_name(e.xgravity.window, wins, names, n), e.xgravity.x, e.xgravity.y);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+/* UG: W (white) holds S (green, all of W), K (cyan, NorthEast) and G (blue,
+ * UnmapGravity, on top). W shrinks, G is mapped again, W grows. */
+static void case_ug(void) {
+    Window w = mk(root, 500, 600, 200, 100, 0, WHITE, 0, NorthWestGravity);
+    Window s = mk(w, 0, 0, 200, 100, 0, GREEN, 0, NorthWestGravity);
+    Window k = mk(w, 180, 0, 20, 20, 0, CYAN, 0, NorthEastGravity);
+    Window g = mk(w, 0, 0, 100, 50, 0, BLUE, 0, UnmapGravity);
+    Window wins[] = {w, s, k, g};
+    const char *names[] = {"W", "S", "K", "G"};
+    XSelectInput(d, w, StructureNotifyMask | SubstructureNotifyMask);
+    XSelectInput(d, k, StructureNotifyMask);
+    XSelectInput(d, g, StructureNotifyMask);
+    XMapSubwindows(d, w);
+    XMapWindow(d, w);
+    settle();
+    ug_events("UG-setup", wins, names, 4);
+    const int p[][2] = {{50, 25}, {120, 40}, {135, 10}};
+    for (int grow = 0; grow < 2; grow++) {
+        const char *tag = grow ? "UG-grow" : "UG-shrink";
+        if (grow) {
+            XMapWindow(d, g);
+            settle();
+            ug_events("UG-remap", wins, names, 4);
+        }
+        printf("%s.phase=resize\n", tag);
+        XResizeWindow(d, w, grow ? 250 : 150, grow ? 120 : 100);
+        settle();
+        ug_events(tag, wins, names, 4);
+        XWindowAttributes ga;
+        XGetWindowAttributes(d, g, &ga);
+        printf("%s.G.map_state=%s\n", tag,
+               ga.map_state == IsViewable ? "viewable" : ga.map_state == IsUnviewable ? "unviewable" : "unmapped");
+        sample(tag, w, p, 3);
+    }
+    XDestroyWindow(d, w);
+    settle();
+    XSync(d, True);
+}
+
 int main(void) {
     d = XOpenDisplay(NULL);
     if (!d) return 1;
@@ -574,6 +642,7 @@ int main(void) {
     case_gs();
     case_cf();
     case_rp();
+    case_ug();
     printf("done\n");
     fclose(raw);
     return 0;

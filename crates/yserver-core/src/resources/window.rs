@@ -36,7 +36,9 @@ pub(super) fn cow_aware_top_index(parent: &Window) -> usize {
 /// changes by `(dw, dh)`. Mirrors Xorg `dix/window.c::GravityTranslate`
 /// (verified against ../xserver). NorthWest (1), Unmap/Forget (0), unknown,
 /// and Static (10) on a pure resize with no parent-origin shift all leave
-/// the child in place → `(0, 0)`. Integer division matches Xorg (`dw / 2`).
+/// the child in place → `(0, 0)`; an UnmapGravity child of a viewable window
+/// is unmapped by the resize instead (`handle_configure_window`). Integer
+/// division matches Xorg (`dw / 2`).
 #[must_use]
 pub(super) fn win_gravity_delta(gravity: u8, dw: i32, dh: i32) -> (i32, i32) {
     match gravity {

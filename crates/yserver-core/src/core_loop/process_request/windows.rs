@@ -1975,13 +1975,41 @@ pub(super) fn handle_configure_window(
         // above the fold and reveals it by growing the client's holder;
         // without gravity the client stays parked and renders as a black
         // rectangle over the frame (air/silence HW 2026-07-02).
+        let resized =
+            old_size.is_some_and(|(ow, oh)| geometry.width != ow || geometry.height != oh);
+        // A viewable window whose size changes unmaps its UnmapGravity
+        // children first, top-most first, after its ConfigureNotify and
+        // before any GravityNotify (`miResizeWindow`, `mi/miwindow.c:389-398`;
+        // `UnmapWindow(pChild, TRUE)`). A move or border change is not a
+        // resize (`dix/window.c:2331-2338`).
+        if resized
+            && state
+                .resources
+                .window(window_id)
+                .is_some_and(|w| w.map_state == MapState::Viewable)
+        {
+            let unmap_gravity: Vec<ResourceId> = state
+                .resources
+                .children(window_id)
+                .iter()
+                .rev()
+                .copied()
+                .filter(|c| {
+                    state
+                        .resources
+                        .window(*c)
+                        .is_some_and(|w| w.win_gravity == 0 && w.map_state != MapState::Unmapped)
+                })
+                .collect();
+            for child in unmap_gravity {
+                unmap_window(state, backend, origin, child, true);
+            }
+        }
         let moved = old_size.map_or_else(Vec::new, |(ow, oh)| {
             state
                 .resources
                 .apply_win_gravity(window_id, ow, oh, geometry.width, geometry.height)
         });
-        let resized =
-            old_size.is_some_and(|(ow, oh)| geometry.width != ow || geometry.height != oh);
         let old_border_width = before_geom.map_or(geometry.border_width, |g| g.4);
         // `miResizeWindow` (mi/miwindow.c:342-620): the realloc happens
         // first, then each gravity group is copied from the OLD pixmap
@@ -2643,100 +2671,117 @@ pub(super) fn handle_unmap_window(
                 10,
             );
         }
-        let host_xid = state.resources.window(window).and_then(|w| w.host_xid);
-        let viewable_before = state
-            .resources
-            .window(window)
-            .is_some_and(|w| w.map_state == MapState::Viewable);
-        let clips_before = if viewable_before {
-            crate::core_loop::clip_list::with_borders(
-                state,
-                crate::core_loop::clip_list::clip_lists_under(state, window),
-            )
-        } else {
-            Vec::new()
-        };
-        let transition = state.resources.unmap_window(window);
-        let was_mapped = transition.mapping_changed;
-        let parent = if was_mapped {
-            state
-                .resources
-                .window(window)
-                .map_or(ROOT_WINDOW, |w| w.parent)
-        } else {
-            ROOT_WINDOW
-        };
-        if let Some(xid) = host_xid {
-            let _ = backend.unmap_subwindow(origin, xid.as_raw());
-        }
-        // Xorg frees each redirect pixmap at unrealize (`compwindow.c:291`).
-        apply_viewability_delta_to_redirects(state, backend, origin, &transition.delta);
-        release_storage_for_delta(state, backend, origin, &transition.delta);
-        // XI1: an active device grab is released automatically when its
-        // grab window becomes not viewable (XTS XGrabDeviceKey-9; Xorg
-        // DeactivateGrabsOnWindowUnmap shape).
-        if was_mapped {
-            let released: Vec<u16> = state
-                .xi1_active_grabs
-                .iter()
-                .filter(|(_, g)| {
-                    state
-                        .resources
-                        .window(g.grab_window)
-                        .is_none_or(|w| w.map_state != crate::resources::MapState::Viewable)
-                })
-                .map(|(d, _)| *d)
-                .collect();
-            for dev in released {
-                state.xi1_active_grabs.remove(&dev);
-                let xid_map = backend.xid_map().clone();
-                crate::core_loop::pointer_fanout::xi1_thaw_device(state, backend, &xid_map, dev);
-            }
-        }
-        if was_mapped {
-            let _dropped =
-                emit_window_event_to_state(state, window, 0x0002_0000, |buf, seq, order| {
-                    x11::encode_unmap_notify_event(buf, seq, order, window, window, false);
-                });
-            let _dropped =
-                emit_window_event_to_state(state, parent, 0x0008_0000, |buf, seq, order| {
-                    x11::encode_unmap_notify_event(buf, seq, order, parent, window, false);
-                });
-            // What it covered is exposed: its parent's and lower
-            // siblings' backgrounds painted there, and Expose sent
-            // (`UnmapWindow`, `dix/window.c:2856-2866`).
-            if viewable_before {
-                let after = crate::core_loop::clip_list::with_borders(
-                    state,
-                    crate::core_loop::clip_list::clip_lists_under(state, window),
-                );
-                send_exposures(
-                    state,
-                    backend,
-                    origin,
-                    crate::core_loop::clip_list::newly_exposed(&clips_before, after, None),
-                    None,
-                );
-            }
-            // XI1: a device focus on a window that just became
-            // unviewable reverts per its revert_to, emitting
-            // DeviceFocusIn/Out (Xi/exevents.c
-            // DeleteDeviceFromAnyExtEvents). After UnmapNotify, matching
-            // Xorg's UnmapWindow → UnrealizeTree ordering.
-            crate::core_loop::xi1_focus::revert_unviewable_focus(state);
-            // Core focus likewise (Xorg UnrealizeTree →
-            // DeleteWindowFromAnyEvents): covers the focus window
-            // itself or any unmapped ancestor.
-            revert_core_focus_if_unviewable(state);
-            // Active grabs on a window that just became unviewable
-            // deactivate too (same Xorg path).
-            release_core_grabs_for_unviewable(state, backend);
-            // Then WindowsRestructured (`dix/window.c:2871`).
-            backend.windows_restructured(state);
-        }
+        unmap_window(state, backend, origin, window, false);
     }
     debug!("client {} #{} UnmapWindow", client_id.0, sequence.0);
     Ok(RequestOutcome::Handled)
+}
+
+/// Xorg `UnmapWindow(pWin, fromConfigure)` (`dix/window.c:2844-2875`) on a
+/// window that exists: UnmapNotify with `from_configure`, the backend and
+/// storage let go, focus and grabs on the unviewable subtree dropped. Not
+/// from a configure, it also exposes what the window covered and ends in
+/// WindowsRestructured; from one (`miResizeWindow`'s UnmapGravity children)
+/// the resize validates and exposes, and restructures once.
+pub(super) fn unmap_window(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    origin: Option<OriginContext>,
+    window: ResourceId,
+    from_configure: bool,
+) {
+    let host_xid = state.resources.window(window).and_then(|w| w.host_xid);
+    let viewable_before = state
+        .resources
+        .window(window)
+        .is_some_and(|w| w.map_state == MapState::Viewable);
+    let clips_before = if viewable_before && !from_configure {
+        crate::core_loop::clip_list::with_borders(
+            state,
+            crate::core_loop::clip_list::clip_lists_under(state, window),
+        )
+    } else {
+        Vec::new()
+    };
+    let transition = state.resources.unmap_window(window);
+    let was_mapped = transition.mapping_changed;
+    let parent = if was_mapped {
+        state
+            .resources
+            .window(window)
+            .map_or(ROOT_WINDOW, |w| w.parent)
+    } else {
+        ROOT_WINDOW
+    };
+    if let Some(xid) = host_xid {
+        let _ = backend.unmap_subwindow(origin, xid.as_raw());
+    }
+    // Xorg frees each redirect pixmap at unrealize (`compwindow.c:291`).
+    apply_viewability_delta_to_redirects(state, backend, origin, &transition.delta);
+    release_storage_for_delta(state, backend, origin, &transition.delta);
+    // XI1: an active device grab is released automatically when its
+    // grab window becomes not viewable (XTS XGrabDeviceKey-9; Xorg
+    // DeactivateGrabsOnWindowUnmap shape).
+    if was_mapped {
+        let released: Vec<u16> = state
+            .xi1_active_grabs
+            .iter()
+            .filter(|(_, g)| {
+                state
+                    .resources
+                    .window(g.grab_window)
+                    .is_none_or(|w| w.map_state != crate::resources::MapState::Viewable)
+            })
+            .map(|(d, _)| *d)
+            .collect();
+        for dev in released {
+            state.xi1_active_grabs.remove(&dev);
+            let xid_map = backend.xid_map().clone();
+            crate::core_loop::pointer_fanout::xi1_thaw_device(state, backend, &xid_map, dev);
+        }
+    }
+    if was_mapped {
+        let _dropped = emit_window_event_to_state(state, window, 0x0002_0000, |buf, seq, order| {
+            x11::encode_unmap_notify_event(buf, seq, order, window, window, from_configure);
+        });
+        let _dropped = emit_window_event_to_state(state, parent, 0x0008_0000, |buf, seq, order| {
+            x11::encode_unmap_notify_event(buf, seq, order, parent, window, from_configure);
+        });
+        // What it covered is exposed: its parent's and lower
+        // siblings' backgrounds painted there, and Expose sent
+        // (`UnmapWindow`, `dix/window.c:2856-2866`). From a configure the
+        // caller's validation exposes it.
+        if viewable_before && !from_configure {
+            let after = crate::core_loop::clip_list::with_borders(
+                state,
+                crate::core_loop::clip_list::clip_lists_under(state, window),
+            );
+            send_exposures(
+                state,
+                backend,
+                origin,
+                crate::core_loop::clip_list::newly_exposed(&clips_before, after, None),
+                None,
+            );
+        }
+        // XI1: a device focus on a window that just became
+        // unviewable reverts per its revert_to, emitting
+        // DeviceFocusIn/Out (Xi/exevents.c
+        // DeleteDeviceFromAnyExtEvents). After UnmapNotify, matching
+        // Xorg's UnmapWindow → UnrealizeTree ordering.
+        crate::core_loop::xi1_focus::revert_unviewable_focus(state);
+        // Core focus likewise (Xorg UnrealizeTree →
+        // DeleteWindowFromAnyEvents): covers the focus window
+        // itself or any unmapped ancestor.
+        revert_core_focus_if_unviewable(state);
+        // Active grabs on a window that just became unviewable
+        // deactivate too (same Xorg path).
+        release_core_grabs_for_unviewable(state, backend);
+        // Then WindowsRestructured (`dix/window.c:2870-2872`).
+        if !from_configure {
+            backend.windows_restructured(state);
+        }
+    }
 }
 
 pub(super) fn handle_unmap_subwindows(

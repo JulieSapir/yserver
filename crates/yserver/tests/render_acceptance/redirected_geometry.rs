@@ -654,3 +654,34 @@ fn a_cover_reparented_out_of_a_redirected_frame_uncovers_what_it_covered() {
         ],
     );
 }
+
+/// UG: an UnmapGravity child G over sibling S; W shrinks. Xorg unmaps G
+/// (`mi/miwindow.c:389-398`) and S is repainted where G was.
+/// Mutation: skip the UnmapGravity unmap on resize.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn a_parent_shrink_unmaps_an_unmap_gravity_child_and_repaints_under_it() {
+    const W: u32 = 0x2020;
+    const S: u32 = 0x2021;
+    const K: u32 = 0x2022;
+    const G: u32 = 0x2023;
+    let Some(mut f) = rg_fixture() else {
+        eprintln!("skipping: no Vk");
+        return;
+    };
+    let root = yserver_core::resources::ROOT_WINDOW.0;
+    rg_window(&mut f, W, root, 500, 600, 200, 100, 0, WHITE, 0, 1);
+    rg_window(&mut f, S, W, 0, 0, 200, 100, 0, GREEN, 0, 1);
+    rg_window(&mut f, K, W, 180, 0, 20, 20, 0, CYAN, 0, 3);
+    rg_window(&mut f, G, W, 0, 0, 100, 50, 0, BLUE, 0, 0);
+    f.req(9, 0, &W.to_le_bytes()); // MapSubwindows
+    wz_map(&mut f, W);
+    rg_assert(&mut f, W, "UG before", &[(50, 25, BLUE)]);
+    wz_configure(&mut f, W, 0x04, &[150]);
+    rg_assert(
+        &mut f,
+        W,
+        "UG-shrink",
+        &[(50, 25, GREEN), (120, 40, GREEN), (135, 10, CYAN)],
+    );
+}
