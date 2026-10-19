@@ -33,6 +33,20 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-19 DRM commit identity (branch `feat/drm-commit-identity`, plan
+  `plans/2026-10-19-drm-commit-identity.md`):** every event-requesting atomic commit the server submits carries a
+  commit ID as its event cookie, allocated before submission and recorded only when the kernel accepts the commit.
+  A flip event retires the pending entry for its device and CRTC whose ID it carries; a stale, duplicate, unknown
+  or other-device ID retires nothing, so it cannot release a scene buffer, a direct-scanout pin or a degraded-unflip requirement. A
+  zero cookie keeps the old first-in-first-out match. A copied frame gets its ID only when the sink accepts it in KMS.
+  While any degraded-unflip replacement is outstanding, direct admission stays closed. KMS setup now requires
+  `DRM_CAP_CRTC_IN_VBLANK_EVENT` (Linux 4.12+), and a flip event with CRTC 0 is dropped instead of reading the cookie
+  as a CRTC. No cursor behavior changes. CI runs the ignored suite on lavapipe. Hardware: AMD Raphael and NVIDIA RTX
+  5060 Ti match master in `tools/cursor-bench` (NVIDIA direct and async tearing included; AMD direct scanout is not
+  reached, `add_fb2` rejects mpv's linear buffer on both builds), with no unmatched events. Not run: dual-head, a
+  physical copied display, VT switch, Intel, Asahi. Record:
+  [`plans/2026-10-19-drm-commit-identity-validation.md`](superpowers/plans/2026-10-19-drm-commit-identity-validation.md).
+
 - **2026-10-19 property byte order (branch `fix/property-byte-order`, RL0 prerequisite P1):** oracle
   `tools/vng-scenarios/prop-order-probe.py` (`prop-order`, stored golden from Xorg 21.1.24), a raw `B` and a raw `l`
   client on one window. Before: a BE writer's CARDINAL [0x01020304, 5] read as [0x04030201, 0x05000000] to LE
