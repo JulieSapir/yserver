@@ -1,4 +1,6 @@
 use std::{
+    error::Error,
+    fmt,
     fs::{File, OpenOptions},
     io,
     os::unix::io::{AsFd, BorrowedFd, OwnedFd},
@@ -74,8 +76,9 @@ impl Device {
     /// never issues `DRM_IOCTL_DROP_MASTER`: master ownership remains with the
     /// parent, and closing one duplicate does not release it while the parent's
     /// reference remains open. Per-file client capabilities are inherited with
-    /// the duplicated file description, so this constructor does not repeat
-    /// `SET_CLIENT_CAP` either.
+    /// the duplicated file description, and the parent completed the
+    /// `DRM_CAP_CRTC_IN_VBLANK_EVENT` setup check. This constructor therefore
+    /// does not repeat capability negotiation or the CRTC-event query.
     #[doc(hidden)]
     pub fn from_inherited_kms_fd(fd: OwnedFd, path: impl Into<String>) -> Self {
         Self {
@@ -103,6 +106,10 @@ impl Device {
             )
         })?;
         device.enable_atomic_capabilities()?;
+        require_crtc_in_vblank_event(
+            &device.path,
+            device.get_driver_capability(drm::DriverCapability::CRTCInVBlankEvent),
+        )?;
         Ok(device)
     }
 
@@ -135,6 +142,51 @@ impl Device {
         &self.path
     }
 }
+
+#[derive(Debug)]
+struct CrtcInVblankCapabilityError {
+    path: String,
+    source: io::Error,
+}
+
+impl fmt::Display for CrtcInVblankCapabilityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "DRM device {} failed DRM_CAP_CRTC_IN_VBLANK_EVENT query: {}",
+            self.path, self.source
+        )
+    }
+}
+
+impl Error for CrtcInVblankCapabilityError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+pub(crate) fn require_crtc_in_vblank_event(path: &str, result: io::Result<u64>) -> io::Result<()> {
+    match result {
+        Ok(1) => Ok(()),
+        Ok(value) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("DRM device {path} reports DRM_CAP_CRTC_IN_VBLANK_EVENT={value}, expected 1"),
+        )),
+        Err(source) => {
+            let kind = source.kind();
+            Err(io::Error::new(
+                kind,
+                CrtcInVblankCapabilityError {
+                    path: path.to_owned(),
+                    source,
+                },
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
 
 impl Drop for Device {
     fn drop(&mut self) {

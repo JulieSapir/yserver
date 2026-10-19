@@ -2845,11 +2845,12 @@ fn deliver_clock_test_flip(
 
 fn expected_clock_test_present_latency(
     sink: &AtomicCommitSink,
+    device: &crate::drm::Device,
     crtc: ::drm::control::crtc::Handle,
     kernel_completion_at_monotonic: Duration,
 ) -> u64 {
     let present_received = sink
-        .for_tests_pending_direct_present_received_at(crtc)
+        .for_tests_pending_direct_present_received_at(device, crtc)
         .expect("the accepted direct Present is paired with its flip");
     u64::try_from(
         kernel_completion_at_monotonic
@@ -2909,8 +2910,12 @@ fn delayed_flip_delivery_keeps_turnaround_and_present_latency_in_their_clock_dom
     let kernel_completion_at = accepted_at + Duration::from_micros(150);
     let received_at_monotonic = accepted_at + Duration::from_millis(20);
     let received_at_boottime = received_at_monotonic + Duration::from_millis(1_300);
-    let expected_present_latency =
-        expected_clock_test_present_latency(&sink, crtc, kernel_completion_at);
+    let expected_present_latency = expected_clock_test_present_latency(
+        &sink,
+        &backend.platform.devices[0].device,
+        crtc,
+        kernel_completion_at,
+    );
     deliver_clock_test_flip(
         &mut backend,
         &mut state,
@@ -2951,8 +2956,12 @@ fn boottime_flip_timestamp_is_converted_before_present_latency_is_sampled() {
     let received_at_monotonic = accepted_at + Duration::from_millis(20);
     let received_at_boottime = received_at_monotonic + suspend_offset;
     let kernel_ust_boottime = kernel_completion_at + suspend_offset;
-    let expected_present_latency =
-        expected_clock_test_present_latency(&sink, crtc, kernel_completion_at);
+    let expected_present_latency = expected_clock_test_present_latency(
+        &sink,
+        &backend.platform.devices[0].device,
+        crtc,
+        kernel_completion_at,
+    );
     deliver_clock_test_flip(
         &mut backend,
         &mut state,

@@ -13,7 +13,9 @@ use crate::{
     },
 };
 use std::{
+    cell::RefCell,
     collections::HashMap,
+    io::Write as _,
     os::fd::{AsFd as _, AsRawFd as _, RawFd},
     rc::Rc,
     time::Duration,
@@ -25,6 +27,7 @@ pub(crate) struct AtomicEventFixture {
     pub(crate) state: ServerState,
     pub(crate) recorders: HashMap<RawFd, Rc<RecordingAtomicCommitExecutor>>,
     pub(crate) event_sources: HashMap<RawFd, Rc<RecordingPageFlipEventSource>>,
+    raw_event_writers: RefCell<HashMap<RawFd, std::os::unix::net::UnixStream>>,
 }
 
 impl AtomicEventFixture {
@@ -93,7 +96,32 @@ impl AtomicEventFixture {
             state: ServerState::new(),
             recorders,
             event_sources,
+            raw_event_writers: RefCell::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn use_raw_event_source_for_device(&mut self, device_index: usize) -> RawFd {
+        let old_fd = self.backend.platform.devices[device_index]
+            .device
+            .as_fd()
+            .as_raw_fd();
+        let (ours, feed) = std::os::unix::net::UnixStream::pair().expect("event socket pair");
+        let device = Rc::new(crate::drm::Device::from_inherited_kms_fd(
+            std::os::fd::OwnedFd::from(ours),
+            "<socket-backed-recording-scene>",
+        ));
+        let fd = device.as_fd().as_raw_fd();
+        let kms_device = &mut self.backend.platform.devices[device_index];
+        kms_device.device = device;
+        kms_device.page_flip_event_source =
+            Rc::new(crate::kms::render::platform::flip_events::DrmPageFlipEventSource);
+        let recorder = self
+            .recorders
+            .remove(&old_fd)
+            .expect("recording sink exists for the replaced test device");
+        self.recorders.insert(fd, recorder);
+        self.raw_event_writers.borrow_mut().insert(fd, feed);
+        fd
     }
 
     /// Queue exactly the supplied completion cookie on the selected device's
@@ -107,10 +135,37 @@ impl AtomicEventFixture {
         frame: u32,
         ust: Duration,
     ) {
+        if let Some(writer) = self.raw_event_writers.borrow_mut().get_mut(&device_fd) {
+            let seconds = u32::try_from(ust.as_secs()).expect("test UST seconds fit u32");
+            let micros = ust.subsec_micros();
+            let mut bytes = Vec::with_capacity(32);
+            bytes.extend_from_slice(&2u32.to_ne_bytes());
+            bytes.extend_from_slice(&32u32.to_ne_bytes());
+            bytes.extend_from_slice(&commit_id.to_ne_bytes());
+            bytes.extend_from_slice(&seconds.to_ne_bytes());
+            bytes.extend_from_slice(&micros.to_ne_bytes());
+            bytes.extend_from_slice(&frame.to_ne_bytes());
+            bytes.extend_from_slice(&u32::from(crtc).to_ne_bytes());
+            writer.write_all(&bytes).expect("write raw flip event");
+        } else {
+            self.event_sources
+                .get(&device_fd)
+                .expect("completion device fd belongs to this fixture")
+                .queue_flip_with_cookie(crtc, frame, commit_id, ust);
+        }
+    }
+
+    pub(crate) fn queue_sequence_completion(
+        &self,
+        device_fd: RawFd,
+        user_data: u64,
+        time_ns: i64,
+        sequence: u64,
+    ) {
         self.event_sources
             .get(&device_fd)
-            .expect("completion device fd belongs to this fixture")
-            .queue_flip_with_cookie(crtc, frame, commit_id, ust);
+            .expect("sequence device fd belongs to this fixture")
+            .queue_sequence_for_tests(user_data, time_ns, sequence);
     }
 
     /// Check observations without clearing state or manufacturing completion.
@@ -164,7 +219,7 @@ fn raw<H: ::drm::control::ResourceHandle>(value: u32) -> H {
     ::drm::control::from_u32(value).expect("nonzero test handle")
 }
 
-fn test_output(connector_name: String) -> crate::platform::drm::Output {
+pub(super) fn test_output(connector_name: String) -> crate::platform::drm::Output {
     crate::platform::drm::Output {
         connector: raw(1),
         connector_name,

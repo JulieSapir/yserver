@@ -3090,14 +3090,14 @@ fn live_scene_backend_with_dead_zone() -> Option<KmsBackend> {
 }
 
 fn scene_backend_with_recording_pools(output_count: usize) -> Result<Option<KmsBackend>, String> {
-    build_recording_scene_backend(output_count, false)
+    build_recording_scene_backend(output_count, false, false)
 }
 
 fn scene_backend_with_recording_pools_and_dead_zone(
     output_count: usize,
     dead_zone: bool,
 ) -> Result<Option<KmsBackend>, String> {
-    build_recording_scene_backend(output_count, dead_zone)
+    build_recording_scene_backend(output_count, dead_zone, false)
 }
 
 fn damage_root_and_composite(backend: &mut KmsBackend) {

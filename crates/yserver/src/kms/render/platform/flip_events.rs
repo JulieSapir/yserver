@@ -141,11 +141,11 @@ impl PageFlipEventSource for DrmPageFlipEventSource {
         let mut sequences = Vec::new();
         crate::drm::page_flip::drain_events(
             device,
-            |crtc, frame, duration| {
+            |crtc, frame, duration, commit_id| {
                 flips.push(KernelPageFlip {
                     crtc,
                     frame,
-                    commit_id: 0,
+                    commit_id,
                     ust: duration,
                     event_at_monotonic: crate::drm::atomic::monotonic_timestamp(),
                     event_at_boottime: crate::drm::atomic::boottime_timestamp(),
@@ -261,6 +261,12 @@ impl RecordingPageFlipEventSource {
             event_at_monotonic: crate::drm::atomic::monotonic_timestamp(),
             event_at_boottime: crate::drm::atomic::boottime_timestamp(),
         });
+    }
+
+    pub(crate) fn queue_sequence_for_tests(&self, user_data: u64, time_ns: i64, sequence: u64) {
+        self.sequences
+            .borrow_mut()
+            .push_back((user_data, time_ns, sequence));
     }
 
     #[cfg(test)]

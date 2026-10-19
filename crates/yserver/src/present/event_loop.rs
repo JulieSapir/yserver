@@ -98,7 +98,7 @@ pub fn run_loop(
                     let mut handled = 0u32;
                     drm::page_flip::drain_events(
                         device,
-                        |_crtc, _frame, _dur| handled += 1,
+                        |_crtc, _frame, _dur, _cookie| handled += 1,
                         // No idle vblank arming on this path → drop sequences.
                         |_cid, _t, _s| {},
                     )?;
@@ -246,7 +246,7 @@ pub fn run_loop(
                     let mut handled = 0u32;
                     drm::page_flip::drain_events(
                         device,
-                        |_crtc, _frame, _dur| handled += 1,
+                        |_crtc, _frame, _dur, _cookie| handled += 1,
                         // No idle vblank arming on this path → drop sequences.
                         |_cid, _t, _s| {},
                     )?;

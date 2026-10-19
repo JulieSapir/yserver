@@ -4,17 +4,13 @@
 //! PAGE_FLIP_EVENT | NONBLOCK; the kernel produces a completion event
 //! on the DRM fd when scanout latches the new buffer.
 //!
-//! `drain_events` reads pending events with `Device::receive_events()`
-//! and dispatches PageFlip completions to a closure. The drm crate's
-//! parser folds the kernel `user_data` field into `crtc` (preferring
-//! `crtc_id` from the vblank event when present, else falling back to
-//! `user_data`). The closure receives the per-CRTC handle so multi-output
-//! callsites can route the completion to the right swapchain.
+//! `drain_events` reads the raw DRM event stream so flip cookies and CRTC
+//! handles remain independent through completion dispatch.
 
 use std::io;
 
 use drm::control::{
-    AtomicCommitFlags, Device as ControlDevice, Event, atomic::AtomicModeReq, crtc, framebuffer,
+    AtomicCommitFlags, Device as ControlDevice, atomic::AtomicModeReq, crtc, framebuffer, from_u32,
 };
 
 use crate::drm::{
@@ -27,9 +23,9 @@ use crate::drm::{
 };
 
 #[cfg(target_os = "linux")]
-type IoctlReq = libc::Ioctl;
+pub(crate) type IoctlReq = libc::Ioctl;
 #[cfg(not(target_os = "linux"))]
-type IoctlReq = libc::c_ulong;
+pub(crate) type IoctlReq = libc::c_ulong;
 
 // ── DRM_IOCTL_CRTC_QUEUE_SEQUENCE plumbing ──────────────────────
 //
@@ -75,6 +71,24 @@ pub(crate) struct drm_event_crtc_sequence {
     /// must `u64::try_from` rather than `as u64`.
     pub time_ns: i64,
     pub sequence: u64,
+}
+
+/// Kernel `DRM_EVENT_FLIP_COMPLETE` event type id.
+pub(crate) const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
+
+/// Bytes requested per read of the DRM fd.
+const EVENT_READ_LEN: usize = 1024;
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct drm_event_vblank {
+    pub base: drm_event_header,
+    pub user_data: u64,
+    pub tv_sec: u32,
+    pub tv_usec: u32,
+    pub sequence: u32,
+    pub crtc_id: u32,
 }
 
 // `_IOWR('d', 0x3C, drm_crtc_queue_sequence)` expanded inline so
@@ -326,16 +340,30 @@ fn submit_flip_inner(
 /// `discard_old_drm_events_after_all_off` earlier in the same iteration.
 pub fn drain_events<A, S>(device: &Device, mut on_advance: A, mut on_sequence: S) -> io::Result<()>
 where
-    A: FnMut(crtc::Handle, u32, std::time::Duration),
+    A: FnMut(crtc::Handle, u32, std::time::Duration, u64),
     S: FnMut(u64, i64, u64),
 {
     if !event_pending(device)? {
         return Ok(());
     }
-    for event in device.receive_events()? {
-        dispatch_event(event, &mut on_advance, &mut on_sequence);
-    }
+    let mut buffer = [0u8; EVENT_READ_LEN];
+    let amount = read_events(device, &mut buffer)?;
+    dispatch_events(&buffer[..amount], &mut on_advance, &mut on_sequence);
     Ok(())
+}
+
+fn read_events(device: &Device, buffer: &mut [u8]) -> io::Result<usize> {
+    use std::os::{fd::AsFd, unix::io::AsRawFd};
+
+    // SAFETY: `buffer` is a writable live region and `device` keeps its fd open.
+    let result = unsafe {
+        libc::read(
+            device.as_fd().as_raw_fd(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
+    };
+    usize::try_from(result).map_err(|_| io::Error::last_os_error())
 }
 
 /// Zero-timeout poll of the DRM fd. Sound as a guard for the blocking read
@@ -362,258 +390,81 @@ fn event_pending(device: &Device) -> io::Result<bool> {
     }
 }
 
-/// Dispatch a single drm event.
-///
-/// - `Event::PageFlip` → `on_advance(crtc, frame /*msc*/, duration /*ust*/)`.
-///   The MSC/UST are forwarded for Present vblank pacing — a compositor
-///   (picom) drives its frame clock off `PresentNotifyMSC`, which must
-///   complete with the real kernel `(msc, ust)` at each pageflip.
-/// - `Event::Unknown` matching `DRM_EVENT_CRTC_SEQUENCE` (type==3,
-///   length==32) → `on_sequence(user_data_u64, time_ns_i64,
-///   sequence_u64)`. **Raw**: `time_ns` is signed and not yet
-///   validated; `user_data` is echoed verbatim from the arm call — the
-///   backend encodes the crtc_id in the low 32 bits and (for absolute
-///   per-target arms) a discriminating tag in the high bit, so the full
-///   width must reach the caller undivided. The caller does clear-arm
-///   BEFORE any drop on validity check.
-/// - Everything else (`Vblank`, other `Unknown`): dropped.
-///
-/// Factored out of [`drain_events`] so the per-event routing is unit-testable
-/// without a real DRM fd (synthetic event values can be constructed via the
-/// public `PageFlipEvent` fields / raw byte buffers).
-fn dispatch_event<A, S>(event: Event, on_advance: &mut A, on_sequence: &mut S)
+/// Walk every complete event in the read. A malformed length ends the walk
+/// because there is no safe next record boundary to use.
+fn dispatch_events<A, S>(bytes: &[u8], on_advance: &mut A, on_sequence: &mut S) -> usize
 where
-    A: FnMut(crtc::Handle, u32, std::time::Duration),
+    A: FnMut(crtc::Handle, u32, std::time::Duration, u64),
     S: FnMut(u64, i64, u64),
 {
-    match event {
-        Event::PageFlip(ev) => {
-            on_advance(ev.crtc, ev.frame, ev.duration);
+    let header_len = std::mem::size_of::<drm_event_header>();
+    let mut offset = 0;
+    let mut unroutable_flips = 0;
+    while bytes.len() - offset >= header_len {
+        // SAFETY: the loop guard proves a complete header at `offset`.
+        let header = unsafe {
+            std::ptr::read_unaligned(bytes[offset..].as_ptr().cast::<drm_event_header>())
+        };
+        let length = header.length as usize;
+        if length < header_len || length > bytes.len() - offset {
+            return unroutable_flips;
         }
-        Event::Unknown(bytes) => {
-            // Header: u32 type, u32 length (8 bytes total).
-            if bytes.len() < std::mem::size_of::<drm_event_header>() {
-                return;
+        let event = &bytes[offset..offset + length];
+        match header.r#type {
+            DRM_EVENT_FLIP_COMPLETE => {
+                unroutable_flips += usize::from(dispatch_flip_complete(event, on_advance));
             }
-            // SAFETY: length-checked read of a POD header from a kernel
-            // event buffer; `read_unaligned` tolerates the Vec's alignment.
-            let header: drm_event_header =
-                unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<drm_event_header>()) };
-            if header.r#type != DRM_EVENT_CRTC_SEQUENCE {
-                return;
-            }
-            if header.length as usize != std::mem::size_of::<drm_event_crtc_sequence>() {
-                return;
-            }
-            if bytes.len() < std::mem::size_of::<drm_event_crtc_sequence>() {
-                return;
-            }
-            // SAFETY: type+length validated above; `read_unaligned` reads a
-            // 32-byte POD from a buffer proven to be at least that long.
-            let ev: drm_event_crtc_sequence = unsafe {
-                std::ptr::read_unaligned(bytes.as_ptr().cast::<drm_event_crtc_sequence>())
-            };
-            // Pass user_data through undivided — the caller decodes the
-            // low-32-bits crtc_id and (for absolute arms) the high tag bit.
-            on_sequence(ev.user_data, ev.time_ns, ev.sequence);
+            DRM_EVENT_CRTC_SEQUENCE => dispatch_crtc_sequence(event, on_sequence),
+            _ => {}
         }
-        Event::Vblank(_) => {}
+        offset += length;
     }
+    unroutable_flips
+}
+
+fn dispatch_flip_complete<A>(event: &[u8], on_advance: &mut A) -> bool
+where
+    A: FnMut(crtc::Handle, u32, std::time::Duration, u64),
+{
+    if event.len() < std::mem::size_of::<drm_event_vblank>() {
+        return false;
+    }
+    // SAFETY: the payload length contains the complete ABI structure.
+    let vblank = unsafe { std::ptr::read_unaligned(event.as_ptr().cast::<drm_event_vblank>()) };
+    if vblank.crtc_id == 0 {
+        log::warn!(
+            target: "yserver::drm::page_flip",
+            "unroutable DRM_EVENT_FLIP_COMPLETE has crtc_id=0 user_data={}",
+            vblank.user_data
+        );
+        return true;
+    }
+    let Some(crtc) = from_u32::<crtc::Handle>(vblank.crtc_id) else {
+        log::warn!(
+            target: "yserver::drm::page_flip",
+            "unroutable DRM_EVENT_FLIP_COMPLETE has invalid crtc_id={} user_data={}",
+            vblank.crtc_id,
+            vblank.user_data
+        );
+        return true;
+    };
+    let duration = std::time::Duration::from_secs(u64::from(vblank.tv_sec))
+        + std::time::Duration::from_micros(u64::from(vblank.tv_usec));
+    on_advance(crtc, vblank.sequence, duration, vblank.user_data);
+    false
+}
+
+fn dispatch_crtc_sequence<S>(event: &[u8], on_sequence: &mut S)
+where
+    S: FnMut(u64, i64, u64),
+{
+    if event.len() != std::mem::size_of::<drm_event_crtc_sequence>() {
+        return;
+    }
+    // SAFETY: the length check proves this is a complete sequence event.
+    let ev = unsafe { std::ptr::read_unaligned(event.as_ptr().cast::<drm_event_crtc_sequence>()) };
+    on_sequence(ev.user_data, ev.time_ns, ev.sequence);
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use drm::control::{Event, PageFlipEvent, crtc, from_u32};
-
-    use super::dispatch_event;
-
-    #[test]
-    fn dispatch_event_passes_crtc_handle_for_page_flip() {
-        let handle: crtc::Handle = from_u32(42).expect("non-zero raw handle");
-        let event = Event::PageFlip(PageFlipEvent {
-            frame: 7,
-            duration: Duration::from_micros(123),
-            crtc: handle,
-        });
-
-        let mut seen: Vec<(crtc::Handle, u32, Duration)> = Vec::new();
-        dispatch_event(
-            event,
-            &mut |c, frame, dur| seen.push((c, frame, dur)),
-            &mut |_, _, _| {},
-        );
-
-        assert_eq!(seen, vec![(handle, 7, Duration::from_micros(123))]);
-    }
-
-    #[test]
-    fn dispatch_event_ignores_unknown() {
-        let event = Event::Unknown(Vec::new());
-        let mut called = 0u32;
-        dispatch_event(event, &mut |_, _, _| called += 1, &mut |_, _, _| {});
-        assert_eq!(called, 0);
-    }
-
-    #[test]
-    fn drm_crtc_queue_sequence_struct_is_24_bytes() {
-        // drm.h: __u32 crtc_id; __u32 flags; __u64 sequence; __u64 user_data;
-        // → 4+4+8+8 = 24 bytes.
-        assert_eq!(std::mem::size_of::<super::drm_crtc_queue_sequence>(), 24);
-        assert_eq!(std::mem::align_of::<super::drm_crtc_queue_sequence>(), 8);
-    }
-
-    #[test]
-    fn drm_event_crtc_sequence_struct_is_32_bytes() {
-        // drm.h: struct drm_event base (8B) + __u64 user_data + __s64 time_ns
-        // + __u64 sequence = 8 + 8 + 8 + 8 = 32.
-        assert_eq!(std::mem::size_of::<super::drm_event_crtc_sequence>(), 32);
-        assert_eq!(std::mem::align_of::<super::drm_event_crtc_sequence>(), 8);
-    }
-
-    #[test]
-    fn drm_crtc_queue_sequence_ioctl_request_code() {
-        // _IOWR('d' /*0x64*/, 0x3C, drm_crtc_queue_sequence):
-        //   (3 << 30) | (24 << 16) | (0x64 << 8) | 0x3C = 0xC018643C
-        assert_eq!(
-            super::DRM_IOCTL_CRTC_QUEUE_SEQUENCE,
-            0xC018_643C_u32 as super::IoctlReq
-        );
-    }
-
-    #[test]
-    fn queue_sequence_flags_absolute_with_next_on_miss() {
-        use super::{DRM_CRTC_SEQUENCE_NEXT_ON_MISS, drm_crtc_queue_sequence};
-        let req = drm_crtc_queue_sequence {
-            crtc_id: 0x42,
-            flags: DRM_CRTC_SEQUENCE_NEXT_ON_MISS,
-            sequence: 0x1234_5678_9ABC_DEF0,
-            user_data: 0x42,
-        };
-        assert_eq!(req.flags & 1, 0, "RELATIVE bit clear for absolute target");
-        assert_eq!(req.flags & 2, 2, "NEXT_ON_MISS set");
-    }
-
-    #[test]
-    fn dispatch_event_decodes_crtc_sequence() {
-        use super::{DRM_EVENT_CRTC_SEQUENCE, drm_event_crtc_sequence, drm_event_header};
-        let raw = drm_event_crtc_sequence {
-            base: drm_event_header {
-                r#type: DRM_EVENT_CRTC_SEQUENCE,
-                length: 32,
-            },
-            user_data: 0xCAFE_BABE_0000_0042, // bottom 32 bits = crtc_id 0x42
-            time_ns: 1_234_567_890_i64,
-            sequence: 9_999,
-        };
-        let bytes: [u8; 32] = unsafe { std::mem::transmute(raw) };
-        let event = Event::Unknown(bytes.to_vec());
-
-        let mut advance_calls = Vec::<(crtc::Handle, u32, Duration)>::new();
-        let mut seq_calls = Vec::<(u64, i64, u64)>::new();
-        dispatch_event(
-            event,
-            &mut |c, m, u| advance_calls.push((c, m, u)),
-            &mut |user_data, t, s| seq_calls.push((user_data, t, s)),
-        );
-
-        assert!(
-            advance_calls.is_empty(),
-            "sequence event must NOT route through advance callback"
-        );
-        // Full 64-bit user_data must reach the caller undivided — the
-        // consumer (KmsBackend::on_crtc_sequence_event) decodes both the
-        // low-32-bits crtc_id and the high tag bit itself.
-        assert_eq!(
-            seq_calls,
-            vec![(0xCAFE_BABE_0000_0042u64, 1_234_567_890_i64, 9_999u64)]
-        );
-    }
-
-    #[test]
-    fn dispatch_event_ignores_wrong_length_sequence_event() {
-        use super::{DRM_EVENT_CRTC_SEQUENCE, drm_event_header};
-        let header = drm_event_header {
-            r#type: DRM_EVENT_CRTC_SEQUENCE,
-            length: 16,
-        };
-        let mut bytes = vec![0u8; 16];
-        bytes[..8]
-            .copy_from_slice(&unsafe { std::mem::transmute::<drm_event_header, [u8; 8]>(header) });
-        let event = Event::Unknown(bytes);
-
-        let mut seq_calls = 0usize;
-        dispatch_event(event, &mut |_, _, _| {}, &mut |_, _, _| seq_calls += 1);
-        assert_eq!(seq_calls, 0);
-    }
-
-    #[test]
-    fn dispatch_event_ignores_unknown_event_type() {
-        use super::drm_event_header;
-        let header = drm_event_header {
-            r#type: 99,
-            length: 32,
-        };
-        let mut bytes = vec![0u8; 32];
-        bytes[..8]
-            .copy_from_slice(&unsafe { std::mem::transmute::<drm_event_header, [u8; 8]>(header) });
-        let event = Event::Unknown(bytes);
-        let mut seq_calls = 0usize;
-        dispatch_event(event, &mut |_, _, _| {}, &mut |_, _, _| seq_calls += 1);
-        assert_eq!(seq_calls, 0);
-    }
-
-    /// A `Device` over one end of a socket pair: `read` on it behaves like the
-    /// DRM fd's (blocks while empty), and the peer injects raw event bytes.
-    fn device_with_event_feed() -> (crate::drm::Device, std::os::unix::net::UnixStream) {
-        let (ours, feed) = std::os::unix::net::UnixStream::pair().expect("socketpair");
-        let device =
-            crate::drm::Device::from_inherited_kms_fd(std::os::fd::OwnedFd::from(ours), "<test>");
-        (device, feed)
-    }
-
-    /// Readiness reported by the core loop's poll can be consumed by
-    /// `discard_old_drm_events_after_all_off` earlier in the same iteration;
-    /// the later drain must see an empty fd and return, not block in `read`.
-    #[test]
-    fn drain_events_returns_when_no_event_is_pending() {
-        let (device, feed) = device_with_event_feed();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let (mut flips, mut sequences) = (0usize, 0usize);
-            let result =
-                super::drain_events(&device, |_, _, _| flips += 1, |_, _, _| sequences += 1);
-            let _ = tx.send((result.is_ok(), flips + sequences));
-        });
-        let outcome = rx.recv_timeout(Duration::from_secs(2));
-        drop(feed);
-        assert_eq!(
-            outcome.ok(),
-            Some((true, 0)),
-            "drain blocked on an empty DRM fd"
-        );
-    }
-
-    #[test]
-    fn drain_events_dispatches_a_pending_flip_complete() {
-        use std::io::Write;
-        let (device, mut feed) = device_with_event_feed();
-        // struct drm_event_vblank (drm.h): type=DRM_EVENT_FLIP_COMPLETE,
-        // length, user_data, tv_sec, tv_usec, sequence, crtc_id.
-        let mut raw = Vec::with_capacity(32);
-        raw.extend_from_slice(&2u32.to_ne_bytes());
-        raw.extend_from_slice(&32u32.to_ne_bytes());
-        raw.extend_from_slice(&0u64.to_ne_bytes());
-        raw.extend_from_slice(&3u32.to_ne_bytes());
-        raw.extend_from_slice(&500u32.to_ne_bytes());
-        raw.extend_from_slice(&77u32.to_ne_bytes());
-        raw.extend_from_slice(&42u32.to_ne_bytes());
-        feed.write_all(&raw).expect("inject event");
-
-        let mut seen: Vec<(crtc::Handle, u32, Duration)> = Vec::new();
-        super::drain_events(&device, |c, f, d| seen.push((c, f, d)), |_, _, _| {}).expect("drain");
-        let handle: crtc::Handle = from_u32(42).expect("non-zero raw handle");
-        assert_eq!(seen, vec![(handle, 77, Duration::new(3, 500_000))]);
-    }
-}
+mod tests;

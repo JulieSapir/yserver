@@ -2138,7 +2138,13 @@ impl KmsBackend {
             // map clears — leaving a stuck entry across suspend is exactly
             // the permanent-stall failure mode this guards against.
             if let Ok((flips, sequences)) = self.platform.drain_page_flip_events(drm_fd) {
-                for (output_idx, _, _) in flips {
+                for (output_idx, _, timestamps) in flips {
+                    let matched_event_id = self
+                        .platform
+                        .note_tearing_async_flip_event(output_idx, timestamps);
+                    if timestamps.commit_id.is_some() && matched_event_id.is_none() {
+                        continue;
+                    }
                     self.record_atomic_cursor_commit_retirement(output_idx);
                 }
                 for seq in sequences {
@@ -2161,8 +2167,12 @@ impl KmsBackend {
             }
         };
         for (output_idx, clock, timestamps) in flipped {
-            self.platform
+            let matched_event_id = self
+                .platform
                 .note_tearing_async_flip_event(output_idx, timestamps);
+            if timestamps.commit_id.is_some() && matched_event_id.is_none() {
+                continue;
+            }
             self.record_atomic_cursor_commit_retirement(output_idx);
             let direct_retired = self.retire_direct_output(output_idx, clock);
             let scene_retired = !direct_retired

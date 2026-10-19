@@ -617,15 +617,16 @@ impl PlatformBackend {
         &self,
         output_idx: usize,
         timestamps: FlipEventTimestamps,
-    ) {
-        let Some(output) = self.outputs.get(output_idx) else {
-            return;
-        };
+    ) -> Option<u64> {
+        let output = self.outputs.get(output_idx)?;
         if let Some(device) = self.device_for_output(&output.key) {
-            device
-                .atomic_commit_sink
-                .note_async_flip_event(output.output.crtc, timestamps);
+            return device.atomic_commit_sink.note_async_flip_event(
+                &device.device,
+                output.output.crtc,
+                timestamps,
+            );
         }
+        None
     }
 
     pub(crate) fn note_direct_present_received(&self, output_idx: usize) {

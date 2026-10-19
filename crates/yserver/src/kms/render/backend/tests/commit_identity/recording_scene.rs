@@ -2,6 +2,7 @@ use super::support::AtomicEventFixture;
 use crate::{
     drm::atomic::tests_support::ScriptedResult,
     kms::{
+        backend::ActiveOutput,
         render::{backend::KmsBackend, scene::SceneCompositor},
         vk::scanout::{BoPhase, OutputScanout, ScanoutBo, ScanoutBoPool},
     },
@@ -22,7 +23,14 @@ pub(crate) struct RecordingSceneFixture {
 
 impl RecordingSceneFixture {
     pub(crate) fn new(output_count: usize) -> Result<Option<Self>, String> {
-        let backend = build_recording_scene_backend(output_count, false)?;
+        let backend = build_recording_scene_backend(output_count, false, false)?;
+        Ok(backend.map(|backend| Self {
+            events: AtomicEventFixture::from_backend(backend),
+        }))
+    }
+
+    pub(crate) fn new_with_identical_crtcs_on_two_devices() -> Result<Option<Self>, String> {
+        let backend = build_recording_scene_backend(2, false, true)?;
         Ok(backend.map(|backend| Self {
             events: AtomicEventFixture::from_backend(backend),
         }))
@@ -30,21 +38,64 @@ impl RecordingSceneFixture {
 
     pub(crate) fn assert_quiescent(&self) {
         self.events.assert_quiescent();
+        let backend = &self.events.backend;
+        let direct = &backend.pstate.scanout_m2;
+        // Mutation: retain direct/successor/unflip obligations or a source pin after normal completion.
+        assert!(
+            direct.pending.is_none(),
+            "a direct submission is still pending"
+        );
+        assert!(
+            direct.queued_successor.is_none(),
+            "a direct successor is still queued"
+        );
+        assert!(direct.current.is_none(), "a direct frame is still held");
+        assert!(
+            direct.completed.is_empty(),
+            "direct completions remain unpublished"
+        );
+        assert!(
+            direct.deferred_successor_skips.is_empty(),
+            "direct successor skip completions remain deferred"
+        );
+        assert!(
+            direct.idled.is_empty(),
+            "direct idle completions remain unpublished"
+        );
+        assert!(!direct.hold_direct, "direct ownership remains held");
+        assert!(!direct.unflip_requested, "an unflip is still required");
+        assert!(
+            direct.unflip_awaiting_outputs.is_empty(),
+            "outputs still await an unflip replacement"
+        );
+        assert!(
+            direct.unflip_fallback_source.is_none(),
+            "an unflip fallback source remains held"
+        );
+        assert!(!direct.unflip_shadow_ready, "unflip shadow remains armed");
+        assert!(
+            !direct.degraded_composed_unflip,
+            "degraded composed unflip remains active"
+        );
+        assert!(
+            backend.present_source_pins.is_empty(),
+            "direct or fallback Present source pins remain held"
+        );
+        assert!(
+            backend.pstate.pending_present_source_waits.is_empty(),
+            "Present source waits remain pending"
+        );
         assert_eq!(
-            self.events
-                .backend
-                .scene
-                .pending_pool_release_count_for_tests(),
+            backend.scene.pending_pool_release_count_for_tests(),
             0,
             "recording scene has deferred descriptor-pool releases"
         );
         assert!(
-            !self.events.backend.scene.has_pending_page_flips(),
+            !backend.scene.has_pending_page_flips(),
             "recording scene has pending page-flip acknowledgements"
         );
         assert!(
-            self.events
-                .backend
+            backend
                 .platform
                 .scanout_pools
                 .iter()
@@ -57,6 +108,21 @@ impl RecordingSceneFixture {
 
     pub(crate) fn drain_deferred_pool_releases(&mut self, timeout: Duration) {
         let deadline = Instant::now() + timeout;
+        let unmatched_before: HashMap<RawFd, u64> = self
+            .events
+            .backend
+            .platform
+            .devices
+            .iter()
+            .map(|device| {
+                (
+                    std::os::fd::AsRawFd::as_raw_fd(&std::os::fd::AsFd::as_fd(&device.device)),
+                    device
+                        .atomic_commit_sink
+                        .for_tests_unmatched_page_flip_event_count(),
+                )
+            })
+            .collect();
         let mut record_offsets: HashMap<RawFd, usize> = self
             .events
             .recorders
@@ -119,6 +185,10 @@ impl RecordingSceneFixture {
                 let new_records = records.iter().skip(*offset);
                 *offset = records.len();
                 for record in new_records {
+                    // A shared recorder appears under every fd, but each recorded ioctl belongs to one device only.
+                    if record.device_fd != fd {
+                        continue;
+                    }
                     if record.result != ScriptedResult::Ok
                         || record
                             .flags
@@ -167,15 +237,21 @@ impl RecordingSceneFixture {
             0,
             "deferred scene pool releases did not drain at a damaged Backend scene tick before the deadline"
         );
+        // Mutation: omit the per-fd recorder filter so a shared recorder injects the other device's event.
+        for device in &self.events.backend.platform.devices {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&std::os::fd::AsFd::as_fd(&device.device));
+            assert_eq!(
+                device
+                    .atomic_commit_sink
+                    .for_tests_unmatched_page_flip_event_count(),
+                unmatched_before[&fd],
+                "normal drain attributed a recorder event to another DRM fd"
+            );
+        }
     }
 
     pub(crate) fn finish(self) {
-        let super::support::AtomicEventFixture {
-            mut backend,
-            state: _,
-            recorders: _,
-            event_sources: _,
-        } = self.events;
+        let super::support::AtomicEventFixture { mut backend, .. } = self.events;
         // XBackend drops PlatformBackend before SceneCompositor. Hold the
         // Vulkan owner until the scene's child handles have dropped too.
         let vk_keepalive = backend.platform.gpu.vk.as_ref().map(Arc::clone);
@@ -183,6 +259,24 @@ impl RecordingSceneFixture {
         drop(backend);
         drop(scene);
         drop(vk_keepalive);
+    }
+
+    pub(crate) fn finish_after_normal_drain(mut self) {
+        self.drain_deferred_pool_releases(Duration::from_secs(5));
+        self.assert_quiescent();
+        let root = self.events.backend.core.window_id;
+        for xid in [0x6a00, 0x6a01, 0x6a02, root, 0x6a10, 0x6a11, 0x6a12] {
+            if self.events.backend.store.lookup(xid).is_some() {
+                Backend::free_pixmap(&mut self.events.backend, None, xid)
+                    .expect("free recording scene drawable through Backend");
+            }
+        }
+        for _ in 0..32 {
+            Backend::before_block(&mut self.events.backend);
+        }
+        assert_eq!(self.events.backend.store.pending_retire_count(), 0);
+        assert!(self.events.backend.store.lookup(root).is_none());
+        self.finish();
     }
 }
 
@@ -245,6 +339,7 @@ pub(in crate::kms::render::backend::tests) fn set_unique_direct_plane_properties
 pub(in crate::kms::render::backend::tests) fn build_recording_scene_backend(
     output_count: usize,
     dead_zone: bool,
+    second_output_uses_second_device: bool,
 ) -> Result<Option<KmsBackend>, String> {
     init_tearing_test_logger();
     let screen_width = match (output_count, dead_zone) {
@@ -265,7 +360,24 @@ pub(in crate::kms::render::backend::tests) fn build_recording_scene_backend(
         return Ok(None);
     }
     if output_count == 2 {
-        super::super::push_test_output(&mut backend, 201);
+        if second_output_uses_second_device {
+            let device_key = super::super::test_device_key(1);
+            super::super::push_test_device(&mut backend, device_key);
+            let route = crate::kms::scanout_route::ScanoutRoute::new(
+                crate::kms::render::platform::RenderDeviceId::UnverifiedFallback,
+                device_key,
+                crate::kms::scanout_route::RenderKmsRelationship::Unknown,
+            );
+            backend.platform.outputs.push(ActiveOutput::new(
+                route,
+                super::support::test_output("test-device-1".to_owned()),
+                crate::drm::Swapchain::empty_for_tests(),
+                800,
+                0,
+            ));
+        } else {
+            super::super::push_test_output(&mut backend, 201);
+        }
         if dead_zone {
             backend.platform.outputs[1].x = 900;
             backend.platform.outputs[1].height = 400;
@@ -313,8 +425,8 @@ pub(in crate::kms::render::backend::tests) fn build_recording_scene_backend(
         set_scene_fence_properties(output);
         set_unique_direct_plane_properties(output);
 
-        let mut bos = Vec::with_capacity(2);
-        for bo_idx in 0..2 {
+        let mut bos = Vec::with_capacity(3);
+        for bo_idx in 0..3 {
             let xid = 0x6a00
                 + u32::try_from(output_idx).expect("output index fits") * 0x10
                 + u32::try_from(bo_idx).expect("BO index fits");
