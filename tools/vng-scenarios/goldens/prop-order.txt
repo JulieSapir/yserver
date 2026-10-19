@@ -1,0 +1,66 @@
+==> probe.log <==
+be-write BE-event: PropertyNotify win=W atom=PROBE_BE32 state=NewValue
+be-write BE-event: PropertyNotify win=W atom=PROBE_BE16 state=NewValue
+be-write BE-event: PropertyNotify win=W atom=PROBE_BE8 state=NewValue
+be-write LE-event: PropertyNotify win=W atom=PROBE_BE32 state=NewValue
+be-write LE-event: PropertyNotify win=W atom=PROBE_BE16 state=NewValue
+be-write LE-event: PropertyNotify win=W atom=PROBE_BE8 state=NewValue
+PROBE_BE32 BE-read: format=32 type=6 nitems=2 bytes_after=0 [0x01020304 0x00000005] raw=0102030400000005
+PROBE_BE32 LE-read: format=32 type=6 nitems=2 bytes_after=0 [0x01020304 0x00000005] raw=0403020105000000
+PROBE_BE16 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+PROBE_BE16 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+PROBE_BE8 BE-read: format=8 type=31 nitems=5 bytes_after=0 [6162010203] raw=6162010203
+PROBE_BE8 LE-read: format=8 type=31 nitems=5 bytes_after=0 [6162010203] raw=6162010203
+append BE-event: PropertyNotify win=W atom=PROBE_BE32 state=NewValue
+append BE-event: PropertyNotify win=W atom=PROBE_BE32 state=NewValue
+append BE-event: PropertyNotify win=W atom=PROBE_BE32 state=NewValue
+append LE-event: PropertyNotify win=W atom=PROBE_BE32 state=NewValue
+append LE-event: PropertyNotify win=W atom=PROBE_BE32 state=NewValue
+append LE-event: PropertyNotify win=W atom=PROBE_BE32 state=NewValue
+PROBE_BE32-appended BE-read: format=32 type=6 nitems=5 bytes_after=0 [0x11223344 0x01020304 0x00000005 0x0a0b0c0d 0x55667788] raw=1122334401020304000000050a0b0c0d55667788
+PROBE_BE32-appended LE-read: format=32 type=6 nitems=5 bytes_after=0 [0x11223344 0x01020304 0x00000005 0x0a0b0c0d 0x55667788] raw=4433221104030201050000000d0c0b0a88776655
+le-write BE-event: PropertyNotify win=W atom=PROBE_LE32 state=NewValue
+le-write BE-event: PropertyNotify win=W atom=PROBE_LE16 state=NewValue
+le-write LE-event: PropertyNotify win=W atom=PROBE_LE32 state=NewValue
+le-write LE-event: PropertyNotify win=W atom=PROBE_LE16 state=NewValue
+PROBE_LE32 BE-read: format=32 type=6 nitems=2 bytes_after=0 [0x01020304 0x00000005] raw=0102030400000005
+PROBE_LE32 LE-read: format=32 type=6 nitems=2 bytes_after=0 [0x01020304 0x00000005] raw=0403020105000000
+PROBE_LE16 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+PROBE_LE16 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+BE32-window(1,1) BE-read: format=32 type=6 nitems=1 bytes_after=12 [0x01020304] raw=01020304
+BE32-window(1,1) LE-read: format=32 type=6 nitems=1 bytes_after=12 [0x01020304] raw=04030201
+BE32-window(2,5) BE-read: format=32 type=6 nitems=3 bytes_after=0 [0x00000005 0x0a0b0c0d 0x55667788] raw=000000050a0b0c0d55667788
+BE32-window(2,5) LE-read: format=32 type=6 nitems=3 bytes_after=0 [0x00000005 0x0a0b0c0d 0x55667788] raw=050000000d0c0b0a88776655
+BE16-window(0,1) BE-read: format=16 type=19 nitems=2 bytes_after=2 [0x0102 0x0304] raw=01020304
+BE16-window(0,1) LE-read: format=16 type=19 nitems=2 bytes_after=2 [0x0102 0x0304] raw=02010403
+BE16-window(1,1) BE-read: format=16 type=19 nitems=1 bytes_after=0 [0x0007] raw=0007
+BE16-window(1,1) LE-read: format=16 type=19 nitems=1 bytes_after=0 [0x0007] raw=0700
+LE16-window(1,1) BE-read: format=16 type=19 nitems=1 bytes_after=0 [0x0007] raw=0007
+LE16-window(1,1) LE-read: format=16 type=19 nitems=1 bytes_after=0 [0x0007] raw=0700
+BE8-window(1,1) BE-read: format=8 type=31 nitems=1 bytes_after=0 [03] raw=03
+BE8-window(1,1) LE-read: format=8 type=31 nitems=1 bytes_after=0 [03] raw=03
+BE32-type-mismatch BE-read: format=32 type=6 nitems=0 bytes_after=5 [] raw=
+BE32-type-mismatch LE-read: format=32 type=6 nitems=0 bytes_after=5 [] raw=
+delete BE-read: format=32 type=6 nitems=2 bytes_after=0 [0x01020304 0x00000005] raw=0102030400000005
+be-delete BE-event: PropertyNotify win=W atom=PROBE_LE32 state=Deleted
+be-delete LE-event: PropertyNotify win=W atom=PROBE_LE32 state=Deleted
+after-delete LE-read: format=0 type=0 nitems=0 bytes_after=0 [] raw=
+delete LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+le-delete BE-event: PropertyNotify win=W atom=PROBE_BE16 state=Deleted
+le-delete LE-event: PropertyNotify win=W atom=PROBE_BE16 state=Deleted
+after-delete BE-read: format=0 type=0 nitems=0 bytes_after=0 [] raw=
+partial-delete BE-read: format=32 type=6 nitems=1 bytes_after=16 [0x11223344] raw=11223344
+after-partial-delete BE-read: format=32 type=6 nitems=5 bytes_after=0 [0x11223344 0x01020304 0x00000005 0x0a0b0c0d 0x55667788] raw=1122334401020304000000050a0b0c0d55667788
+after-partial-delete LE-read: format=32 type=6 nitems=5 bytes_after=0 [0x11223344 0x01020304 0x00000005 0x0a0b0c0d 0x55667788] raw=4433221104030201050000000d0c0b0a88776655
+rotate-setup BE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate-setup BE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate-setup BE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate-setup LE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate-setup LE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate-setup LE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+ListProperties BE: ['PROBE_BE32', 'PROBE_BE8', 'PROBE_LE16', 'PROBE_R1', 'PROBE_R2', 'PROBE_R3']
+ListProperties LE: ['PROBE_BE32', 'PROBE_BE8', 'PROBE_LE16', 'PROBE_R1', 'PROBE_R2', 'PROBE_R3']
+RandR-output-32 BE-read: format=32 type=19 nitems=2 bytes_after=0 [0x01020304 0x00000005]
+RandR-output-32 LE-read: format=32 type=19 nitems=2 bytes_after=0 [0x01020304 0x00000005]
+RandR-output-16 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007]
+RandR-output-16 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007]

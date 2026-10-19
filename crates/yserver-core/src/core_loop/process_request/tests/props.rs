@@ -384,3 +384,24 @@ fn randr_output_property_reads_the_same_values_to_le_and_be() {
         assert_eq!(hex(&reply[32..40]), raw, "client {client}");
     }
 }
+
+/// A type mismatch returns the property's type and format with no data,
+/// and Xorg's `bytes_after` is the property's ITEM count
+/// (`reply.bytesAfter = pProp->size`, `dix/property.c:492-501`), not the
+/// byte length the protocol text describes.
+#[test]
+fn type_mismatch_bytes_after_counts_items() {
+    let mut p = Pair::new();
+    let prop = p.atom("PROBE_LE32");
+    p.change(LE, 0, prop, CARDINAL, 32, &[1, 2, 3, 4, 5]);
+    assert_eq!(
+        p.get(LE, prop, INTEGER, 0, 1000),
+        reply(32, CARDINAL, 0, 5, "")
+    );
+    let p16 = p.atom("PROBE_LE16");
+    p.change(LE, 0, p16, INTEGER, 16, &[1, 2, 3]);
+    assert_eq!(
+        p.get(LE, p16, CARDINAL, 0, 1000),
+        reply(16, INTEGER, 0, 3, "")
+    );
+}

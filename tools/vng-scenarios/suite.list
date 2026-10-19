@@ -51,3 +51,4 @@ glyph-atlas          guest=glyph-atlas.sh            timeout=400
 damage-after-map     guest=damage-after-map.sh       timeout=300
 expose-order         guest=expose-order.sh           timeout=900
 redirected-backing   guest=redirected-backing.sh     timeout=300 golden=live
+prop-order           guest=prop-order.sh             timeout=300

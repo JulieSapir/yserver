@@ -33,6 +33,20 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-19 property byte order (branch `fix/property-byte-order`, RL0 prerequisite P1):** oracle
+  `tools/vng-scenarios/prop-order-probe.py` (`prop-order`, stored golden from Xorg 21.1.24), a raw `B` and a raw `l`
+  client on one window. Before: a BE writer's CARDINAL [0x01020304, 5] read as [0x04030201, 0x05000000] to LE
+  clients (and the reverse), ListProperties sent LE atoms to BE clients, a BE client read its own RandR output
+  property reversed, and a type-mismatch GetProperty returned bytes_after in bytes (20) where Xorg returns the item
+  count (5). Fixed: ChangeProperty swaps format-16/32 data in the reader (`request_swap.rs`
+  `swap_property_data_tail`, shared with RRChangeOutputProperty), GetProperty/GetOutputProperty swap per item for BE
+  readers (`x11::swap_property_items`). Internal readers all decoded LE already and are now right for BE writers too
+  (`_XKB_RULES_NAMES` is format 8; the clipboard bridge is an `l` client). Open: XI device properties diverge from
+  Xorg, which leaves a BE writer's data unswapped on input but swaps it on output (`Xi/xiproperty.c`
+  `SProcXIChangeProperty` vs :1229; XI1 the same at :1027 vs :988; XI2 measured), so on Xorg a BE client reads its
+  own value reversed; yserver swaps
+  both ways (`canonicalize_xi_property_data`) and was left so. RotateProperties (opcode 114) is unimplemented
+  (BadRequest for every client); `PROBE_FULL=1` prints both.
 - **2026-10-18 redirected backing geometry (branch `fix/redirected-backing-geometry`, plan
   `plans/2026-10-18-redirected-backing-geometry.md`):** a redirected window's backing now holds what Xorg's pixmap
   holds. Oracle: `tools/vng-scenarios/redirected-backing-probe.c` (`redirected-backing`, `golden=live`), Xorg 21.1.24

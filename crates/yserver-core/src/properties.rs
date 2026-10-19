@@ -149,10 +149,12 @@ pub fn slice_for_get<'a>(
     let any = requested_type.0 == 0;
     let matches = any || requested_type == p.r#type;
     if !matches {
+        // Xorg answers a type mismatch with the item count, not the byte
+        // length: `reply.bytesAfter = pProp->size` (`dix/property.c:492-501`).
         return Ok(GetPropertySlice {
             r#type: p.r#type,
             format: p.format.protocol_value(),
-            bytes_after: total as u32,
+            bytes_after: (total / p.format.bytes() as u64) as u32,
             value: &[],
         });
     }
@@ -471,6 +473,18 @@ mod tests {
         }
 
         #[test]
+        fn type_mismatch_bytes_after_is_the_item_count() {
+            let p = PropertyValue {
+                r#type: AtomId(6),
+                format: PropertyFormat::F32,
+                data: vec![0; 20],
+            };
+            let s = slice_for_get(Some(&p), AtomId(19), 0, 1024).unwrap();
+            assert_eq!(s.format, 32);
+            assert_eq!(s.bytes_after, 5);
+        }
+
+        #[test]
         fn read_format32_long_length_one_returns_4_bytes() {
             let p = PropertyValue {
                 r#type: AtomId(31),
@@ -578,7 +592,7 @@ mod tests {
                 prop_assume!(other_t != p.r#type.0);
                 let s = slice_for_get(Some(&p), AtomId(other_t), 0, u32::MAX / 4).unwrap();
                 prop_assert!(s.value.is_empty());
-                prop_assert_eq!(s.bytes_after as usize, p.data.len());
+                prop_assert_eq!(s.bytes_after as usize, p.data.len() / p.format.bytes());
                 prop_assert_eq!(s.r#type, p.r#type);
             }
 
