@@ -148,6 +148,9 @@ pub(crate) struct AtomicCommitRequest {
     request: AtomicModeReq,
     properties: Vec<AtomicPropertyUpdate>,
     cursor_properties: Vec<(RawResourceHandle, property::Handle)>,
+    /// Kernel event cookie. Producers start at zero until the identity-aware
+    /// submit variants are introduced.
+    user_data: u64,
 }
 
 #[allow(dead_code)] // request assembly starts in Task 2
@@ -157,6 +160,7 @@ impl AtomicCommitRequest {
             request: AtomicModeReq::new(),
             properties: Vec::new(),
             cursor_properties: Vec::new(),
+            user_data: 0,
         }
     }
 
@@ -738,6 +742,30 @@ impl AtomicCommitSink {
     }
 
     #[cfg(test)]
+    pub(crate) fn for_tests_pending_page_flip_commit_ids(
+        &self,
+        _device: &Device,
+        crtc: crtc::Handle,
+    ) -> Vec<u64> {
+        self.metrics
+            .borrow()
+            .pending_page_flips
+            .get(&crtc)
+            .map(|queue| queue.iter().map(|pending| pending.commit_id).collect())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_pending_page_flip_entry_count(&self) -> usize {
+        self.metrics
+            .borrow()
+            .pending_page_flips
+            .values()
+            .map(VecDeque::len)
+            .sum()
+    }
+
+    #[cfg(test)]
     pub(crate) fn for_tests_present_latency_state(&self) -> (u64, u64, u64, Vec<u64>, Vec<u64>) {
         let metrics = self.metrics.borrow();
         (
@@ -1243,7 +1271,10 @@ fn flip_latency_percentiles(values: &[u64]) -> (String, String, String) {
 #[allow(dead_code)]
 pub(crate) mod tests_support {
     use super::*;
-    use std::collections::VecDeque;
+    use std::{
+        collections::VecDeque,
+        os::fd::{AsFd as _, AsRawFd as _},
+    };
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(crate) enum ScriptedResult {
@@ -1287,6 +1318,8 @@ pub(crate) mod tests_support {
         pub(crate) properties: Vec<AtomicPropertyUpdate>,
         pub(crate) events: Vec<AtomicCommitEvent>,
         pub(crate) result: ScriptedResult,
+        pub(crate) device_fd: std::os::fd::RawFd,
+        pub(crate) user_data: u64,
     }
 
     #[derive(Default)]
@@ -1319,7 +1352,7 @@ pub(crate) mod tests_support {
 
         fn atomic_commit(
             &self,
-            _device: &Device,
+            device: &Device,
             flags: AtomicCommitFlags,
             kind: AtomicCommitKind,
             request: AtomicCommitRequest,
@@ -1336,6 +1369,8 @@ pub(crate) mod tests_support {
                 properties: request.properties,
                 events: events.to_vec(),
                 result,
+                device_fd: device.as_fd().as_raw_fd(),
+                user_data: request.user_data,
             });
             result.into_result()
         }

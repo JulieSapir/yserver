@@ -1,34 +1,16 @@
-use super::*;
+use super::{
+    commit_identity::recording_scene::{
+        build_recording_scene_backend, init_tearing_test_logger, raw, set_scene_fence_properties,
+        set_unique_direct_plane_properties, skip_unless_vulkan_fed_scanout,
+        supports_vulkan_fed_scanout,
+    },
+    *,
+};
 
 use crate::drm::atomic::{
     AtomicCommitKind, AtomicCommitSink, AtomicPropertyUpdate,
     tests_support::RecordingAtomicCommitExecutor,
 };
-
-fn init_tearing_test_logger() {
-    let _ = env_logger::Builder::new()
-        .is_test(true)
-        .filter_level(log::LevelFilter::Error)
-        .filter_module("yserver", log::LevelFilter::Warn)
-        .filter_module("yserver_render", log::LevelFilter::Warn)
-        .try_init();
-}
-
-const VULKAN_FED_SCANOUT_SKIP: &str = "skipping: Vulkan device lacks SYNC_FD semaphore export (VK_KHR_external_semaphore_fd); Vulkan-fed scanout tests need it";
-
-fn supports_vulkan_fed_scanout(supports_sync_fd: bool, supports_drm_format_modifier: bool) -> bool {
-    supports_sync_fd && supports_drm_format_modifier
-}
-
-fn skip_unless_vulkan_fed_scanout(backend: &KmsBackend) -> bool {
-    let supported = backend.platform.gpu.vk.as_ref().is_some_and(|vk| {
-        supports_vulkan_fed_scanout(vk.supports_sync_fd(), vk.image_drm_format_modifier)
-    });
-    if !supported {
-        eprintln!("{VULKAN_FED_SCANOUT_SKIP}");
-    }
-    supported
-}
 
 #[test]
 // Mutation: make the predicate ignore either required Vulkan export capability.
@@ -47,28 +29,6 @@ fn recording_sink(
     backend.platform.devices[device_idx].atomic_commit_sink =
         std::rc::Rc::new(AtomicCommitSink::new(recorder.clone()));
     recorder
-}
-
-fn raw<T: ::drm::control::ResourceHandle>(value: u32) -> T {
-    ::drm::control::from_u32(value).expect("nonzero test handle")
-}
-
-fn set_scene_fence_properties(output: &mut crate::platform::drm::Output) {
-    output.plane_in_fence_fd_prop = Some(raw(81));
-    output.crtc_out_fence_ptr_prop = Some(raw(82));
-}
-
-fn set_unique_direct_plane_properties(output: &mut crate::platform::drm::Output) {
-    output.plane_fb_id_prop = raw(71);
-    output.plane_crtc_id_prop = raw(72);
-    output.plane_src_x_prop = raw(73);
-    output.plane_src_y_prop = raw(74);
-    output.plane_src_w_prop = raw(75);
-    output.plane_src_h_prop = raw(76);
-    output.plane_crtc_x_prop = raw(77);
-    output.plane_crtc_y_prop = raw(78);
-    output.plane_crtc_w_prop = raw(79);
-    output.plane_crtc_h_prop = raw(80);
 }
 
 fn update<H: ::drm::control::ResourceHandle>(
@@ -3130,133 +3090,14 @@ fn live_scene_backend_with_dead_zone() -> Option<KmsBackend> {
 }
 
 fn scene_backend_with_recording_pools(output_count: usize) -> Result<Option<KmsBackend>, String> {
-    scene_backend_with_recording_pools_and_dead_zone(output_count, false)
+    build_recording_scene_backend(output_count, false)
 }
 
 fn scene_backend_with_recording_pools_and_dead_zone(
     output_count: usize,
     dead_zone: bool,
 ) -> Result<Option<KmsBackend>, String> {
-    init_tearing_test_logger();
-    let screen_width = match (output_count, dead_zone) {
-        (2, true) => 1700,
-        (2, false) => 1600,
-        (1, false) => 800,
-        _ => return Err("unsupported recording scene fixture topology".to_owned()),
-    };
-    let mut backend = KmsBackend::for_tests_with_vk_dimensions(screen_width, 600)
-        .map_err(|error| format!("Vulkan fixture unavailable: {error}"))?;
-    if !skip_unless_vulkan_fed_scanout(&backend) {
-        return Ok(None);
-    }
-    if output_count == 2 {
-        super::push_test_output(&mut backend, 201);
-        if dead_zone {
-            backend.platform.outputs[1].x = 900;
-            backend.platform.outputs[1].height = 400;
-            backend.platform.outputs[1].output.picked.height = 400;
-            for mode in &mut backend.platform.outputs[1].output.modes {
-                mode.height = 400;
-            }
-        } else {
-            backend.platform.outputs[1].x = 800;
-        }
-    } else {
-        assert_eq!(output_count, 1);
-    }
-    let layouts = backend.platform.scene_output_layouts();
-    backend.scene = crate::kms::render::scene::SceneCompositor::new(&backend.platform, &layouts)
-        .map_err(|error| format!("live SceneCompositor unavailable: {error:?}"))?;
-    backend
-        .platform
-        .scanout_pools
-        .resize_with(output_count, || None);
-    backend
-        .platform
-        .bo_generations
-        .resize_with(output_count, Vec::new);
-
-    let vk = std::sync::Arc::clone(
-        backend
-            .platform
-            .gpu
-            .vk
-            .as_ref()
-            .expect("Vk-backed test fixture has a context"),
-    );
-    for output_idx in 0..output_count {
-        let width = u32::from(backend.platform.outputs[output_idx].width);
-        let height = u32::from(backend.platform.outputs[output_idx].height);
-        let route = backend.platform.outputs[output_idx].scanout_route;
-        let key = backend.platform.outputs[output_idx].key.clone();
-        let drm = std::rc::Rc::clone(
-            &backend
-                .platform
-                .device_for_key(key.device_key)
-                .expect("test output has a KMS device")
-                .device,
-        );
-        let output = &mut backend.platform.outputs[output_idx].output;
-        set_scene_fence_properties(output);
-        set_unique_direct_plane_properties(output);
-
-        let mut bos = Vec::with_capacity(2);
-        for bo_idx in 0..2 {
-            let xid = 0x6a00
-                + u32::try_from(output_idx).expect("output index fits") * 0x10
-                + u32::try_from(bo_idx).expect("BO index fits");
-            let storage = backend
-                .platform
-                .gpu
-                .allocate_drawable_storage(
-                    u16::try_from(width).expect("test width fits"),
-                    u16::try_from(height).expect("test height fits"),
-                    32,
-                )
-                .map_err(|error| format!("test target image allocation failed: {error:?}"))?;
-            let image = storage.image;
-            let image_view = storage.image_view;
-            backend
-                .store
-                .allocate(
-                    xid,
-                    crate::kms::render::store::DrawableKind::Pixmap,
-                    32,
-                    false,
-                    storage,
-                )
-                .map_err(|error| format!("test target storage registration failed: {error:?}"))?;
-            let mut bo = crate::kms::vk::scanout::ScanoutBo::for_tests_compose_target(
-                std::sync::Arc::clone(&vk),
-                std::rc::Rc::clone(&drm),
-                raw(0x5200 + u32::try_from(output_idx * 2 + bo_idx).expect("test BO handle fits")),
-                width,
-                height,
-                image,
-                image_view,
-            )
-            .map_err(|error| format!("test compose BO allocation failed: {error}"))?;
-            if bo_idx == 0 {
-                bo.state.phase = crate::kms::vk::scanout::BoPhase::OnScreen;
-            }
-            bos.push(bo);
-        }
-        let pool = crate::kms::vk::scanout::ScanoutBoPool::for_tests_recording_pool(
-            route, width, height, bos,
-        );
-        backend.platform.bo_generations[output_idx] =
-            vec![crate::kms::render::platform::BoGenerationEntry::default(); 2];
-        backend.platform.scanout_pools[output_idx] =
-            Some(crate::kms::vk::scanout::OutputScanout::Shared(pool));
-    }
-    for output in &backend.platform.outputs {
-        backend
-            .pstate
-            .crtc_key_by_id
-            .insert(u32::from(output.output.crtc), output.key.clone());
-    }
-    backend.refresh_present_crtc_clock_epochs();
-    Ok(Some(backend))
+    build_recording_scene_backend(output_count, dead_zone)
 }
 
 fn damage_root_and_composite(backend: &mut KmsBackend) {

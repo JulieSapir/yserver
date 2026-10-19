@@ -166,6 +166,9 @@ pub(crate) struct SequenceCompletion {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FlipEventTimestamps {
+    /// Nonzero DRM atomic `user_data` normalized to an optional identity.
+    #[allow(dead_code)] // identity filtering is connected in Task 2
+    pub(crate) commit_id: Option<u64>,
     /// CLOCK_MONOTONIC receipt time used by async ioctl-to-event turnaround.
     pub(crate) received_at_monotonic: Option<Duration>,
     /// Kernel completion time converted to CLOCK_MONOTONIC for Present latency.
@@ -525,6 +528,13 @@ pub struct PlatformBackend {
     /// Present completion poller: the two readiness streams have different
     /// ownership, cancellation, and delivery semantics.
     scanout_render_completion_epfd: crate::kms::render::completion_poller::CompletionPoller,
+    /// Readiness observer for copied-scanout render completions. The live
+    /// implementation only polls the original completion fd.
+    pub(crate) render_completion_readiness: Rc<dyn flip_events::RenderCompletionReadiness>,
+    #[cfg(test)]
+    #[allow(dead_code)] // Task 3 installs and inspects the recording readiness seam
+    pub(crate) test_render_completion_readiness:
+        Option<Rc<flip_events::RecordingRenderCompletionReadiness>>,
     pending_scanout_render_completions: std::collections::VecDeque<PendingScanoutRenderCompletion>,
     next_scanout_render_job_id: u64,
 

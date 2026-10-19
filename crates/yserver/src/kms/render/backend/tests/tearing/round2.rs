@@ -1042,6 +1042,7 @@ fn run_task6_present_and_xtest_motion_keep_cursor_compose_cap_under_run_core_loa
                     crate::kms::render::platform::flip_events::KernelPageFlip {
                         crtc,
                         frame,
+                        commit_id: 0,
                         ust: Duration::ZERO,
                         event_at_monotonic: crate::drm::atomic::monotonic_timestamp(),
                         event_at_boottime: crate::drm::atomic::boottime_timestamp(),

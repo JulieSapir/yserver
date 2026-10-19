@@ -12,7 +12,7 @@ use crate::kms::{
 use std::{
     collections::HashSet,
     io,
-    os::fd::{AsFd as _, AsRawFd as _, OwnedFd, RawFd},
+    os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd, RawFd},
     rc::Rc,
 };
 use yserver_core::backend::{BackendFdKind, PresentClockSample, PresentClockSource};
@@ -21,12 +21,69 @@ use yserver_core::backend::{BackendFdKind, PresentClockSample, PresentClockSourc
 pub(crate) struct KernelPageFlip {
     pub(crate) crtc: ::drm::control::crtc::Handle,
     pub(crate) frame: u32,
+    /// Raw kernel `user_data`; zero means the event has no explicit identity.
+    pub(crate) commit_id: u64,
     /// Kernel UST used by Present and kept in its original clock domain.
     pub(crate) ust: std::time::Duration,
     /// User-space CLOCK_MONOTONIC time when yserver received the event.
     pub(crate) event_at_monotonic: Option<std::time::Duration>,
     /// User-space CLOCK_BOOTTIME time when yserver received the event, on Linux.
     pub(crate) event_at_boottime: Option<std::time::Duration>,
+}
+
+pub(crate) trait RenderCompletionReadiness {
+    fn is_ready(&self, job_id: u64, fd: Option<BorrowedFd<'_>>) -> io::Result<bool>;
+}
+
+pub(crate) struct PollRenderCompletionReadiness;
+
+impl RenderCompletionReadiness for PollRenderCompletionReadiness {
+    fn is_ready(&self, _job_id: u64, fd: Option<BorrowedFd<'_>>) -> io::Result<bool> {
+        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+
+        let Some(fd) = fd else {
+            return Ok(true);
+        };
+        let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
+        match poll(&mut fds, PollTimeout::ZERO) {
+            Ok(0) => Ok(false),
+            Ok(_) => Ok(fds[0].revents().is_some_and(|events| {
+                events.intersects(PollFlags::POLLIN | PollFlags::POLLERR | PollFlags::POLLHUP)
+            })),
+            Err(error) => Err(io::Error::from(error)),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RecordingRenderCompletionReadiness {
+    hold_ready: std::cell::Cell<bool>,
+    released_ready: std::cell::RefCell<HashSet<u64>>,
+}
+
+#[cfg(test)]
+impl RecordingRenderCompletionReadiness {
+    #[allow(dead_code)] // consumed by copied-scene fixtures in Task 3
+    pub(crate) fn hold_ready_jobs(&self) {
+        self.hold_ready.set(true);
+        self.released_ready.borrow_mut().clear();
+    }
+
+    #[allow(dead_code)] // consumed by copied-scene fixtures in Task 3
+    pub(crate) fn release_ready_job(&self, job_id: u64) {
+        self.released_ready.borrow_mut().insert(job_id);
+    }
+}
+
+#[cfg(test)]
+impl RenderCompletionReadiness for RecordingRenderCompletionReadiness {
+    fn is_ready(&self, job_id: u64, fd: Option<BorrowedFd<'_>>) -> io::Result<bool> {
+        if !PollRenderCompletionReadiness.is_ready(job_id, fd)? {
+            return Ok(false);
+        }
+        Ok(!self.hold_ready.get() || self.released_ready.borrow().contains(&job_id))
+    }
 }
 
 const FLIP_TIMESTAMP_PLAUSIBLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
@@ -88,6 +145,7 @@ impl PageFlipEventSource for DrmPageFlipEventSource {
                 flips.push(KernelPageFlip {
                     crtc,
                     frame,
+                    commit_id: 0,
                     ust: duration,
                     event_at_monotonic: crate::drm::atomic::monotonic_timestamp(),
                     event_at_boottime: crate::drm::atomic::boottime_timestamp(),
@@ -181,9 +239,27 @@ impl RecordingPageFlipEventSource {
         self.flips.borrow_mut().push_back(KernelPageFlip {
             crtc,
             frame,
+            commit_id: 0,
             ust,
             event_at_monotonic,
             event_at_boottime,
+        });
+    }
+
+    pub(crate) fn queue_flip_with_cookie(
+        &self,
+        crtc: ::drm::control::crtc::Handle,
+        frame: u32,
+        commit_id: u64,
+        ust: std::time::Duration,
+    ) {
+        self.flips.borrow_mut().push_back(KernelPageFlip {
+            crtc,
+            frame,
+            commit_id,
+            ust,
+            event_at_monotonic: crate::drm::atomic::monotonic_timestamp(),
+            event_at_boottime: crate::drm::atomic::boottime_timestamp(),
         });
     }
 
@@ -227,6 +303,16 @@ impl PageFlipEventSource for RecordingPageFlipEventSource {
 }
 
 impl PlatformBackend {
+    #[cfg(test)]
+    #[allow(dead_code)] // consumed by copied-scene fixtures in Task 3
+    pub(crate) fn for_tests_set_render_completion_readiness(
+        &mut self,
+        readiness: Rc<RecordingRenderCompletionReadiness>,
+    ) {
+        self.render_completion_readiness = readiness.clone();
+        self.test_render_completion_readiness = Some(readiness);
+    }
+
     pub(super) fn prune_present_clocks_to_live_outputs(&mut self) {
         let live: HashSet<CrtcKey> = self.outputs.iter().map(CrtcKey::for_output).collect();
         self.ust_msc.retain(|key, _| live.contains(key));
@@ -292,29 +378,20 @@ impl PlatformBackend {
     /// Different outputs are independent, so readiness is not constrained by
     /// queue-front order.
     pub(crate) fn drain_scanout_render_completions(&mut self) -> Vec<ReadyScanoutRenderCompletion> {
-        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-
         let mut ready = Vec::new();
         let mut index = 0;
         while index < self.pending_scanout_render_completions.len() {
             let is_ready = {
                 let pending = &self.pending_scanout_render_completions[index];
-                if let Some(fd) = pending.fd.as_ref() {
-                    let mut fds = [PollFd::new(fd.as_fd(), PollFlags::POLLIN)];
-                    match poll(&mut fds, PollTimeout::ZERO) {
-                        Ok(0) => false,
-                        Ok(_) => fds[0].revents().is_some_and(|events| {
-                            events.intersects(
-                                PollFlags::POLLIN | PollFlags::POLLERR | PollFlags::POLLHUP,
-                            )
-                        }),
-                        Err(error) => {
-                            log::warn!("scanout render completion poll failed: {error}");
-                            true
-                        }
+                match self
+                    .render_completion_readiness
+                    .is_ready(pending.job_id, pending.fd.as_ref().map(|fd| fd.as_fd()))
+                {
+                    Ok(is_ready) => is_ready,
+                    Err(error) => {
+                        log::warn!("scanout render completion poll failed: {error}");
+                        true
                     }
-                } else {
-                    true
                 }
             };
             if !is_ready {
@@ -578,6 +655,7 @@ impl PlatformBackend {
                 output_idx,
                 sample,
                 FlipEventTimestamps {
+                    commit_id: (flip.commit_id != 0).then_some(flip.commit_id),
                     received_at_monotonic: flip.event_at_monotonic,
                     completion_at_monotonic,
                 },

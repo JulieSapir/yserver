@@ -35,6 +35,22 @@ use ash::vk;
 use std::sync::Arc;
 
 impl SceneCompositor {
+    /// Test-only count of descriptor-pool slots still waiting for their
+    /// compose fences to signal.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_pool_release_count_for_tests(&self) -> usize {
+        self.inner
+            .as_ref()
+            .map(|inner| {
+                inner
+                    .outputs
+                    .iter()
+                    .map(|output| output.pending_pool_releases.len())
+                    .sum()
+            })
+            .unwrap_or_default()
+    }
+
     /// Test-only snapshot of the per-output submit retry deadline and the
     /// number of BOs retained after a failed submit.
     #[cfg(any(test, feature = "test-support"))]

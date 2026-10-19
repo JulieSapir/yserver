@@ -1,4 +1,5 @@
 mod atomic_cursor;
+mod commit_identity;
 mod crossings;
 mod cursor;
 mod deadlines;

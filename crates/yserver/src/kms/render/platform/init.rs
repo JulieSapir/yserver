@@ -745,6 +745,9 @@ impl PlatformBackend {
             present_completion_epfd,
             wakeup_eventfd,
             scanout_render_completion_epfd,
+            render_completion_readiness: Rc::new(super::flip_events::PollRenderCompletionReadiness),
+            #[cfg(test)]
+            test_render_completion_readiness: None,
             pending_scanout_render_completions: std::collections::VecDeque::new(),
             next_scanout_render_job_id: 1,
             scanout_readback_op: None,
@@ -882,6 +885,9 @@ impl PlatformBackend {
             present_completion_epfd,
             wakeup_eventfd,
             scanout_render_completion_epfd,
+            render_completion_readiness: Rc::new(super::flip_events::PollRenderCompletionReadiness),
+            #[cfg(test)]
+            test_render_completion_readiness: None,
             pending_scanout_render_completions: std::collections::VecDeque::new(),
             next_scanout_render_job_id: 1,
             scanout_readback_op: None,
