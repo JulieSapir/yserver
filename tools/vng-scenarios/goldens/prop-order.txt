@@ -55,11 +55,135 @@ after-partial-delete LE-read: format=32 type=6 nitems=5 bytes_after=0 [0x1122334
 rotate-setup BE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
 rotate-setup BE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
 rotate-setup BE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate-setup BE-event: PropertyNotify win=W atom=PROBE_R4 state=NewValue
+rotate-setup BE-event: PropertyNotify win=W atom=PROBE_R5 state=NewValue
 rotate-setup LE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
 rotate-setup LE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
 rotate-setup LE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
-ListProperties BE: ['PROBE_BE32', 'PROBE_BE8', 'PROBE_LE16', 'PROBE_R1', 'PROBE_R2', 'PROBE_R3']
-ListProperties LE: ['PROBE_BE32', 'PROBE_BE8', 'PROBE_LE16', 'PROBE_R1', 'PROBE_R2', 'PROBE_R3']
+rotate-setup LE-event: PropertyNotify win=W atom=PROBE_R4 state=NewValue
+rotate-setup LE-event: PropertyNotify win=W atom=PROBE_R5 state=NewValue
+rotate +1 by BE: ok
+rotate +1 BE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate +1 BE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate +1 BE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate +1 LE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate +1 LE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate +1 LE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate +1 PROBE_R1 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate +1 PROBE_R1 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate +1 PROBE_R2 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate +1 PROBE_R2 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate +1 PROBE_R3 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate +1 PROBE_R3 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+rotate -1 by LE: ok
+rotate -1 BE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate -1 BE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate -1 BE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate -1 LE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate -1 LE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate -1 LE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate -1 PROBE_R1 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate -1 PROBE_R1 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate -1 PROBE_R2 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate -1 PROBE_R2 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+rotate -1 PROBE_R3 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate -1 PROBE_R3 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate 0 by BE: ok
+rotate 0 PROBE_R1 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate 0 PROBE_R1 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate 0 PROBE_R2 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate 0 PROBE_R2 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+rotate 0 PROBE_R3 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate 0 PROBE_R3 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate n by LE: ok
+rotate n PROBE_R1 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate n PROBE_R1 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate n PROBE_R2 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate n PROBE_R2 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+rotate n PROBE_R3 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate n PROBE_R3 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate n+1 by BE: ok
+rotate n+1 BE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate n+1 BE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate n+1 BE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate n+1 LE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate n+1 LE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate n+1 LE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate n+1 PROBE_R1 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate n+1 PROBE_R1 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate n+1 PROBE_R2 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate n+1 PROBE_R2 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate n+1 PROBE_R3 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate n+1 PROBE_R3 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+rotate -(n+1) by LE: ok
+rotate -(n+1) BE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate -(n+1) BE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate -(n+1) BE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate -(n+1) LE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate -(n+1) LE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate -(n+1) LE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate -(n+1) PROBE_R1 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate -(n+1) PROBE_R1 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate -(n+1) PROBE_R2 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate -(n+1) PROBE_R2 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+rotate -(n+1) PROBE_R3 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate -(n+1) PROBE_R3 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate list-order R3,R1,R2 +1 by BE: ok
+rotate list-order R3,R1,R2 +1 BE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate list-order R3,R1,R2 +1 BE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate list-order R3,R1,R2 +1 BE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate list-order R3,R1,R2 +1 LE-event: PropertyNotify win=W atom=PROBE_R3 state=NewValue
+rotate list-order R3,R1,R2 +1 LE-event: PropertyNotify win=W atom=PROBE_R1 state=NewValue
+rotate list-order R3,R1,R2 +1 LE-event: PropertyNotify win=W atom=PROBE_R2 state=NewValue
+rotate list-order R3,R1,R2 +1 PROBE_R1 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate list-order R3,R1,R2 +1 PROBE_R1 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate list-order R3,R1,R2 +1 PROBE_R2 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate list-order R3,R1,R2 +1 PROBE_R2 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate list-order R3,R1,R2 +1 PROBE_R3 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate list-order R3,R1,R2 +1 PROBE_R3 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+rotate 2-props +1 by BE: ok
+rotate 2-props +1 BE-event: PropertyNotify win=W atom=PROBE_R4 state=NewValue
+rotate 2-props +1 BE-event: PropertyNotify win=W atom=PROBE_R5 state=NewValue
+rotate 2-props +1 LE-event: PropertyNotify win=W atom=PROBE_R4 state=NewValue
+rotate 2-props +1 LE-event: PropertyNotify win=W atom=PROBE_R5 state=NewValue
+rotate 2-props +1 PROBE_R4 BE-read: format=16 type=19 nitems=1 bytes_after=0 [0x0005] raw=0005
+rotate 2-props +1 PROBE_R4 LE-read: format=16 type=19 nitems=1 bytes_after=0 [0x0005] raw=0500
+rotate 2-props +1 PROBE_R5 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x00000004] raw=00000004
+rotate 2-props +1 PROBE_R5 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x00000004] raw=04000000
+rotate 2-props +1 by LE: ok
+rotate 2-props +1 BE-event: PropertyNotify win=W atom=PROBE_R4 state=NewValue
+rotate 2-props +1 BE-event: PropertyNotify win=W atom=PROBE_R5 state=NewValue
+rotate 2-props +1 LE-event: PropertyNotify win=W atom=PROBE_R4 state=NewValue
+rotate 2-props +1 LE-event: PropertyNotify win=W atom=PROBE_R5 state=NewValue
+rotate 2-props +1 PROBE_R4 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x00000004] raw=00000004
+rotate 2-props +1 PROBE_R4 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x00000004] raw=04000000
+rotate 2-props +1 PROBE_R5 BE-read: format=16 type=19 nitems=1 bytes_after=0 [0x0005] raw=0005
+rotate 2-props +1 PROBE_R5 LE-read: format=16 type=19 nitems=1 bytes_after=0 [0x0005] raw=0500
+rotate empty-list by BE: ok
+rotate missing by BE: error code=8 major=114 value=PROBE_RMISSING
+rotate duplicate-first by LE: error code=8 major=114 value=W
+rotate duplicate-later by LE: error code=8 major=114 value=PROBE_R1
+rotate bad-atom by BE: error code=5 major=114 value=0xfffff0
+rotate none-atom by BE: error code=5 major=114 value=0x0
+rotate missing-before-bad-atom by LE: error code=8 major=114 value=PROBE_RMISSING
+rotate bad-atom-before-missing by LE: error code=5 major=114 value=0xfffff0
+rotate bad-window by BE: error code=3 major=114 value=the-unknown-window
+rotate bad-window PROBE_R1 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate bad-window PROBE_R1 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate bad-window PROBE_R2 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate bad-window PROBE_R2 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate bad-window PROBE_R3 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate bad-window PROBE_R3 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+rotate bad-window-empty by BE: error code=3 major=114 value=the-unknown-window
+rotate delta-0-missing by LE: error code=8 major=114 value=PROBE_RMISSING
+rotate delta-0-missing PROBE_R1 BE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate delta-0-missing PROBE_R1 LE-read: format=8 type=31 nitems=3 bytes_after=0 [616263] raw=616263
+rotate delta-0-missing PROBE_R2 BE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=01020304
+rotate delta-0-missing PROBE_R2 LE-read: format=32 type=6 nitems=1 bytes_after=0 [0x01020304] raw=04030201
+rotate delta-0-missing PROBE_R3 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=010203040007
+rotate delta-0-missing PROBE_R3 LE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007] raw=020104030700
+ListProperties BE: ['PROBE_BE32', 'PROBE_BE8', 'PROBE_LE16', 'PROBE_R1', 'PROBE_R2', 'PROBE_R3', 'PROBE_R4', 'PROBE_R5']
+ListProperties LE: ['PROBE_BE32', 'PROBE_BE8', 'PROBE_LE16', 'PROBE_R1', 'PROBE_R2', 'PROBE_R3', 'PROBE_R4', 'PROBE_R5']
 RandR-output-32 BE-read: format=32 type=19 nitems=2 bytes_after=0 [0x01020304 0x00000005]
 RandR-output-32 LE-read: format=32 type=19 nitems=2 bytes_after=0 [0x01020304 0x00000005]
 RandR-output-16 BE-read: format=16 type=19 nitems=3 bytes_after=0 [0x0102 0x0304 0x0007]

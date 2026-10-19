@@ -1281,3 +1281,109 @@ pub(super) fn handle_delete_property(
     debug!("client {} #{} DeleteProperty", client_id.0, sequence.0);
     Ok(RequestOutcome::Handled)
 }
+
+/// `RotateProperties`, as Xorg's `ProcRotateProperties`
+/// (`dix/property.c:133-200`): property `(i + delta) mod n` takes property
+/// i's type, format and data, then one `PropertyNotify` NewValue per listed
+/// property in list order. A rotation by a multiple of n changes nothing and
+/// sends no events. Errors are checked atom by atom in list order: BadAtom
+/// for an invalid atom, BadMatch for a later duplicate, BadMatch for a
+/// property the window does not have.
+pub(super) fn handle_rotate_properties(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    client_id: ClientId,
+    sequence: SequenceNumber,
+    body: &[u8],
+) -> io::Result<RequestOutcome> {
+    const OPCODE: u8 = 114;
+    let Some(req) = x11::rotate_properties_request(body) else {
+        return emit_x11_error(
+            state,
+            client_id,
+            sequence,
+            x11::error::BAD_LENGTH,
+            0,
+            OPCODE,
+        );
+    };
+    if state.resources.window(req.window).is_none() {
+        return emit_x11_error(
+            state,
+            client_id,
+            sequence,
+            x11::error::BAD_WINDOW,
+            req.window.0,
+            OPCODE,
+        );
+    }
+    let atoms = &req.properties;
+    let mut saved = Vec::with_capacity(atoms.len());
+    for (i, &atom) in atoms.iter().enumerate() {
+        if !state.atoms.exists(atom) {
+            return emit_x11_error(
+                state,
+                client_id,
+                sequence,
+                x11::error::BAD_ATOM,
+                atom.0,
+                OPCODE,
+            );
+        }
+        if atoms[i + 1..].contains(&atom) {
+            // Xorg reports whatever errorValue the previous lookup left:
+            // the window for the first atom, else the previous atom.
+            let value = if i == 0 { req.window.0 } else { atoms[i - 1].0 };
+            return emit_x11_error(
+                state,
+                client_id,
+                sequence,
+                x11::error::BAD_MATCH,
+                value,
+                OPCODE,
+            );
+        }
+        let Some(value) = state.resources.window_property(req.window, atom) else {
+            return emit_x11_error(
+                state,
+                client_id,
+                sequence,
+                x11::error::BAD_MATCH,
+                atom.0,
+                OPCODE,
+            );
+        };
+        saved.push(value.clone());
+    }
+    let n = atoms.len();
+    let delta = if n == 0 {
+        0
+    } else {
+        usize::try_from(i32::from(req.delta).rem_euclid(i32::try_from(n).unwrap_or(i32::MAX)))
+            .unwrap_or(0)
+    };
+    if delta != 0 {
+        for (i, value) in saved.into_iter().enumerate() {
+            state
+                .resources
+                .set_window_property(req.window, atoms[(i + delta) % n], value);
+        }
+        let host = window_host_xid(state, req.window);
+        let window = req.window;
+        for &property in atoms {
+            backend.on_window_property_changed(state, host, property);
+            let timestamp = state.timestamp_now();
+            let _dropped =
+                emit_window_event_to_state(state, window, 0x0040_0000, |buf, seq, order| {
+                    x11::encode_property_notify_event(
+                        buf, seq, order, window, property, timestamp, false,
+                    );
+                });
+        }
+    }
+    debug!(
+        "client {} #{} RotateProperties n={n} delta={}",
+        client_id.0, sequence.0, req.delta
+    );
+    Ok(RequestOutcome::Handled)
+}

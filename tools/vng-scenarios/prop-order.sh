@@ -2,13 +2,14 @@
 # Property data byte order: a raw big-endian ('B') and a raw little-endian
 # ('l') client write and read the same window properties (format 8/16/32,
 # Append/Prepend, long_offset windows, delete, type mismatch, ListProperties,
-# PropertyNotify) and a RandR output property. Each value is printed as the
-# reader decodes it, so the log is byte-order independent: on Xorg every
-# client reads the same numbers whoever wrote them.
+# PropertyNotify, RotateProperties and its errors) and a RandR output
+# property. Each value is printed as the reader decodes it, so the log is
+# byte-order independent: on Xorg every client reads the same numbers
+# whoever wrote them.
 # Not in the golden (PROBE_FULL=1 prints them): XI2 device properties, where
 # Xorg leaves a BE writer's data unswapped on input but swaps it on output
 # (Xi/xiproperty.c SProcXIChangeProperty vs ProcXIGetProperty) and yserver
-# swaps both ways; and RotateProperties, which yserver does not implement.
+# swaps both ways.
 # shellcheck shell=sh
 # golden: probe.log
 set -u

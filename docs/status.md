@@ -45,8 +45,12 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   Xorg, which leaves a BE writer's data unswapped on input but swaps it on output (`Xi/xiproperty.c`
   `SProcXIChangeProperty` vs :1229; XI1 the same at :1027 vs :988; XI2 measured), so on Xorg a BE client reads its
   own value reversed; yserver swaps
-  both ways (`canonicalize_xi_property_data`) and was left so. RotateProperties (opcode 114) is unimplemented
-  (BadRequest for every client); `PROBE_FULL=1` prints both.
+  both ways (`canonicalize_xi_property_data`) and was left so; `PROBE_FULL=1` prints it. RotateProperties (opcode
+  114) was BadRequest for every client; now `handle_rotate_properties` follows `ProcRotateProperties`
+  (`dix/property.c:133-200`), measured in the same golden: property `(i+delta) mod n` takes property i's
+  type/format/data, one NewValue per listed atom in list order, no events for `delta mod n == 0`; errors atom by
+  atom (BadAtom, BadMatch for a later duplicate with Xorg's leftover errorValue = window or previous atom, BadMatch
+  for a missing property).
 - **2026-10-18 redirected backing geometry (branch `fix/redirected-backing-geometry`, plan
   `plans/2026-10-18-redirected-backing-geometry.md`):** a redirected window's backing now holds what Xorg's pixmap
   holds. Oracle: `tools/vng-scenarios/redirected-backing-probe.c` (`redirected-backing`, `golden=live`), Xorg 21.1.24

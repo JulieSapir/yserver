@@ -1110,6 +1110,33 @@ pub fn delete_property_request(body: &[u8]) -> Option<DeletePropertyRequest> {
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RotatePropertiesRequest {
+    pub window: ResourceId,
+    pub delta: i16,
+    pub properties: Vec<AtomId>,
+}
+
+/// `RotateProperties` (opcode 114): window, nAtoms (u16), nPositions
+/// (i16), then nAtoms atoms. None unless the body holds exactly nAtoms
+/// atoms (`REQUEST_FIXED_SIZE`, `dix/property.c:143`).
+#[must_use]
+pub fn rotate_properties_request(body: &[u8]) -> Option<RotatePropertiesRequest> {
+    let n = usize::from(read_u16_le(body.get(4..6)?));
+    let list = body.get(8..)?;
+    if list.len() != 4 * n {
+        return None;
+    }
+    Some(RotatePropertiesRequest {
+        window: ResourceId(read_u32_le(body.get(0..4)?)),
+        delta: read_u16_le(body.get(6..8)?).cast_signed(),
+        properties: list
+            .chunks_exact(4)
+            .map(|a| AtomId(read_u32_le(a)))
+            .collect(),
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GetPropertyRequest {
     pub delete: bool,

@@ -402,6 +402,7 @@ pub fn process_request(
         // ── properties (state mutation + PropertyNotify fanout) ──
         18 => handle_change_property(state, backend, client_id, sequence, header, body),
         19 => handle_delete_property(state, backend, client_id, sequence, body),
+        114 => handle_rotate_properties(state, backend, client_id, sequence, body),
         20 => handle_get_property(state, backend, client_id, sequence, header, body),
         // ── backend-proxy replies (state-light, host-RPC) ──
         17 => handle_get_atom_name(state, backend, origin, client_id, sequence, body),

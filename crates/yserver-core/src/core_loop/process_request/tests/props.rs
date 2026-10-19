@@ -405,3 +405,213 @@ fn type_mismatch_bytes_after_counts_items() {
         reply(16, INTEGER, 0, 3, "")
     );
 }
+
+// ── RotateProperties ──
+//
+// Expected values measured on Xorg 21.1 (`prop-order` vng golden): rotating
+// by `delta` moves property i's type, format and data to property
+// `(i + delta) mod n`; one PropertyNotify NewValue per listed property, in
+// list order; nothing (no events) when `delta mod n == 0`. Errors are
+// checked atom by atom (`dix/property.c:157-176`).
+
+impl Pair {
+    fn rotate(&mut self, client: u32, window: u32, atoms: &[u32], delta: i16) -> Vec<u8> {
+        let mut body = WireBody(Self::order(client), Vec::new())
+            .u32(window)
+            .u16(u16::try_from(atoms.len()).unwrap())
+            .u16(delta.cast_unsigned());
+        for &atom in atoms {
+            body = body.u32(atom);
+        }
+        self.send(client, 114, 0, body)
+    }
+
+    fn select_property_change(&mut self, client: u32) {
+        let cwa = WireBody(Self::order(client), Vec::new())
+            .u32(WIN)
+            .u32(0x800)
+            .u32(0x0040_0000);
+        self.send(client, 2, 0, cwa);
+    }
+
+    /// The three `rotate` properties: CARDINAL/32, INTEGER/16, STRING/8.
+    fn rotate_setup(&mut self) -> [u32; 3] {
+        let r = [
+            self.atom("PROBE_R1"),
+            self.atom("PROBE_R2"),
+            self.atom("PROBE_R3"),
+        ];
+        self.change(BE, 0, r[0], CARDINAL, 32, &[0x0102_0304]);
+        self.change(BE, 0, r[1], INTEGER, 16, &[0x0102, 0x0304, 7]);
+        self.change(BE, 0, r[2], STRING, 8, &[0x61, 0x62, 0x63]);
+        self.read(LE);
+        r
+    }
+}
+
+fn r1_value() -> GetReply {
+    reply(32, CARDINAL, 1, 0, "04030201")
+}
+fn r2_value() -> GetReply {
+    reply(16, INTEGER, 3, 0, "020104030700")
+}
+fn r3_value() -> GetReply {
+    reply(8, STRING, 3, 0, "616263")
+}
+
+/// `PropertyNotify` (atom, state) pairs in an LE client's event stream.
+fn property_notifies(events: &[u8]) -> Vec<(u32, u8)> {
+    assert!(events.len().is_multiple_of(32), "{events:02x?}");
+    events
+        .chunks_exact(32)
+        .map(|ev| {
+            assert_eq!(ev[0], 28, "PropertyNotify, got {ev:02x?}");
+            assert_eq!(u32::from_le_bytes(ev[4..8].try_into().unwrap()), WIN);
+            (u32::from_le_bytes(ev[8..12].try_into().unwrap()), ev[16])
+        })
+        .collect()
+}
+
+/// (code, value, major) of the single X error in `bytes`.
+fn x_error(bytes: &[u8], order: ClientByteOrder) -> (u8, u32, u8) {
+    assert_eq!(bytes.len(), 32, "one error, got {bytes:02x?}");
+    assert_eq!(bytes[0], 0, "error, got {bytes:02x?}");
+    let v: [u8; 4] = bytes[4..8].try_into().unwrap();
+    let value = if order == ClientByteOrder::BigEndian {
+        u32::from_be_bytes(v)
+    } else {
+        u32::from_le_bytes(v)
+    };
+    (bytes[1], value, bytes[10])
+}
+
+fn assert_values(p: &mut Pair, r: [u32; 3], want: [GetReply; 3]) {
+    for (atom, want) in r.into_iter().zip(want) {
+        assert_eq!(p.get(LE, atom, 0, 0, 1000), want);
+    }
+}
+
+#[test]
+fn rotate_plus_one_moves_each_value_to_the_next_property() {
+    let mut p = Pair::new();
+    p.select_property_change(LE);
+    let r = p.rotate_setup();
+    assert!(p.rotate(BE, WIN, &r, 1).is_empty());
+    assert_eq!(
+        property_notifies(&p.read(LE)),
+        vec![(r[0], 0), (r[1], 0), (r[2], 0)]
+    );
+    // Type and format travel with the data.
+    assert_values(&mut p, r, [r3_value(), r1_value(), r2_value()]);
+    // -1 from the LE client (the selecting one) rotates back.
+    assert_eq!(
+        property_notifies(&p.rotate(LE, WIN, &r, -1)),
+        vec![(r[0], 0), (r[1], 0), (r[2], 0)]
+    );
+    assert_values(&mut p, r, [r1_value(), r2_value(), r3_value()]);
+}
+
+#[test]
+fn rotate_by_a_multiple_of_n_changes_nothing_and_sends_no_events() {
+    let mut p = Pair::new();
+    p.select_property_change(LE);
+    let r = p.rotate_setup();
+    for delta in [0, 3, -3, 6] {
+        assert!(p.rotate(BE, WIN, &r, delta).is_empty());
+        assert!(p.read(LE).is_empty(), "delta {delta} sent events");
+        assert_values(&mut p, r, [r1_value(), r2_value(), r3_value()]);
+    }
+}
+
+#[test]
+fn rotate_by_n_plus_one_equals_plus_one_and_minus_n_plus_one_equals_minus_one() {
+    let mut p = Pair::new();
+    let r = p.rotate_setup();
+    assert!(p.rotate(BE, WIN, &r, 4).is_empty());
+    assert_values(&mut p, r, [r3_value(), r1_value(), r2_value()]);
+    assert!(p.rotate(LE, WIN, &r, -4).is_empty());
+    assert_values(&mut p, r, [r1_value(), r2_value(), r3_value()]);
+}
+
+#[test]
+fn rotate_events_follow_the_request_list_order() {
+    let mut p = Pair::new();
+    p.select_property_change(LE);
+    let r = p.rotate_setup();
+    assert!(p.rotate(BE, WIN, &[r[2], r[0], r[1]], 1).is_empty());
+    assert_eq!(
+        property_notifies(&p.read(LE)),
+        vec![(r[2], 0), (r[0], 0), (r[1], 0)]
+    );
+    // R1 <- R3, R2 <- R1, R3 <- R2: the same as rotating [R1, R2, R3] by 1.
+    assert_values(&mut p, r, [r3_value(), r1_value(), r2_value()]);
+}
+
+/// A BE client's nPositions must be swapped: unswapped, 1 reads as 0x0100,
+/// which is 0 mod 2 and would rotate nothing.
+#[test]
+fn rotate_two_properties_by_one_from_a_big_endian_client() {
+    let mut p = Pair::new();
+    let r4 = p.atom("PROBE_R4");
+    let r5 = p.atom("PROBE_R5");
+    p.change(BE, 0, r4, CARDINAL, 32, &[4]);
+    p.change(BE, 0, r5, INTEGER, 16, &[5]);
+    assert!(p.rotate(BE, WIN, &[r4, r5], 1).is_empty());
+    assert_eq!(p.get(BE, r4, 0, 0, 1000), reply(16, INTEGER, 1, 0, "0005"));
+    assert_eq!(
+        p.get(BE, r5, 0, 0, 1000),
+        reply(32, CARDINAL, 1, 0, "00000004")
+    );
+}
+
+#[test]
+fn rotate_an_empty_list_is_a_no_op() {
+    let mut p = Pair::new();
+    assert!(p.rotate(BE, WIN, &[], 1).is_empty());
+}
+
+#[test]
+fn rotate_errors_match_xorg_and_change_nothing() {
+    const BAD_WINDOW: u8 = 3;
+    const BAD_ATOM: u8 = 5;
+    const BAD_MATCH: u8 = 8;
+    const BAD_ATOM_ID: u32 = 0x00FF_FFF0;
+    const NO_WINDOW: u32 = 0x0060_0001;
+
+    let mut p = Pair::new();
+    p.select_property_change(LE);
+    let r = p.rotate_setup();
+    let miss = p.atom("PROBE_RMISSING");
+
+    let cases = [
+        (BE, WIN, vec![r[0], miss, r[1]], 1, (BAD_MATCH, miss)),
+        // A duplicate of the FIRST atom: Xorg's errorValue is still the
+        // window id the lookup left there.
+        (LE, WIN, vec![r[0], r[1], r[0]], 1, (BAD_MATCH, WIN)),
+        // A later duplicate: the previous atom's property lookup set it.
+        (LE, WIN, vec![r[0], r[1], r[1]], 1, (BAD_MATCH, r[0])),
+        (
+            BE,
+            WIN,
+            vec![r[0], r[1], BAD_ATOM_ID],
+            1,
+            (BAD_ATOM, BAD_ATOM_ID),
+        ),
+        (BE, WIN, vec![r[0], 0], 1, (BAD_ATOM, 0)),
+        (LE, WIN, vec![miss, BAD_ATOM_ID], 1, (BAD_MATCH, miss)),
+        (LE, WIN, vec![BAD_ATOM_ID, miss], 1, (BAD_ATOM, BAD_ATOM_ID)),
+        (BE, NO_WINDOW, r.to_vec(), 1, (BAD_WINDOW, NO_WINDOW)),
+        (BE, NO_WINDOW, vec![], 1, (BAD_WINDOW, NO_WINDOW)),
+        (LE, WIN, vec![r[0], miss], 0, (BAD_MATCH, miss)),
+    ];
+    for (client, window, atoms, delta, (code, value)) in cases {
+        let got = p.rotate(client, window, &atoms, delta);
+        assert_eq!(
+            x_error(&got, Pair::order(client)),
+            (code, value, 114),
+            "{atoms:x?} on {window:#x}"
+        );
+        assert!(p.read(LE).is_empty(), "{atoms:x?} sent events");
+        assert_values(&mut p, r, [r1_value(), r2_value(), r3_value()]);
+    }
+}

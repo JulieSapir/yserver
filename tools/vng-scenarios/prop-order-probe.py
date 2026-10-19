@@ -13,8 +13,8 @@ import sys
 
 PROPERTY_NOTIFY = 28
 CARDINAL, INTEGER, STRING = 6, 19, 31
-# XI2 device properties and RotateProperties diverge for known reasons
-# (see the scenario header); PROBE_FULL=1 prints them anyway.
+# XI2 device properties diverge for a known reason (see the scenario
+# header); PROBE_FULL=1 prints them anyway.
 FULL = os.environ.get("PROBE_FULL") == "1"
 
 
@@ -72,7 +72,8 @@ class Client:
                 if pseq == seq:
                     return pkt
             elif kind == 0:
-                self.errors.append((pkt[1], pkt[10], pseq))
+                value = struct.unpack(self.e + "I", pkt[4:8])[0]
+                self.errors.append((pkt[1], pkt[10], pseq, value))
                 if pseq == seq:
                     return None
             else:
@@ -197,7 +198,7 @@ def main():
     names = {}
     atoms = {}
     for n in ("PROBE_BE32", "PROBE_BE16", "PROBE_BE8", "PROBE_LE32", "PROBE_LE16",
-              "PROBE_R1", "PROBE_R2", "PROBE_R3"):
+              "PROBE_R1", "PROBE_R2", "PROBE_R3", "PROBE_R4", "PROBE_R5", "PROBE_RMISSING"):
         atoms[n] = le.intern(n)
         names[atoms[n]] = n
     p = atoms
@@ -258,20 +259,62 @@ def main():
     events("partial-delete")
     reads("after-partial-delete", p["PROBE_BE32"])
 
-    # 6. RotateProperties by the BE client. Only with PROBE_FULL=1: yserver
-    #    does not implement RotateProperties (BadRequest).
-    for i, n in enumerate(("PROBE_R1", "PROBE_R2", "PROBE_R3")):
-        be.change(0, win, p[n], CARDINAL, 32, [0x0100 + i])
+    # 6. RotateProperties: three properties of different type and format,
+    #    from both byte orders. A BE client's nPositions and atom list must
+    #    be swapped; the 2-property case catches an unswapped delta
+    #    (0x0100 is even, so it would rotate nothing).
+    rot = [p["PROBE_R1"], p["PROBE_R2"], p["PROBE_R3"]]
+    be.change(0, win, p["PROBE_R1"], CARDINAL, 32, [0x01020304])
+    be.change(0, win, p["PROBE_R2"], INTEGER, 16, [0x0102, 0x0304, 7])
+    be.change(0, win, p["PROBE_R3"], STRING, 8, [0x61, 0x62, 0x63])
+    be.change(0, win, p["PROBE_R4"], CARDINAL, 32, [4])
+    be.change(0, win, p["PROBE_R5"], INTEGER, 16, [5])
     be.sync()
     events("rotate-setup")
-    if FULL:
-        plist = [p["PROBE_R1"], p["PROBE_R2"], p["PROBE_R3"]]
-        be.send(114, 0, struct.pack(">IHh", win, 3, 1)
-                + b"".join(struct.pack(">I", a) for a in plist))
-        be.sync()
-        events("rotate")
-        for n in ("PROBE_R1", "PROBE_R2", "PROBE_R3"):
-            reads(f"rotated-{n}", p[n])
+
+    def label(v, window):
+        if v == win:
+            return "W"
+        if v == window:
+            return "the-unknown-window"
+        return names.get(v, f"0x{v:x}")
+
+    def rotate(c, tag, plist, delta, window=None, show=("PROBE_R1", "PROBE_R2", "PROBE_R3")):
+        window = win if window is None else window
+        seq = c.send(114, 0, struct.pack(c.e + "IHh", window, len(plist), delta)
+                     + b"".join(struct.pack(c.e + "I", a) for a in plist))
+        c.sync()
+        errs = [e for e in c.errors if e[2] == seq]
+        c.errors = [e for e in c.errors if e[2] != seq]
+        print(f"rotate {tag} by {c.name}: "
+              + (" ".join(f"error code={e[0]} major={e[1]} value={label(e[3], window)}" for e in errs)
+                 or "ok"))
+        events(f"rotate {tag}")
+        for n in show:
+            reads(f"rotate {tag} {n}", p[n])
+
+    rotate(be, "+1", rot, 1)
+    rotate(le, "-1", rot, -1)
+    rotate(be, "0", rot, 0)
+    rotate(le, "n", rot, 3)
+    rotate(be, "n+1", rot, 4)
+    rotate(le, "-(n+1)", rot, -4)
+    rotate(be, "list-order R3,R1,R2 +1", [p["PROBE_R3"], p["PROBE_R1"], p["PROBE_R2"]], 1)
+    rotate(be, "2-props +1", [p["PROBE_R4"], p["PROBE_R5"]], 1, show=("PROBE_R4", "PROBE_R5"))
+    rotate(le, "2-props +1", [p["PROBE_R4"], p["PROBE_R5"]], 1, show=("PROBE_R4", "PROBE_R5"))
+    rotate(be, "empty-list", [], 1, show=())
+    miss = p["PROBE_RMISSING"]
+    bad_atom = 0x00FFFFF0
+    rotate(be, "missing", [p["PROBE_R1"], miss, p["PROBE_R2"]], 1, show=())
+    rotate(le, "duplicate-first", [p["PROBE_R1"], p["PROBE_R2"], p["PROBE_R1"]], 1, show=())
+    rotate(le, "duplicate-later", [p["PROBE_R1"], p["PROBE_R2"], p["PROBE_R2"]], 1, show=())
+    rotate(be, "bad-atom", [p["PROBE_R1"], p["PROBE_R2"], bad_atom], 1, show=())
+    rotate(be, "none-atom", [p["PROBE_R1"], 0], 1, show=())
+    rotate(le, "missing-before-bad-atom", [miss, bad_atom], 1, show=())
+    rotate(le, "bad-atom-before-missing", [bad_atom, miss], 1, show=())
+    rotate(be, "bad-window", rot, 1, window=be.xid())
+    rotate(be, "bad-window-empty", [], 1, window=be.xid(), show=())
+    rotate(le, "delta-0-missing", [p["PROBE_R1"], miss], 0)
 
     # 7. ListProperties, decoded per client.
     for c in clients:
@@ -283,7 +326,7 @@ def main():
     ext_props(clients, le.intern("PROBE_EXT32"), le.intern("PROBE_EXT16"))
 
     for c in clients:
-        for code, major, seq in c.errors:
+        for code, major, _seq, _value in c.errors:
             print(f"{c.name} error code={code} major={major}")
     open("PROBE-DONE", "w").close()
 
