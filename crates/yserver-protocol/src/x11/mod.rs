@@ -1908,6 +1908,21 @@ pub struct GetPropertyReply<'a> {
     pub value: &'a [u8], // padded to 4 bytes here
 }
 
+/// Convert format-16/32 property items between server (LE) order and a
+/// big-endian client's order, in place; format 8 and LE clients are left
+/// alone. Xorg stores property data in server order and swaps per item on
+/// output (`dix/property.c:535-549`, `CopySwap16Write` / `CopySwap32Write`).
+pub fn swap_property_items(byte_order: ClientByteOrder, format: u8, data: &mut [u8]) {
+    if byte_order == ClientByteOrder::LittleEndian {
+        return;
+    }
+    match format {
+        16 => data.chunks_exact_mut(2).for_each(<[u8]>::reverse),
+        32 => data.chunks_exact_mut(4).for_each(<[u8]>::reverse),
+        _ => {}
+    }
+}
+
 pub fn write_get_property_reply(
     writer: &mut impl Write,
     byte_order: ClientByteOrder,
@@ -1915,6 +1930,7 @@ pub fn write_get_property_reply(
     reply: GetPropertyReply<'_>,
 ) -> io::Result<()> {
     let mut padded = reply.value.to_vec();
+    swap_property_items(byte_order, reply.format, &mut padded);
     pad_vec4(&mut padded);
     // GetProperty's reply `length` field is 32-bit (in 4-byte units). The
     // pre-BIG-REQUESTS u16 limit on *requests* doesn't apply here. Don't
@@ -1951,10 +1967,11 @@ pub fn write_list_properties_reply(
     wire::write_u16(byte_order, &mut reply, n);
     reply.resize(32, 0);
     writer.write_all(&reply)?;
+    let mut list = Vec::with_capacity(4 * usize::from(n));
     for atom in &atoms[..usize::from(n)] {
-        writer.write_all(&atom.0.to_le_bytes())?;
+        wire::write_u32(byte_order, &mut list, atom.0);
     }
-    Ok(())
+    writer.write_all(&list)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1150,6 +1150,7 @@ pub fn encode_get_output_property_reply(
     out.extend_from_slice(&[0u8; 12]); // pad → 32-byte header
     debug_assert_eq!(out.len(), 32);
     out.extend_from_slice(value);
+    super::swap_property_items(byte_order, format, &mut out[32..]);
     pad_vec4(&mut out);
     out
 }

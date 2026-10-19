@@ -100,12 +100,14 @@ fn swap_xi_change_feedback_control(byte_order: ClientByteOrder, body: &mut [u8])
     swap_in_place(entries, byte_order, body);
 }
 
-/// `RRChangeOutputProperty` / `RRChangeProviderProperty`'s trailing value
-/// payload (from body offset 20) is a tagged union selected by the format
-/// byte at offset 12: 8 = bytes (untouched), 16 = `INT16[]`, 32 =
-/// `INT32[]`. Mirrors Xorg's `SProcRRChangeOutputProperty` `SwapRestS` /
-/// `SwapRestL` dispatch.
-fn swap_change_output_property_tail(byte_order: ClientByteOrder, body: &mut [u8]) {
+/// The trailing value payload of core `ChangeProperty` and of
+/// `RRChangeOutputProperty` / `RRChangeProviderProperty` (from body offset
+/// 20 in all three) is a tagged union selected by the format byte at
+/// offset 12: 8 = bytes (untouched), 16 = `CARD16[]`, 32 = `CARD32[]`.
+/// Swapping it here stores the data in server order, as Xorg's
+/// `SProcChangeProperty` (`dix/swapreq.c:209-229`) and
+/// `SProcRRChangeOutputProperty` do with `SwapRestS` / `SwapRestL`.
+fn swap_property_data_tail(byte_order: ClientByteOrder, body: &mut [u8]) {
     use FieldEntry::ElementArrayTail;
 
     let entries: &[FieldEntry] = match body.get(12) {
@@ -411,7 +413,7 @@ const fn randr_request_swap_table(minor: u8) -> Option<&'static [FieldEntry]> {
             u32f!(4),
             u32f!(8),
             u32f!(16),
-            Custom(swap_change_output_property_tail),
+            Custom(swap_property_data_tail),
         ],
         // DestroyMode: a lone RRMode. FreeLease: RRLease + terminate byte.
         17 | 46 => &[u32f!(0)],
@@ -496,7 +498,7 @@ const fn randr_request_swap_table(minor: u8) -> Option<&'static [FieldEntry]> {
 
 #[allow(clippy::too_many_lines)]
 const fn core_request_swap_table(opcode: u8) -> Option<&'static [FieldEntry]> {
-    use FieldEntry::{ElementArrayTail, Fixed, OpaqueTail};
+    use FieldEntry::{Custom, ElementArrayTail, Fixed, OpaqueTail};
     use FieldKind::{I16, U16, U32};
 
     macro_rules! u32f {
@@ -559,18 +561,13 @@ const fn core_request_swap_table(opcode: u8) -> Option<&'static [FieldEntry]> {
         // 17 GetAtomName: atom(u32 at 0)
         17 => &[u32f!(0)],
         // 18 ChangeProperty: window(u32) property(u32) type(u32) format(u8)
-        //                   pad(u8 × 3) data_len(u32) data(opaque, format-
-        //                   dependent — swapping per format would belong in
-        //                   a Custom handler; for now treat as opaque so we
-        //                   don't corrupt e.g. format=32 data).
-        // The format byte at offset 12 is u8 — no swap needed. data_len
-        // at offset 16 is u32 — must be swapped.
+        //                   pad(u8 × 3) data_len(u32) data(format-typed)
         18 => &[
             u32f!(0),
             u32f!(4),
             u32f!(8),
             u32f!(16),
-            OpaqueTail { from: 20 },
+            Custom(swap_property_data_tail),
         ],
         // 19 DeleteProperty: window(u32) property(u32)
         19 => &[u32f!(0), u32f!(4)],

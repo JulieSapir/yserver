@@ -1,0 +1,386 @@
+//! Property data byte order across big- and little-endian clients.
+//!
+//! Every expected value below was measured on Xorg 21.1.24 (vng, a raw
+//! `B` client and a raw `l` client on the same window): Xorg swaps
+//! format-16/32 data on the way in (`dix/swapreq.c:209-229`) and on the
+//! way out (`dix/property.c:535-549`), so a property reads the same to
+//! every client whatever byte order wrote it. Format 8 is never swapped.
+
+use super::*;
+
+const BE: u32 = 1;
+const LE: u32 = 2;
+const WIN: u32 = 0x0040_0001;
+const CARDINAL: u32 = 6;
+const INTEGER: u32 = 19;
+const STRING: u32 = 31;
+
+struct Pair {
+    state: ServerState,
+    be: UnixStream,
+    le: UnixStream,
+    seq: u16,
+}
+
+impl Pair {
+    fn new() -> Self {
+        let mut state = ServerState::new();
+        let be = install_client(&mut state, BE);
+        let le = install_client(&mut state, LE);
+        state.clients.get_mut(&BE).expect("BE client").byte_order = ClientByteOrder::BigEndian;
+        create_root_child(&mut state, WIN);
+        Self {
+            state,
+            be,
+            le,
+            seq: 0,
+        }
+    }
+
+    fn order(client: u32) -> ClientByteOrder {
+        if client == BE {
+            ClientByteOrder::BigEndian
+        } else {
+            ClientByteOrder::LittleEndian
+        }
+    }
+
+    fn atom(&mut self, name: &str) -> u32 {
+        self.state.atoms.intern(name, false).0
+    }
+
+    /// Send a request built in `client`'s byte order through the reader's
+    /// swap and `process_request`; return what that client received.
+    fn send(&mut self, client: u32, opcode: u8, data: u8, body: WireBody) -> Vec<u8> {
+        let mut body = body.1;
+        yserver_protocol::x11::request_swap::swap_request_body(
+            opcode,
+            data,
+            Self::order(client),
+            &mut body,
+        );
+        self.seq += 1;
+        let mut backend = RecordingBackend::new();
+        process_request(
+            &mut self.state,
+            &mut backend,
+            ClientId(client),
+            SequenceNumber(self.seq),
+            RequestHeader {
+                opcode,
+                data,
+                length_units: u32::try_from((4 + body.len()).div_ceil(4)).unwrap(),
+            },
+            &body,
+            None,
+        )
+        .expect("request");
+        self.read(client)
+    }
+
+    fn read(&mut self, client: u32) -> Vec<u8> {
+        if client == BE {
+            read_all_available(&mut self.be)
+        } else {
+            read_all_available(&mut self.le)
+        }
+    }
+
+    fn change(&mut self, client: u32, mode: u8, prop: u32, ty: u32, format: u8, items: &[u32]) {
+        let mut body = WireBody(Self::order(client), Vec::new())
+            .u32(WIN)
+            .u32(prop)
+            .u32(ty)
+            .bytes(&[format, 0, 0, 0])
+            .u32(u32::try_from(items.len()).unwrap());
+        for &item in items {
+            body = match format {
+                8 => body.bytes(&[u8::try_from(item).unwrap()]),
+                16 => body.u16(u16::try_from(item).unwrap()),
+                _ => body.u32(item),
+            };
+        }
+        while !body.1.len().is_multiple_of(4) {
+            body.1.push(0);
+        }
+        let reply = self.send(client, 18, mode, body);
+        assert!(reply.is_empty(), "ChangeProperty answered {reply:02x?}");
+    }
+
+    fn get(&mut self, client: u32, prop: u32, ty: u32, offset: u32, length: u32) -> GetReply {
+        self.get_with(client, prop, ty, offset, length, false)
+    }
+
+    fn get_with(
+        &mut self,
+        client: u32,
+        prop: u32,
+        ty: u32,
+        offset: u32,
+        length: u32,
+        delete: bool,
+    ) -> GetReply {
+        let body = WireBody(Self::order(client), Vec::new())
+            .u32(WIN)
+            .u32(prop)
+            .u32(ty)
+            .u32(offset)
+            .u32(length);
+        let reply = self.send(client, 20, u8::from(delete), body);
+        assert_eq!(reply[0], 1, "GetProperty reply, got {reply:02x?}");
+        let word = |at: usize| {
+            let b: [u8; 4] = reply[at..at + 4].try_into().unwrap();
+            if client == BE {
+                u32::from_be_bytes(b)
+            } else {
+                u32::from_le_bytes(b)
+            }
+        };
+        let format = reply[1];
+        let nitems = word(16);
+        let len = usize::try_from(nitems).unwrap() * usize::from(format.max(8) / 8);
+        GetReply {
+            format,
+            ty: word(8),
+            bytes_after: word(12),
+            nitems,
+            raw: hex(&reply[32..32 + len]),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct GetReply {
+    format: u8,
+    ty: u32,
+    bytes_after: u32,
+    nitems: u32,
+    raw: String,
+}
+
+fn reply(format: u8, ty: u32, nitems: u32, bytes_after: u32, raw: &str) -> GetReply {
+    GetReply {
+        format,
+        ty,
+        bytes_after,
+        nitems,
+        raw: raw.to_string(),
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// RL0's `WM_NORMAL_HINTS` case in miniature: a BE client's CARDINAL/32
+/// is stored in server order and reads as the same numbers to both.
+#[test]
+fn be_written_format32_reads_the_same_values_to_le_and_be() {
+    let mut p = Pair::new();
+    let prop = p.atom("PROBE_BE32");
+    p.change(BE, 0, prop, CARDINAL, 32, &[0x0102_0304, 5]);
+
+    let stored = p
+        .state
+        .resources
+        .window_property(ResourceId(WIN), AtomId(prop))
+        .expect("stored");
+    assert_eq!(hex(&stored.data), "0403020105000000", "server order");
+
+    assert_eq!(
+        p.get(LE, prop, 0, 0, 1000),
+        reply(32, CARDINAL, 2, 0, "0403020105000000")
+    );
+    assert_eq!(
+        p.get(BE, prop, 0, 0, 1000),
+        reply(32, CARDINAL, 2, 0, "0102030400000005")
+    );
+}
+
+#[test]
+fn le_written_format16_and_32_read_swapped_to_a_be_client() {
+    let mut p = Pair::new();
+    let p32 = p.atom("PROBE_LE32");
+    let p16 = p.atom("PROBE_LE16");
+    p.change(LE, 0, p32, CARDINAL, 32, &[0x0102_0304, 5]);
+    p.change(LE, 0, p16, INTEGER, 16, &[0x0102, 0x0304, 7]);
+
+    assert_eq!(
+        p.get(BE, p32, 0, 0, 1000),
+        reply(32, CARDINAL, 2, 0, "0102030400000005")
+    );
+    assert_eq!(
+        p.get(BE, p16, 0, 0, 1000),
+        reply(16, INTEGER, 3, 0, "010203040007")
+    );
+    assert_eq!(
+        p.get(LE, p16, 0, 0, 1000),
+        reply(16, INTEGER, 3, 0, "020104030700")
+    );
+}
+
+#[test]
+fn be_written_format16_reads_the_same_values_to_le_and_be() {
+    let mut p = Pair::new();
+    let prop = p.atom("PROBE_BE16");
+    p.change(BE, 0, prop, INTEGER, 16, &[0x0102, 0x0304, 7]);
+    assert_eq!(
+        p.get(LE, prop, 0, 0, 1000),
+        reply(16, INTEGER, 3, 0, "020104030700")
+    );
+    assert_eq!(
+        p.get(BE, prop, 0, 0, 1000),
+        reply(16, INTEGER, 3, 0, "010203040007")
+    );
+}
+
+#[test]
+fn format8_is_never_swapped() {
+    let mut p = Pair::new();
+    let prop = p.atom("PROBE_BE8");
+    p.change(BE, 0, prop, STRING, 8, &[0x61, 0x62, 1, 2, 3]);
+    assert_eq!(
+        p.get(LE, prop, 0, 0, 1000),
+        reply(8, STRING, 5, 0, "6162010203")
+    );
+    assert_eq!(
+        p.get(BE, prop, 0, 0, 1000),
+        reply(8, STRING, 5, 0, "6162010203")
+    );
+    assert_eq!(p.get(BE, prop, 0, 1, 1), reply(8, STRING, 1, 0, "03"));
+}
+
+/// Append and Prepend from both byte orders concatenate values, not bytes.
+#[test]
+fn mixed_order_append_and_prepend_concatenate_values() {
+    let mut p = Pair::new();
+    let prop = p.atom("PROBE_BE32");
+    p.change(BE, 0, prop, CARDINAL, 32, &[0x0102_0304, 5]);
+    p.change(BE, 2, prop, CARDINAL, 32, &[0x0A0B_0C0D]);
+    p.change(BE, 1, prop, CARDINAL, 32, &[0x1122_3344]);
+    p.change(LE, 2, prop, CARDINAL, 32, &[0x5566_7788]);
+
+    assert_eq!(
+        p.get(BE, prop, 0, 0, 1000),
+        reply(
+            32,
+            CARDINAL,
+            5,
+            0,
+            "1122334401020304000000050a0b0c0d55667788"
+        )
+    );
+    assert_eq!(
+        p.get(LE, prop, 0, 0, 1000),
+        reply(
+            32,
+            CARDINAL,
+            5,
+            0,
+            "4433221104030201050000000d0c0b0a88776655"
+        )
+    );
+    // long_offset/long_length windows are swapped per item too.
+    assert_eq!(
+        p.get(BE, prop, 0, 1, 1),
+        reply(32, CARDINAL, 1, 12, "01020304")
+    );
+    assert_eq!(
+        p.get(LE, prop, 0, 1, 1),
+        reply(32, CARDINAL, 1, 12, "04030201")
+    );
+    assert_eq!(
+        p.get(BE, prop, 0, 2, 5),
+        reply(32, CARDINAL, 3, 0, "000000050a0b0c0d55667788")
+    );
+}
+
+#[test]
+fn format16_windows_swap_each_item() {
+    let mut p = Pair::new();
+    let prop = p.atom("PROBE_BE16");
+    p.change(BE, 0, prop, INTEGER, 16, &[0x0102, 0x0304, 7]);
+    assert_eq!(
+        p.get(BE, prop, 0, 0, 1),
+        reply(16, INTEGER, 2, 2, "01020304")
+    );
+    assert_eq!(
+        p.get(LE, prop, 0, 0, 1),
+        reply(16, INTEGER, 2, 2, "02010403")
+    );
+    assert_eq!(p.get(BE, prop, 0, 1, 1), reply(16, INTEGER, 1, 0, "0007"));
+    assert_eq!(p.get(LE, prop, 0, 1, 1), reply(16, INTEGER, 1, 0, "0700"));
+}
+
+#[test]
+fn delete_reply_is_in_the_reader_order_and_notifies_both() {
+    let mut p = Pair::new();
+    let prop = p.atom("PROBE_LE32");
+    p.change(LE, 0, prop, CARDINAL, 32, &[0x0102_0304, 5]);
+    // PropertyChangeMask on the window for the LE client.
+    let cwa = WireBody(ClientByteOrder::LittleEndian, Vec::new())
+        .u32(WIN)
+        .u32(0x800)
+        .u32(0x0040_0000);
+    p.send(LE, 2, 0, cwa);
+
+    assert_eq!(
+        p.get_with(BE, prop, 0, 0, 1000, true),
+        reply(32, CARDINAL, 2, 0, "0102030400000005")
+    );
+    let event = p.read(LE);
+    assert_eq!(event.len(), 32);
+    assert_eq!(event[0], 28, "PropertyNotify");
+    assert_eq!(u32::from_le_bytes(event[8..12].try_into().unwrap()), prop);
+    assert_eq!(event[16], 1, "PropertyDelete");
+    assert_eq!(p.get(LE, prop, 0, 0, 1000), reply(0, 0, 0, 0, ""));
+}
+
+#[test]
+fn list_properties_atoms_are_in_the_reader_order() {
+    let mut p = Pair::new();
+    let prop = p.atom("PROBE_BE32");
+    p.change(BE, 0, prop, CARDINAL, 32, &[1]);
+    let reply = p.send(
+        BE,
+        21,
+        0,
+        WireBody(ClientByteOrder::BigEndian, Vec::new()).u32(WIN),
+    );
+    assert_eq!(u16::from_be_bytes(reply[8..10].try_into().unwrap()), 1);
+    assert_eq!(u32::from_be_bytes(reply[32..36].try_into().unwrap()), prop);
+}
+
+/// RandR output properties have their own store; Xorg swaps them on input
+/// (`SProcRRChangeOutputProperty`) and on output (`ProcRRGetOutputProperty`),
+/// so a BE writer reads its own `INTEGER/32` back unchanged.
+#[test]
+fn randr_output_property_reads_the_same_values_to_le_and_be() {
+    use yserver_protocol::x11::randr as x11randr;
+
+    let mut p = Pair::new();
+    let output = p.state.randr.outputs[0].output_id;
+    let prop = p.atom("PROBE_EXT32");
+    let change = WireBody(ClientByteOrder::BigEndian, Vec::new())
+        .u32(output)
+        .u32(prop)
+        .u32(INTEGER)
+        .bytes(&[32, 0, 0, 0])
+        .u32(2)
+        .u32(0x0102_0304)
+        .u32(5);
+    p.send(BE, 128, x11randr::RR_CHANGE_OUTPUT_PROPERTY, change);
+    for (client, raw) in [(BE, "0102030400000005"), (LE, "0403020105000000")] {
+        let get = WireBody(Pair::order(client), Vec::new())
+            .u32(output)
+            .u32(prop)
+            .u32(0)
+            .u32(0)
+            .u32(100)
+            .bytes(&[0, 0, 0, 0]);
+        let reply = p.send(client, 128, x11randr::RR_GET_OUTPUT_PROPERTY, get);
+        assert_eq!(reply[0], 1, "GetOutputProperty reply, got {reply:02x?}");
+        assert_eq!(reply[1], 32);
+        assert_eq!(hex(&reply[32..40]), raw, "client {client}");
+    }
+}

@@ -9,6 +9,7 @@ mod glx;
 mod input_control;
 mod present_pixmap;
 mod present_supersede;
+mod props;
 mod randr_crtc;
 mod randr_output;
 mod render;
