@@ -3,7 +3,10 @@ use crate::{
     drm::atomic::tests_support::ScriptedResult,
     kms::{
         backend::ActiveOutput,
-        render::{backend::KmsBackend, scene::SceneCompositor},
+        render::{
+            backend::KmsBackend, platform::flip_events::RecordingRenderCompletionReadiness,
+            scene::SceneCompositor,
+        },
         vk::scanout::{BoPhase, OutputScanout, ScanoutBo, ScanoutBoPool},
     },
     platform::drm::Output,
@@ -12,20 +15,61 @@ use std::{
     collections::HashMap,
     io,
     os::fd::RawFd,
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 use yserver_core::backend::Backend;
 
+/// How the P1 scene fixture reaches KMS. These are test setup choices, not
+/// production route or recovery types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum P1SceneRoute {
+    /// The renderer draws straight into the scanout BOs.
+    Shared,
+    /// Renderer A copies into the sink's BOs; A and the sink share a KMS device.
+    CopiedSameDevice,
+    /// As above, but the sink's KMS device is a different DRM fd.
+    CopiedSeparateDevice,
+}
+
 pub(crate) struct RecordingSceneFixture {
     pub(crate) events: AtomicEventFixture,
+    /// Copied routes only: withholds delivery of real source completions.
+    pub(crate) readiness: Option<Rc<RecordingRenderCompletionReadiness>>,
 }
 
 impl RecordingSceneFixture {
     pub(crate) fn new(output_count: usize) -> Result<Option<Self>, String> {
-        let backend = build_recording_scene_backend(output_count, false, false)?;
-        Ok(backend.map(|backend| Self {
+        Self::with_route(output_count, P1SceneRoute::Shared)
+    }
+
+    /// Build the fixture for one of the scene routes. A copied route also
+    /// installs a bystander (same-device) or the sink (separate-device) KMS
+    /// device and the render-completion observer, before the recorders are
+    /// attached to the devices.
+    pub(crate) fn with_route(
+        output_count: usize,
+        route: P1SceneRoute,
+    ) -> Result<Option<Self>, String> {
+        let Some(mut backend) = build_recording_scene_backend(output_count, false, false)? else {
+            return Ok(None);
+        };
+        let mut readiness = None;
+        if route != P1SceneRoute::Shared {
+            if output_count != 1 {
+                return Err("copied P1 scene routes use one output".to_owned());
+            }
+            install_copied_route(&mut backend, route == P1SceneRoute::CopiedSeparateDevice)?;
+            let observer = Rc::new(RecordingRenderCompletionReadiness::default());
+            backend
+                .platform
+                .for_tests_set_render_completion_readiness(Rc::clone(&observer));
+            readiness = Some(observer);
+        }
+        Ok(Some(Self {
             events: AtomicEventFixture::from_backend(backend),
+            readiness,
         }))
     }
 
@@ -33,7 +77,61 @@ impl RecordingSceneFixture {
         let backend = build_recording_scene_backend(2, false, true)?;
         Ok(backend.map(|backend| Self {
             events: AtomicEventFixture::from_backend(backend),
+            readiness: None,
         }))
+    }
+
+    /// DRM fd of the KMS device that owns output `output_idx` (the sink for a
+    /// copied route).
+    pub(crate) fn kms_fd(&self, output_idx: usize) -> RawFd {
+        let platform = &self.events.backend.platform;
+        let key = &platform.outputs[output_idx].key;
+        std::os::fd::AsRawFd::as_raw_fd(&std::os::fd::AsFd::as_fd(
+            &platform
+                .device_for_output(key)
+                .expect("output has a KMS device")
+                .device,
+        ))
+    }
+
+    /// DRM fd of a live device that does not own output `output_idx`.
+    pub(crate) fn other_fd(&self, output_idx: usize) -> RawFd {
+        let own = self.kms_fd(output_idx);
+        self.events
+            .backend
+            .platform
+            .devices
+            .iter()
+            .map(|device| {
+                std::os::fd::AsRawFd::as_raw_fd(&std::os::fd::AsFd::as_fd(&device.device))
+            })
+            .find(|&fd| fd != own)
+            .expect("copied fixture routes keep a second device")
+    }
+
+    /// Copy ownership of every copied output slot (empty for shared routes):
+    /// destination phase and ownership state plus retained wait semaphores.
+    pub(crate) fn copy_ownership_observation(&self) -> Vec<String> {
+        self.events
+            .backend
+            .platform
+            .scanout_pools
+            .iter()
+            .filter_map(Option::as_ref)
+            .filter_map(|scanout| match scanout {
+                OutputScanout::Copied(pool) => Some(pool.for_tests_copy_ownership()),
+                OutputScanout::Shared(_) => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// Job ids of copied source renders whose completion is not yet delivered.
+    pub(crate) fn pending_render_job_ids(&self) -> Vec<u64> {
+        self.events
+            .backend
+            .platform
+            .for_tests_pending_scanout_render_job_ids()
     }
 
     pub(crate) fn assert_quiescent(&self) {
@@ -95,14 +193,52 @@ impl RecordingSceneFixture {
             "recording scene has pending page-flip acknowledgements"
         );
         assert!(
+            !backend.store.has_pending_presentation_damage(),
+            "live drawable presentation damage remains after normal completion"
+        );
+        for row in self.copy_ownership_observation() {
+            assert!(
+                !(row.contains("phase=Free") && row.contains("ForeignPendingKms")),
+                "a free copied slot still owes a KMS retirement: {row}"
+            );
+            // After a bounded normal drain no wait semaphore is retained and
+            // no source slot is mid-handoff. Master legitimately keeps the
+            // renderer-return fence of every slot the renderer has used
+            // (`ForeignAwaitingRenderer` with a retained return completion,
+            // consumed when the renderer next reuses the slot, either as an fd
+            // or as Vulkan's already-signalled fd=-1 payload); a never-used
+            // slot is `RendererFirstUse` with none.
+            assert!(
+                row.contains("sink_wait=false") && row.contains("renderer_wait=false"),
+                "a copied slot retains a wait semaphore: {row}"
+            );
+            let awaiting_renderer = row.contains("source=Some(ForeignAwaitingRenderer)");
+            let first_use = row.contains("source=Some(RendererFirstUse)");
+            assert!(
+                (awaiting_renderer
+                    && (row.contains("return=fd") || row.contains("return=already-signalled")))
+                    || (first_use && row.contains("return=none")),
+                "a copied source slot is mid-handoff or its return completion is inconsistent: {row}"
+            );
+        }
+        for output_idx in 0..backend.platform.outputs.len() {
+            assert!(
+                backend
+                    .scene
+                    .retirement_observation_for_tests(output_idx)
+                    .starts_with("acks=[]"),
+                "output {output_idx} keeps a scene acknowledgment or copy obligation"
+            );
+        }
+        assert!(
             backend
                 .platform
                 .scanout_pools
                 .iter()
                 .filter_map(Option::as_ref)
                 .flat_map(|scanout| scanout.display_pool().bos.iter())
-                .all(|bo| bo.state.phase != BoPhase::Pending),
-            "recording scene has a Pending scanout BO"
+                .all(|bo| matches!(bo.state.phase, BoPhase::Free | BoPhase::OnScreen)),
+            "recording scene has an in-flight (Pending/Submitted/Recording) scanout BO"
         );
     }
 
@@ -130,6 +266,9 @@ impl RecordingSceneFixture {
             .map(|(&fd, recorder)| (fd, recorder.records().len()))
             .collect();
         let mut submitted_frame = false;
+        if let Some(readiness) = &self.readiness {
+            readiness.resume_ready_jobs();
+        }
         loop {
             if submitted_frame
                 && self
@@ -164,6 +303,9 @@ impl RecordingSceneFixture {
             .expect("damage root through Backend while draining scene pool releases");
             Backend::maybe_composite(&mut self.events.backend)
                 .expect("drain deferred scene pool releases through a damaged Backend tick");
+            // A copied frame submits to KMS only once its source render
+            // completion is delivered; a shared frame has none (no-op).
+            Backend::on_scanout_render_completion(&mut self.events.backend, &mut self.events.state);
             // A fresh damaged tick can submit a frame while it polls the prior
             // frame's deferred pool release. The descriptor-pool ring can
             // return NoPool while those releases are still pending, so keep
@@ -215,6 +357,10 @@ impl RecordingSceneFixture {
                 }
             }
             submitted_frame |= queued_events > 0;
+            if queued_events > 0 {
+                // Stand in for the kernel waiting on the frame's IN_FENCE_FD.
+                self.events.wait_for_submitted_gpu_work();
+            }
             completion_fds.sort_unstable();
             completion_fds.dedup();
             for fd in completion_fds {
@@ -265,6 +411,26 @@ impl RecordingSceneFixture {
         self.drain_deferred_pool_releases(Duration::from_secs(5));
         self.assert_quiescent();
         let root = self.events.backend.core.window_id;
+        // The tearing entry selects a sprite cursor on the root. Release it
+        // the way a client would. Master keeps a root DefineCursor as the
+        // sticky server-wide default (`active_cursor`), so the sprite stays
+        // referenced: assert that behaviour instead of forcing it away.
+        if self.events.backend.cursor_records.contains_key(&0x7f10) {
+            Backend::define_cursor(&mut self.events.backend, None, root, 0)
+                .expect("deselect the fixture cursor through Backend");
+            Backend::free_cursor(&mut self.events.backend, None, 0x7f10)
+                .expect("free the fixture cursor through Backend");
+            Backend::before_block(&mut self.events.backend);
+            assert_eq!(
+                self.events.backend.core.active_cursor,
+                Some(0x7f10),
+                "master keeps the root's cursor as the sticky default"
+            );
+            assert!(self.events.backend.cursor_records.contains_key(&0x7f10));
+        }
+        // Wait for the GPU work the normal drains observed as retired before
+        // any drawable it referenced is freed.
+        self.events.wait_for_submitted_gpu_work();
         for xid in [0x6a00, 0x6a01, 0x6a02, root, 0x6a10, 0x6a11, 0x6a12] {
             if self.events.backend.store.lookup(xid).is_some() {
                 Backend::free_pixmap(&mut self.events.backend, None, xid)
@@ -479,6 +645,78 @@ pub(in crate::kms::render::backend::tests) fn build_recording_scene_backend(
     }
     backend.refresh_present_crtc_clock_epochs();
     Ok(Some(backend))
+}
+
+/// Convert the shared recording pools to copied pools (A copies into the
+/// recording sink BOs). A second KMS device is always installed: the sink
+/// itself for the separate-device route, an unrelated bystander otherwise, so
+/// tests can inject events on a device that does not own the output.
+fn install_copied_route(backend: &mut KmsBackend, separate_sink: bool) -> Result<(), String> {
+    let other_key = super::super::test_device_key(1);
+    super::super::push_test_device(backend, other_key);
+    let render_device_id = backend.platform.outputs[0].scanout_route.render_device_id;
+    let sink_key = if separate_sink {
+        other_key
+    } else {
+        backend.platform.outputs[0].key.device_key
+    };
+    let route = crate::kms::scanout_route::ScanoutRoute::new(
+        render_device_id,
+        sink_key,
+        crate::kms::scanout_route::RenderKmsRelationship::Different,
+    );
+    for output in &mut backend.platform.outputs {
+        output.key.device_key = sink_key;
+        output.scanout_route = route;
+    }
+    for output in &backend.platform.outputs {
+        backend
+            .pstate
+            .crtc_key_by_id
+            .insert(u32::from(output.output.crtc), output.key.clone());
+    }
+    backend.refresh_present_crtc_clock_epochs();
+    let vk = Arc::clone(
+        backend
+            .platform
+            .gpu
+            .vk
+            .as_ref()
+            .expect("Vk-backed test fixture has a context"),
+    );
+    for output_idx in 0..backend.platform.scanout_pools.len() {
+        let Some(Some(OutputScanout::Shared(mut destinations))) = backend
+            .platform
+            .scanout_pools
+            .get_mut(output_idx)
+            .map(Option::take)
+        else {
+            return Err(format!(
+                "copied route requires a shared destination pool for output {output_idx}"
+            ));
+        };
+        destinations.route = route;
+        let mut copied = crate::kms::vk::scanout::CopiedScanoutPool::for_tests_recording_pool(
+            Arc::clone(&vk),
+            destinations,
+        )
+        .map_err(|error| format!("allocate copied recording route: {error}"))?;
+        if let Some(front_idx) = copied
+            .destinations
+            .bos
+            .iter()
+            .position(|bo| bo.state.phase == BoPhase::OnScreen)
+        {
+            copied
+                .note_kms_modeset_installed(front_idx)
+                .map_err(|error| format!("record copied fixture front ownership: {error}"))?;
+        }
+        backend.platform.scanout_pools[output_idx] = Some(OutputScanout::Copied(copied));
+    }
+    let layouts = backend.platform.scene_output_layouts();
+    backend.scene = SceneCompositor::new(&backend.platform, &layouts)
+        .map_err(|error| format!("rebuild copied route scene: {error:?}"))?;
+    Ok(())
 }
 
 fn is_expected_vulkan_absence(error: &io::Error) -> bool {

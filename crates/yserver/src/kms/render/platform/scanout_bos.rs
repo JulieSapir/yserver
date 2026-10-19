@@ -63,7 +63,7 @@ impl PlatformBackend {
         output_idx: usize,
         bo_idx: usize,
         render_completion: Option<OwnedFd>,
-    ) -> io::Result<()> {
+    ) -> io::Result<u64> {
         self.debug_assert_scanout_pool_route(output_idx);
         let output_key = self
             .outputs
@@ -135,13 +135,13 @@ impl PlatformBackend {
                 &cursor_positions,
                 crate::drm::async_flip::FlipTiming::Vsync,
             ) {
-                Ok(()) => {
+                Ok(event_id) => {
                     if let Some(fd) = destination.state.transition_to_pending(out_fence_fd) {
                         // SAFETY: transition_to_pending transfers the uniquely
                         // owned input-fence fd back to this caller.
                         unsafe { libc::close(fd) };
                     }
-                    Ok(())
+                    Ok(event_id)
                 }
                 Err(error) => {
                     if let Some(fd) = destination

@@ -67,7 +67,12 @@ pub enum FrameTargetError {
 /// How a finished frame leaves the sink.
 pub enum FrameHandoff {
     /// Composed and flipped; retirement comes as a page flip.
-    FlipPending(ComposeSubmit),
+    FlipPending {
+        submit: ComposeSubmit,
+        /// Identity of the accepted commit's retiring page-flip event.
+        /// Non-KMS sinks leave this empty.
+        event_id: Option<u64>,
+    },
     /// Composed into the copied route's source; the completion fd (`None` is
     /// the already-signalled payload) goes to
     /// [`OutputSink::register_render_completion`].
@@ -178,7 +183,7 @@ pub trait OutputSink {
         output_idx: usize,
         bo_idx: usize,
         fd: Option<OwnedFd>,
-    ) -> io::Result<()>;
+    ) -> io::Result<Option<u64>>;
 }
 
 /// A cursor show that failed, and whether the old sprite is still visible.

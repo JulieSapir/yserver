@@ -76,6 +76,24 @@ impl CopiedScanoutPlan {
 }
 
 impl CopiedRenderSource {
+    /// Test fixture for exercising the copied OutputSink branch with a
+    /// recording KMS destination. The renderer and sink share lavapipe here;
+    /// this verifies the copy path itself, not cross-device eligibility.
+    #[cfg(test)]
+    pub(crate) fn for_tests_recording_source(
+        vk: Arc<VkContext>,
+        width: u32,
+        height: u32,
+    ) -> io::Result<Self> {
+        Self::allocate_exact(
+            Arc::clone(&vk),
+            vk,
+            width,
+            height,
+            CopiedSourcePlan::DrmModifier(crate::kms::vk::dri3::DRM_FORMAT_MOD_LINEAR),
+        )
+    }
+
     fn allocate_exact(
         render_vk: Arc<VkContext>,
         sink_vk: Arc<VkContext>,
@@ -639,6 +657,71 @@ impl Drop for CopiedRenderSource {
 }
 
 impl CopiedScanoutPool {
+    /// Read-only dump of each slot's copy ownership: destination BO phase,
+    /// the destination ownership state, and the sink/renderer wait
+    /// semaphores the source still retains.
+    #[cfg(test)]
+    pub(crate) fn for_tests_copy_ownership(&self) -> Vec<String> {
+        self.destinations
+            .bos
+            .iter()
+            .enumerate()
+            .map(|(idx, bo)| {
+                format!(
+                    "bo{idx} phase={:?} ownership={:?} source={:?} return={} sink_wait={} renderer_wait={}",
+                    bo.state.phase,
+                    self.destination_ownership.get(idx),
+                    self.sources.get(idx).map(|s| s.ownership),
+                    self.sources.get(idx).map_or("absent", |s| {
+                        match &s.renderer_return_completion {
+                            None => "none",
+                            Some(RetainedSyncFile::AlreadySignalled) => "already-signalled",
+                            Some(RetainedSyncFile::Fd(_)) => "fd",
+                        }
+                    }),
+                    self.sources
+                        .get(idx)
+                        .is_some_and(|s| s.sink_wait_semaphore.is_some()),
+                    self.sources
+                        .get(idx)
+                        .is_some_and(|s| s.renderer_wait_semaphore.is_some()),
+                )
+            })
+            .collect()
+    }
+
+    /// Pair real Vulkan copy sources with a recording destination pool so
+    /// backend tests can exercise `OutputScanout::Copied` without DRM access.
+    #[cfg(test)]
+    pub(crate) fn for_tests_recording_pool(
+        vk: Arc<VkContext>,
+        destinations: ScanoutBoPool,
+    ) -> io::Result<Self> {
+        let source_plan =
+            CopiedSourcePlan::DrmModifier(crate::kms::vk::dri3::DRM_FORMAT_MOD_LINEAR);
+        let count = destinations.bos.len();
+        let mut sources = Vec::with_capacity(count);
+        for _ in 0..count {
+            sources.push(CopiedRenderSource::for_tests_recording_source(
+                Arc::clone(&vk),
+                destinations.width,
+                destinations.height,
+            )?);
+        }
+        let plan = CopiedScanoutPlan {
+            source: source_plan,
+            destination: destinations.allocation_plan,
+        };
+        Ok(Self {
+            sources,
+            destination_ownership: vec![CopiedDestinationOwnership::LocalFirstUse; count],
+            route: destinations.route,
+            plan,
+            sink_vk: vk,
+            destinations,
+        })
+    }
+
     pub(crate) fn finish_disposable_probe(
         self,
         result: Result<(), DisposableProbeError>,

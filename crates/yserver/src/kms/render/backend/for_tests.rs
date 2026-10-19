@@ -1433,10 +1433,13 @@ impl KmsBackend {
         self.simulate_page_flip_complete_for_tests()?;
         let mut retired = 0usize;
         for output_idx in 0..self.platform.outputs.len() {
-            if self
-                .scene
-                .handle_page_flip_complete(output_idx, &mut self.store, &mut self.platform)
-            {
+            let event_id = self.scene.pending_page_flip_event_id(output_idx);
+            if self.scene.handle_page_flip_complete(
+                output_idx,
+                event_id,
+                &mut self.store,
+                &mut self.platform,
+            ) {
                 retired += 1;
             }
         }

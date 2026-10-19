@@ -2178,6 +2178,7 @@ impl KmsBackend {
             let scene_retired = !direct_retired
                 && self.scene.handle_page_flip_complete(
                     output_idx,
+                    matched_event_id,
                     &mut self.store,
                     &mut self.platform,
                 );

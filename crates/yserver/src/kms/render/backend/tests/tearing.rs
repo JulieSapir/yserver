@@ -630,6 +630,20 @@ fn enter_tearing_without_direct_scanout_for_state_ids(
     completion_dst_host_xid: u32,
     first_present: u64,
 ) {
+    submit_initial_tearing_frame(backend);
+    retire_composed_frame(backend, state, 1);
+    finish_entering_tearing(
+        backend,
+        protocol_window_xid,
+        host_window_xid,
+        completion_dst_host_xid,
+        first_present,
+    );
+}
+
+/// First half of tearing entry: select the visible root cursor and submit the
+/// initial scene frame. The caller retires that frame.
+pub(super) fn submit_initial_tearing_frame(backend: &mut KmsBackend) {
     use yserver_core::backend::Backend;
 
     let cursor_xid = 0x7f10;
@@ -651,7 +665,16 @@ fn enter_tearing_without_direct_scanout_for_state_ids(
                 .for_tests_record_count(),
         ),
     );
-    retire_composed_frame(backend, state, 1);
+}
+
+/// Second half of tearing entry, after the initial frame retired.
+pub(super) fn finish_entering_tearing(
+    backend: &mut KmsBackend,
+    protocol_window_xid: u32,
+    host_window_xid: u32,
+    completion_dst_host_xid: u32,
+    first_present: u64,
+) {
     assert_eq!(
         backend.scene.cursor_mode(),
         crate::kms::render::scene::CursorPlaneMode::Sw,

@@ -36,7 +36,9 @@ fn record(
     }
 }
 
-fn submit_damaged_frame(fixture: &mut RecordingSceneFixture) -> Vec<(RawFd, AtomicCommitRecord)> {
+pub(super) fn submit_damaged_frame(
+    fixture: &mut RecordingSceneFixture,
+) -> Vec<(RawFd, AtomicCommitRecord)> {
     let offsets: std::collections::HashMap<_, _> = fixture
         .events
         .recorders
@@ -95,13 +97,16 @@ fn submit_damaged_frame(fixture: &mut RecordingSceneFixture) -> Vec<(RawFd, Atom
     attempts
 }
 
-fn complete_recorded_attempt(
+pub(super) fn complete_recorded_attempt(
     fixture: &mut RecordingSceneFixture,
     fd: RawFd,
     record: &AtomicCommitRecord,
     cookie: u64,
     frame: u32,
 ) {
+    // The kernel retires a flip only after the frame's IN_FENCE_FD (the GPU
+    // work) signalled; stand in for that before injecting its completion.
+    fixture.events.wait_for_submitted_gpu_work();
     for event in &record.events {
         fixture.events.queue_commit_completion(
             fd,
@@ -114,7 +119,7 @@ fn complete_recorded_attempt(
     Backend::on_page_flip_ready(&mut fixture.events.backend, &mut fixture.events.state, fd);
 }
 
-fn pending_ids(
+pub(super) fn pending_ids(
     fixture: &RecordingSceneFixture,
     fd: RawFd,
     crtc: ::drm::control::crtc::Handle,
@@ -184,7 +189,7 @@ fn install_recording_vt_io(fixture: &mut RecordingSceneFixture) {
         .for_tests_set_vt_resume_executor(std::rc::Rc::new(LogicalVtResume));
 }
 
-fn assert_pending_bo_phases(
+pub(super) fn assert_pending_bo_phases(
     fixture: &RecordingSceneFixture,
 ) -> Vec<Vec<crate::kms::vk::scanout::BoPhase>> {
     fixture
@@ -328,6 +333,7 @@ fn p1_explicit_cookie_duplicate_and_unknown_retire_nothing() {
 #[test]
 #[ignore = "needs live Vulkan ICD (lavapipe)"]
 // Mutation: disable zero-cookie FIFO attribution so the accepted scene obligation remains pending.
+// Mutation: a zero-cookie match removes the entry but returns None; the scene frame then stays pending.
 fn p1_zero_cookie_preserves_fifo_attribution() {
     let Some(mut fixture) = one_recording_scene() else {
         return;
@@ -346,13 +352,26 @@ fn p1_zero_cookie_preserves_fifo_attribution() {
     let id = accepted_event_id(&accepted[0].1).expect("scene request accepted");
     let crtc = accepted[0].1.events[0].crtc;
     assert_eq!(pending_ids(&fixture, fd, crtc), [id]);
+    assert_eq!(
+        fixture.events.backend.scene.pending_page_flip_event_id(0),
+        Some(id)
+    );
 
     fixture
         .events
         .queue_commit_completion(fd, crtc, 0, 71, Duration::from_millis(710));
     Backend::on_page_flip_ready(&mut fixture.events.backend, &mut fixture.events.state, fd);
     assert!(pending_ids(&fixture, fd, crtc).is_empty());
-    assert!(!fixture.events.backend.scene.has_pending_page_flips());
+    // The zero cookie matched the oldest entry and handed its id to scene
+    // retirement, which retired the accepted frame through Backend work.
+    assert!(
+        !fixture.events.backend.scene.has_pending_page_flips(),
+        "a zero-cookie completion must retire the accepted scene frame"
+    );
+    assert_eq!(
+        fixture.events.backend.scene.pending_page_flip_event_id(0),
+        None
+    );
     assert_eq!(
         sink.for_tests_unmatched_page_flip_event_count(),
         unmatched_before,

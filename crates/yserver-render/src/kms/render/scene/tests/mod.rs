@@ -122,7 +122,7 @@ impl OutputSink for TestSink {
         _output_idx: usize,
         _bo_idx: usize,
         _fd: Option<std::os::fd::OwnedFd>,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<u64>> {
         Err(io::Error::other(
             "render completion targeted a shared output",
         ))

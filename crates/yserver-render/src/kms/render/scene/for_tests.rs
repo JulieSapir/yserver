@@ -51,6 +51,48 @@ impl SceneCompositor {
             .unwrap_or_default()
     }
 
+    /// Test-only read-only dump of what scene retirement would consume or
+    /// leave behind for one output: every pending acknowledgment (stage, BO,
+    /// generation, drawable damage snapshots, submitted output damage), the
+    /// output-level damage that survives, the descriptor-pool slots and the
+    /// failed-submit BOs. Equal dumps mean retirement touched nothing.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retirement_observation_for_tests(&self, output_idx: usize) -> String {
+        let Some(output) = self
+            .inner
+            .as_ref()
+            .and_then(|inner| inner.outputs.get(output_idx))
+        else {
+            return String::from("no output");
+        };
+        let acks: Vec<String> = output
+            .pending_acks
+            .iter()
+            .map(|ack| {
+                format!(
+                    "stage={:?} bo={} generation={} snapshots={:?} output_damage={:?}",
+                    ack.stage,
+                    ack.bo_idx,
+                    ack.generation,
+                    ack.drawable_snapshots,
+                    ack.submitted_output_damage,
+                )
+            })
+            .collect();
+        format!(
+            "acks={acks:?} structure_damage={:?} failed_repaint={:?} pool_slots={:?} \
+             pending_pool_releases={} failed_submit_bos={} prev_presented={} \
+             scanout_damage={:?}",
+            output.scene_structure_damage,
+            output.pending_repaint_after_failed_submit,
+            output.pool_slots,
+            output.pending_pool_releases.len(),
+            output.failed_submit_bos.len(),
+            output.prev_presented.len(),
+            output.damage,
+        )
+    }
+
     /// Test-only snapshot of the per-output submit retry deadline and the
     /// number of BOs retained after a failed submit.
     #[cfg(any(test, feature = "test-support"))]

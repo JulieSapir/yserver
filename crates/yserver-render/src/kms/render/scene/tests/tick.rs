@@ -68,19 +68,33 @@ fn copied_completion_requires_exact_job_and_paired_bo() {
 #[test]
 fn copied_frame_cannot_retire_before_sink_kms_submission() {
     let waiting = InFlightStage::WaitingForRenderCompletion { job_id: 7 };
-    assert!(!kms_retirement_matches(waiting, 1, 1));
+    assert!(!kms_retirement_matches(waiting, 1, 1, Some(5)));
+    assert!(!kms_retirement_matches(waiting, 1, 1, None));
     assert!(!copied_render_completion_matches(
-        InFlightStage::KmsFlipPending,
+        InFlightStage::KmsFlipPending { event_id: Some(5) },
         1,
         7,
         1,
     ));
 }
 
+// Mutation: drop the event-ID equality from `matches_kms_event`, treat an absent
+// ID as a wildcard, or ignore the paired BO — each flips an assertion below.
 #[test]
 fn kms_retirement_requires_the_exact_paired_bo() {
-    assert!(kms_retirement_matches(InFlightStage::KmsFlipPending, 1, 1,));
-    assert!(!kms_retirement_matches(InFlightStage::KmsFlipPending, 1, 2,));
+    let accepted = InFlightStage::KmsFlipPending { event_id: Some(9) };
+    assert!(kms_retirement_matches(accepted, 1, 1, Some(9)));
+    assert!(!kms_retirement_matches(accepted, 1, 2, Some(9)));
+    assert!(!kms_retirement_matches(accepted, 1, 1, Some(8)));
+    assert!(!kms_retirement_matches(accepted, 1, 1, None));
+    // A surface frame has no identity; absent identity only equals absent.
+    let identityless = InFlightStage::KmsFlipPending { event_id: None };
+    assert!(kms_retirement_matches(identityless, 1, 1, None));
+    assert!(!kms_retirement_matches(identityless, 1, 1, Some(9)));
+    assert!(!kms_retirement_matches(identityless, 1, 2, None));
+    let waiting = InFlightStage::WaitingForRenderCompletion { job_id: 9 };
+    assert!(!kms_retirement_matches(waiting, 1, 1, Some(9)));
+    assert!(!kms_retirement_matches(waiting, 1, 1, None));
 }
 
 #[test]

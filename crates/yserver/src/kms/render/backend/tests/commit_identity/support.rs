@@ -20,7 +20,7 @@ use std::{
     rc::Rc,
     time::Duration,
 };
-use yserver_core::server::ServerState;
+use yserver_core::{backend::Backend, server::ServerState};
 
 pub(crate) struct AtomicEventFixture {
     pub(crate) backend: KmsBackend,
@@ -168,6 +168,58 @@ impl AtomicEventFixture {
             .queue_sequence_for_tests(user_data, time_ns, sequence);
     }
 
+    /// Wait, bounded, for the GPU work the test started to complete, standing
+    /// in for the kernel waiting on a flip's IN_FENCE_FD before it signals
+    /// the flip event. An empty queue submission carrying a fence is ordered
+    /// after earlier work on the queue; poll it through the normal Backend
+    /// reclaim entry. Any Vulkan error or a missed deadline fails the test.
+    pub(crate) fn wait_for_submitted_gpu_work(&mut self) {
+        let Some(vk) = self.backend.platform.gpu.vk.clone() else {
+            return;
+        };
+        let ticket = self
+            .backend
+            .platform
+            .gpu
+            .acquire_fence_ticket()
+            .expect("acquire a fence for the GPU completion wait");
+        // SAFETY: an empty submission with a pool fence on the graphics queue.
+        unsafe {
+            vk.device
+                .queue_submit2(vk.graphics_queue, &[], ticket.fence())
+                .expect("submit the GPU completion fence");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match ticket.poll_signaled_result(&vk) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => panic!("GPU completion fence status failed: {error:?}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "submitted GPU work did not complete before the deadline"
+            );
+            Backend::before_block(&mut self.backend);
+        }
+    }
+
+    /// Live presentation damage of every scene-participating drawable, read
+    /// from the `DrawableStore` (not from saved acknowledgment snapshots).
+    pub(crate) fn store_damage_observation(&self) -> String {
+        let store = &self.backend.store;
+        let mut ids = store.armed_damaged_ids();
+        ids.sort_by_key(|id| format!("{id:?}"));
+        let rows: Vec<String> = ids
+            .into_iter()
+            .map(|id| format!("{id:?}={:?}", store.peek_presentation_damage(id)))
+            .collect();
+        format!(
+            "pending={} {rows:?}",
+            store.has_pending_presentation_damage()
+        )
+    }
+
     /// Check observations without clearing state or manufacturing completion.
     pub(crate) fn assert_quiescent(&self) {
         for device in &self.backend.platform.devices {
@@ -197,6 +249,13 @@ impl AtomicEventFixture {
                 );
             }
         }
+        assert!(
+            self.backend
+                .platform
+                .for_tests_pending_scanout_render_job_ids()
+                .is_empty(),
+            "copied source render jobs remain undelivered"
+        );
         for source in self.event_sources.values() {
             assert_eq!(source.queued_flip_count(), 0, "unconsumed injected flip");
         }

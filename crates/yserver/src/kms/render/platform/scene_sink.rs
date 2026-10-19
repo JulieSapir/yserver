@@ -157,13 +157,18 @@ impl OutputSink for PlatformBackend {
                 {
                     cursor_rejection_error = Some(error.to_string());
                 }
-                if let Ok((_, result)) = &submitted {
+                if let Ok((_, result, _)) = &submitted {
                     async_outcome = Some(*result);
                     shared_cursor_commit_submitted =
                         *result != crate::drm::async_flip::AsyncOutcome::Accepted;
                 }
                 let result =
-                    submitted.map(|(compose, _async_outcome)| FrameHandoff::FlipPending(compose));
+                    submitted.map(
+                        |(submit, _async_outcome, event_id)| FrameHandoff::FlipPending {
+                            submit,
+                            event_id: Some(event_id),
+                        },
+                    );
                 FinishOutcome::Finished {
                     result,
                     previous_gpu_ns: bo.last_gpu_render_ns.take(),
@@ -269,8 +274,8 @@ impl OutputSink for PlatformBackend {
         output_idx: usize,
         bo_idx: usize,
         fd: Option<OwnedFd>,
-    ) -> io::Result<()> {
-        self.submit_copied_scanout(output_idx, bo_idx, fd)
+    ) -> io::Result<Option<u64>> {
+        self.submit_copied_scanout(output_idx, bo_idx, fd).map(Some)
     }
 }
 
@@ -564,7 +569,7 @@ fn submit_shared_scanout_frame(
     async_ledger: &mut crate::drm::async_flip::AsyncFlipLedger,
     timing: crate::drm::async_flip::FlipTiming,
     tearing_context: crate::drm::atomic::TearingCommitContext,
-) -> Result<(ComposeSubmit, crate::drm::async_flip::AsyncOutcome), PresentError> {
+) -> Result<(ComposeSubmit, crate::drm::async_flip::AsyncOutcome, u64), PresentError> {
     use std::os::fd::{FromRawFd, IntoRawFd};
 
     if bo.state.phase != BoPhase::Free {
@@ -606,9 +611,9 @@ fn submit_shared_scanout_frame(
     );
     let async_outcome = if attempt_timing == crate::drm::async_flip::FlipTiming::Async {
         match submit_result {
-            Ok(()) => {
+            Ok(accepted_id) => {
                 async_ledger.note_accepted(stream, &shape);
-                submit_result = Ok(());
+                submit_result = Ok(accepted_id);
                 crate::drm::async_flip::AsyncOutcome::Accepted
             }
             Err(error) if error.raw_os_error() == Some(libc::EINVAL) => {
@@ -645,13 +650,13 @@ fn submit_shared_scanout_frame(
     };
 
     match submit_result {
-        Ok(()) => {
+        Ok(event_id) => {
             if let Some(reclaimed) = bo.state.transition_to_pending(out_fence) {
                 // SAFETY: this is the in-fence fd retained across any async
                 // EINVAL retry and returned after atomic acceptance.
                 drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(reclaimed) });
             }
-            Ok((submitted, async_outcome))
+            Ok((submitted, async_outcome, event_id))
         }
         Err(error) => {
             if let Some(reclaimed) = bo.state.transition_to_recording_after_atomic_reject() {

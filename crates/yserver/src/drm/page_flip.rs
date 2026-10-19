@@ -203,7 +203,7 @@ pub(crate) fn submit_scene_flip_with_fences(
     out_fence_holder: &mut i32,
     cursor_positions: &[CursorPlanePosition],
     timing: crate::drm::async_flip::FlipTiming,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     submit_scene_flip_with_fences_tearing(
         device,
         atomic_commit_sink,
@@ -227,7 +227,7 @@ pub(crate) fn submit_scene_flip_with_fences_tearing(
     cursor_positions: &[CursorPlanePosition],
     timing: crate::drm::async_flip::FlipTiming,
     tearing_context: crate::drm::atomic::TearingCommitContext,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let cursor_positions = match timing {
         crate::drm::async_flip::FlipTiming::Vsync => cursor_positions,
         crate::drm::async_flip::FlipTiming::Async => &[],
@@ -285,7 +285,14 @@ pub(crate) fn submit_scene_flip_with_fences_tearing(
             crate::drm::async_flip::FlipTiming::Vsync => AtomicCommitFlags::empty(),
             crate::drm::async_flip::FlipTiming::Async => AtomicCommitFlags::PAGE_FLIP_ASYNC,
         };
-    atomic_commit_sink.submit_tearing(device, flags, kind, request, &[event], tearing_context)
+    atomic_commit_sink.submit_tearing_with_commit_id(
+        device,
+        flags,
+        kind,
+        request,
+        &[event],
+        tearing_context,
+    )
 }
 
 fn submit_flip_inner(

@@ -64,13 +64,17 @@ pub(crate) struct RecordingRenderCompletionReadiness {
 
 #[cfg(test)]
 impl RecordingRenderCompletionReadiness {
-    #[allow(dead_code)] // consumed by copied-scene fixtures in Task 3
     pub(crate) fn hold_ready_jobs(&self) {
         self.hold_ready.set(true);
         self.released_ready.borrow_mut().clear();
     }
 
-    #[allow(dead_code)] // consumed by copied-scene fixtures in Task 3
+    /// Stop withholding: every job whose real completion fd is readable is
+    /// delivered again.
+    pub(crate) fn resume_ready_jobs(&self) {
+        self.hold_ready.set(false);
+    }
+
     pub(crate) fn release_ready_job(&self, job_id: u64) {
         self.released_ready.borrow_mut().insert(job_id);
     }
@@ -309,8 +313,16 @@ impl PageFlipEventSource for RecordingPageFlipEventSource {
 }
 
 impl PlatformBackend {
+    /// Read-only probe: job ids of the copied renders still awaiting delivery.
     #[cfg(test)]
-    #[allow(dead_code)] // consumed by copied-scene fixtures in Task 3
+    pub(crate) fn for_tests_pending_scanout_render_job_ids(&self) -> Vec<u64> {
+        self.pending_scanout_render_completions
+            .iter()
+            .map(|pending| pending.job_id)
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn for_tests_set_render_completion_readiness(
         &mut self,
         readiness: Rc<RecordingRenderCompletionReadiness>,

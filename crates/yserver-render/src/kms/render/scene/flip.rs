@@ -17,8 +17,8 @@ impl InFlightStage {
         self == Self::WaitingForRenderCompletion { job_id }
     }
 
-    fn is_kms_flip_pending(self) -> bool {
-        self == Self::KmsFlipPending
+    fn matches_kms_event(self, event_id: Option<u64>) -> bool {
+        matches!(self, Self::KmsFlipPending { event_id: expected } if expected == event_id)
     }
 }
 
@@ -35,8 +35,9 @@ pub(super) fn kms_retirement_matches(
     stage: InFlightStage,
     pending_bo_idx: usize,
     presented_bo_idx: usize,
+    event_id: Option<u64>,
 ) -> bool {
-    pending_bo_idx == presented_bo_idx && stage.is_kms_flip_pending()
+    pending_bo_idx == presented_bo_idx && stage.matches_kms_event(event_id)
 }
 
 impl SceneCompositor {
@@ -68,8 +69,21 @@ impl SceneCompositor {
             .is_some_and(|output| !output.pending_acks.is_empty())
     }
 
+    /// Identity of the accepted scene commit awaiting retirement on one
+    /// output. A copied frame has none until its KMS submit accepts.
+    pub fn pending_page_flip_event_id(&self, output_idx: usize) -> Option<u64> {
+        let inner = self.inner.as_ref()?;
+        let output = inner.outputs.get(output_idx)?;
+        match output.pending_acks.front()?.stage {
+            InFlightStage::KmsFlipPending { event_id } => event_id,
+            InFlightStage::WaitingForRenderCompletion { .. } => None,
+        }
+    }
+
     /// Handle a DRM page-flip-complete event for `output_idx`.
-    /// Pops the matching pending-ack, ack's its damage snapshots
+    /// `event_id` is the identity the backend matched for the event; it must
+    /// equal the pending frame's accepted identity before the sink's BO
+    /// pool is touched. Pops the matching pending-ack, ack's its damage snapshots
     /// against the store, releases the descriptor-pool slot,
     /// then advances the platform's BO state machine via
     /// `on_page_flip_complete`. Engine retirement happens after
@@ -77,6 +91,7 @@ impl SceneCompositor {
     pub fn handle_page_flip_complete(
         &mut self,
         output_idx: usize,
+        event_id: Option<u64>,
         store: &mut DrawableStore,
         sink: &mut dyn OutputSink,
     ) -> bool {
@@ -88,6 +103,11 @@ impl SceneCompositor {
             .get(output_idx)
             .and_then(|state| state.pending_acks.front())
             .map(|ack| (ack.stage, ack.bo_idx));
+        // Identity gate: a wrong or missing ID must leave the sink's BO
+        // phases and pool untouched.
+        if !expected.is_some_and(|(stage, _)| stage.matches_kms_event(event_id)) {
+            return false;
+        }
         let Some(retire) = sink.on_page_flip_complete(output_idx) else {
             return false;
         };
@@ -95,7 +115,7 @@ impl SceneCompositor {
             return false;
         };
         if !expected.is_some_and(|(stage, bo_idx)| {
-            kms_retirement_matches(stage, bo_idx, retire.presented_bo_idx)
+            kms_retirement_matches(stage, bo_idx, retire.presented_bo_idx, event_id)
         }) {
             log::warn!(
                 "render scene: page-flip-complete on output {output_idx} presented bo {} \
@@ -306,9 +326,9 @@ pub(super) fn handle_scanout_render_completion_inner(
     }
 
     match sink.submit_copied(output_idx, bo_idx, fd) {
-        Ok(()) => {
+        Ok(event_id) => {
             if let Some(ack) = inner.outputs[output_idx].pending_acks.front_mut() {
-                ack.stage = InFlightStage::KmsFlipPending;
+                ack.stage = InFlightStage::KmsFlipPending { event_id };
             }
             true
         }

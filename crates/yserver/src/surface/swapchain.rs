@@ -305,7 +305,10 @@ impl SurfaceOutput {
                 log::warn!("surface: present failed: {e:?}");
             }
             self.clock.arm_tick();
-            FrameHandoff::FlipPending(submitted)
+            FrameHandoff::FlipPending {
+                submit: submitted,
+                event_id: None,
+            }
         });
         let fail_stop = matches!(result, Err(PresentError::Vk(vk::Result::ERROR_DEVICE_LOST)));
         FinishOutcome::Finished {

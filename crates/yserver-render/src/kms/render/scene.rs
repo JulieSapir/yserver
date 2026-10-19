@@ -148,8 +148,14 @@ fn output_transform(
 /// in-flight compose; popped front on page-flip-complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InFlightStage {
-    WaitingForRenderCompletion { job_id: u64 },
-    KmsFlipPending,
+    WaitingForRenderCompletion {
+        job_id: u64,
+    },
+    /// Accepted by KMS. `event_id` is the accepted commit's event identity;
+    /// non-KMS sinks have none.
+    KmsFlipPending {
+        event_id: Option<u64>,
+    },
 }
 
 struct PendingAck {

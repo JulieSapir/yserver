@@ -339,6 +339,12 @@ impl SceneCompositor {
     }
 }
 
+/// What the sink did with a finished frame, as the tick consumes it.
+enum Handoff {
+    Flipped(Option<u64>),
+    Render(Option<std::os::fd::OwnedFd>),
+}
+
 pub(super) fn output_is_ready_for_submit(
     pending_acks_empty: bool,
     output_commit_in_flight: bool,
@@ -1267,12 +1273,12 @@ fn tick_one_output(
                 fail_stop,
             } => (
                 result.map(|handoff| match handoff {
-                    FrameHandoff::FlipPending(submitted) => {
+                    FrameHandoff::FlipPending { submit, event_id } => {
                         compose_complete =
-                            compose_submit_was_complete(submitted, render_scene.draws.len());
-                        None
+                            compose_submit_was_complete(submit, render_scene.draws.len());
+                        Handoff::Flipped(event_id)
                     }
-                    FrameHandoff::RenderCompletion(completion) => Some(completion),
+                    FrameHandoff::RenderCompletion(completion) => Handoff::Render(completion),
                 }),
                 previous_gpu_ns,
                 fail_stop,
@@ -1295,11 +1301,11 @@ fn tick_one_output(
         sink.gpu_mut().renderer_failed = true;
     }
     let compose_result = match render_result {
-        Ok(Some(completion)) => sink
+        Ok(Handoff::Render(completion)) => sink
             .register_render_completion(output_idx, token.bo_idx, completion)
             .map(|job_id| InFlightStage::WaitingForRenderCompletion { job_id })
             .map_err(PresentError::Io),
-        Ok(None) => Ok(InFlightStage::KmsFlipPending),
+        Ok(Handoff::Flipped(event_id)) => Ok(InFlightStage::KmsFlipPending { event_id }),
         Err(error) => Err(error),
     };
     let record_ns = u64::try_from(record_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
