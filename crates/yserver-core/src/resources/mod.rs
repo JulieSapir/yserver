@@ -47,6 +47,8 @@ pub const GLMARK_VISUAL: ResourceId = ResourceId(0x105);
 /// (`Xext/saver.c:665`, `:424`); it does while a client's
 /// `SetAttributes` are shown.
 pub const SCREEN_SAVER_WINDOW: ResourceId = ResourceId(0x106);
+/// Rootless mode's `_NET_SUPPORTING_WM_CHECK` window (EWMH §3.13).
+pub const ROOTLESS_WM_CHECK_WINDOW: ResourceId = ResourceId(0x107);
 
 /// The X11 depth of the root window, as advertised in the setup reply.
 ///

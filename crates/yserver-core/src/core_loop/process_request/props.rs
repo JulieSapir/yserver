@@ -1096,22 +1096,33 @@ pub(super) fn handle_change_property(
                 return emit_x11_error(state, client_id, sequence, x11::error::BAD_VALUE, 0, 18);
             }
         };
-    state
-        .resources
-        .set_window_property(req.window, req.property, new_value);
-    backend.on_window_property_changed(state, window_host_xid(state, req.window), req.property);
-    if req.window == crate::resources::ROOT_WINDOW
-        && state.atoms.name(req.property) == Some("_XKB_RULES_NAMES")
+    store_window_property(state, backend, req.window, req.property, new_value);
+    debug!("client {} #{} ChangeProperty", client_id.0, sequence.0);
+    Ok(RequestOutcome::Handled)
+}
+
+/// ChangeProperty after validation: store, the backend hook, then
+/// PropertyNotify.
+fn store_window_property(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    window: ResourceId,
+    property: AtomId,
+    value: properties::PropertyValue,
+) {
+    state.resources.set_window_property(window, property, value);
+    backend.on_window_property_changed(state, window_host_xid(state, window), property);
+    crate::rootless::note_property_changed(state, window, property);
+    if window == crate::resources::ROOT_WINDOW
+        && state.atoms.name(property) == Some("_XKB_RULES_NAMES")
         && let Some(value) = state
             .resources
-            .window_property(req.window, req.property)
+            .window_property(window, property)
             .map(|p| p.data.clone())
     {
         crate::core_loop::xkb_layout::apply_rules_names_change(state, backend, &value);
     }
     let timestamp = state.timestamp_now();
-    let window = req.window;
-    let property = req.property;
     let _dropped = emit_window_event_to_state(
         state,
         window,
@@ -1120,8 +1131,29 @@ pub(super) fn handle_change_property(
             x11::encode_property_notify_event(buf, seq, order, window, property, timestamp, false);
         },
     );
-    debug!("client {} #{} ChangeProperty", client_id.0, sequence.0);
-    Ok(RequestOutcome::Handled)
+}
+
+/// ChangeProperty (Replace) as the server; `data` is in server (LE) order.
+pub(crate) fn change_property_as_server(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    window: ResourceId,
+    property: AtomId,
+    r#type: AtomId,
+    format: properties::PropertyFormat,
+    data: Vec<u8>,
+) {
+    store_window_property(
+        state,
+        backend,
+        window,
+        property,
+        properties::PropertyValue {
+            r#type,
+            format,
+            data,
+        },
+    );
 }
 
 pub(super) fn handle_get_property(
@@ -1235,6 +1267,7 @@ pub(super) fn handle_get_property(
             .resources
             .delete_window_property(req.window, req.property);
         backend.on_window_property_changed(state, window_host_xid(state, req.window), req.property);
+        crate::rootless::note_property_changed(state, req.window, req.property);
         let timestamp = state.timestamp_now();
         let window = req.window;
         let property = req.property;
@@ -1271,6 +1304,7 @@ pub(super) fn handle_delete_property(
         .delete_window_property(req.window, req.property);
     if removed.is_some() {
         backend.on_window_property_changed(state, window_host_xid(state, req.window), req.property);
+        crate::rootless::note_property_changed(state, req.window, req.property);
         let timestamp = state.timestamp_now();
         let window = req.window;
         let property = req.property;
@@ -1372,6 +1406,7 @@ pub(super) fn handle_rotate_properties(
         let window = req.window;
         for &property in atoms {
             backend.on_window_property_changed(state, host, property);
+            crate::rootless::note_property_changed(state, window, property);
             let timestamp = state.timestamp_now();
             let _dropped =
                 emit_window_event_to_state(state, window, 0x0040_0000, |buf, seq, order| {

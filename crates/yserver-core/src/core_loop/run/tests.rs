@@ -3965,6 +3965,140 @@ fn run_iteration_tail_drains_present_work_before_compositing() {
     );
 }
 
+/// Spec §4.1 loop order: rootless events are handed to the backend after
+/// this iteration's Present drain and before its `maybe_composite`.
+/// Mutation: move the call to `before_block`, or after `maybe_composite`.
+#[test]
+fn run_iteration_tail_dispatches_rootless_events_between_drain_and_compose() {
+    use crate::{
+        backend::recording::{RecordedCall, RecordingBackend},
+        rootless::{self, CoordinatePolicy, RootlessEvent},
+    };
+
+    let mut state = ServerState::new();
+    let mut backend = RecordingBackend::new().with_redirect_activation();
+    rootless::enable(&mut state, &mut backend, CoordinatePolicy::Opaque).unwrap();
+    let event = RootlessEvent::ScreenChanged { root: (640, 480) };
+    rootless::queue_event_for_test(&mut state, event.clone());
+
+    run_iteration_tail(&mut state, &mut backend);
+
+    let calls = backend.calls();
+    let drain = calls
+        .iter()
+        .position(|c| matches!(c, RecordedCall::DrainCompletedPresentEvents))
+        .expect("drain ran");
+    let rootless_idx = calls
+        .iter()
+        .position(|c| *c == RecordedCall::RootlessEvents(vec![event.clone()]))
+        .expect("rootless events dispatched");
+    let compose = calls
+        .iter()
+        .position(|c| matches!(c, RecordedCall::MaybeComposite))
+        .expect("maybe_composite ran");
+    assert!(drain < rootless_idx && rootless_idx < compose, "{calls:?}");
+}
+
+/// Spec §4.1: a window mapped by a request in this iteration is in this
+/// iteration's events, before compose. Mutation: reconcile in `before_block`.
+#[test]
+fn run_iteration_tail_reports_a_window_mapped_this_iteration() {
+    use crate::{
+        backend::recording::{RecordedCall, RecordingBackend},
+        core_loop::process_request::process_request,
+        rootless::{self, CoordinatePolicy, RootlessEvent},
+    };
+    use yserver_protocol::x11::{ClientId, RequestHeader, SequenceNumber};
+
+    let mut state = ServerState::new();
+    let mut backend = RecordingBackend::new().with_redirect_activation();
+    let (writer, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    state.clients.insert(1, unix_client(writer, 1, 0));
+    rootless::enable(&mut state, &mut backend, CoordinatePolicy::Opaque).unwrap();
+
+    let wid: u32 = 1 << 21 | 1;
+    let mut create = wid.to_le_bytes().to_vec();
+    create.extend_from_slice(&crate::resources::ROOT_WINDOW.0.to_le_bytes());
+    for v in [0u16, 0, 40, 30, 0, 1] {
+        create.extend_from_slice(&v.to_le_bytes());
+    }
+    create.extend_from_slice(&[0; 8]); // visual CopyFromParent, no values
+    for (seq, opcode, data, body) in [(1, 1, 24, create), (2, 8, 0, wid.to_le_bytes().to_vec())] {
+        process_request(
+            &mut state,
+            &mut backend,
+            ClientId(1),
+            SequenceNumber(seq),
+            RequestHeader {
+                opcode,
+                data,
+                length_units: u32::try_from(1 + body.len().div_ceil(4)).unwrap(),
+            },
+            &body,
+            None,
+        )
+        .unwrap();
+    }
+
+    run_iteration_tail(&mut state, &mut backend);
+
+    let calls = backend.calls();
+    let drain = calls
+        .iter()
+        .position(|c| matches!(c, RecordedCall::DrainCompletedPresentEvents))
+        .expect("drain ran");
+    let mapped = calls
+        .iter()
+        .position(|c| {
+            matches!(c, RecordedCall::RootlessEvents(events)
+                if matches!(events.as_slice(), [RootlessEvent::Mapped { window, .. }]
+                    if window.0 == wid))
+        })
+        .expect("Mapped dispatched");
+    let compose = calls
+        .iter()
+        .position(|c| matches!(c, RecordedCall::MaybeComposite))
+        .expect("maybe_composite ran");
+    assert!(drain < mapped && mapped < compose, "{calls:?}");
+}
+
+/// Rooted control: without `enable` the tail dispatches no rootless events.
+/// Mutation: drop the `None` guard in `reconcile_and_dispatch`.
+#[test]
+fn rooted_tail_records_no_rootless_events() {
+    use crate::backend::recording::{RecordedCall, RecordingBackend};
+
+    let mut state = ServerState::new();
+    let mut backend = RecordingBackend::new().with_redirect_activation();
+    run_iteration_tail(&mut state, &mut backend);
+    assert!(
+        !backend
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::RootlessEvents(_)))
+    );
+}
+
+/// Spec §4.2.1 rule 7: an iteration with nothing to report emits nothing.
+#[test]
+fn empty_reconcile_records_nothing() {
+    use crate::{
+        backend::recording::{RecordedCall, RecordingBackend},
+        rootless::{self, CoordinatePolicy},
+    };
+
+    let mut state = ServerState::new();
+    let mut backend = RecordingBackend::new().with_redirect_activation();
+    rootless::enable(&mut state, &mut backend, CoordinatePolicy::Opaque).unwrap();
+    run_iteration_tail(&mut state, &mut backend);
+    assert!(
+        !backend
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::RootlessEvents(_)))
+    );
+}
+
 /// Fix-forward: idle-vblank arming for a parked Present completion must
 /// run AFTER `maybe_composite`, not inside the pre-compose drain.
 /// `mark_dirty()` alone (no output damage) makes a real KMS compose

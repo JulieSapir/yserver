@@ -129,7 +129,7 @@ pub(super) fn handle_set_input_focus(
 /// The window check of Xorg `SetInputFocus`: a focus other than
 /// None(0)/PointerRoot(1) must be an existing window (BadWindow) that is
 /// viewable (BadMatch). Returns `(error code, errorValue)`.
-pub(super) fn core_focus_window_error(
+pub(crate) fn core_focus_window_error(
     state: &ServerState,
     window: ResourceId,
 ) -> Option<(u8, u32)> {
@@ -150,7 +150,7 @@ pub(super) fn core_focus_window_error(
 /// land here): the timestamp gate, the FocusOut/FocusIn chain, and the
 /// new focus/revert_to/time. `window` has passed
 /// [`core_focus_window_error`].
-pub(super) fn apply_core_input_focus(
+pub(crate) fn apply_core_input_focus(
     state: &mut ServerState,
     client_id: ClientId,
     sequence: SequenceNumber,

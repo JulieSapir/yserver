@@ -46,6 +46,19 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   reached, `add_fb2` rejects mpv's linear buffer on both builds), with no unmatched events. Not run: dual-head, a
   physical copied display, VT switch, Intel, Asahi. Record:
   [`plans/2026-10-19-drm-commit-identity-validation.md`](superpowers/plans/2026-10-19-drm-commit-identity-validation.md).
+- **2026-10-19 rootless core RL0 (branch `feat/rootless-rl0`, plan `plans/2026-10-19-rootless-rl0.md`, spec
+  `specs/2026-10-19-rootless-core-design.md`):** `yserver-core::rootless`, inert until an embedder calls
+  `rootless::enable` (nothing does yet; RL1 adds `run_headless --rootless`, RL2 macOS). In it: server-owned Manual
+  redirect of every root child; a per-tail reconcile (after the Present drain, before `maybe_composite`) into
+  `RootlessEvent`s with a fresh `ToplevelId` (u64) per mapped lifetime, `Unmapped` retiring it, `ParentChanged` for
+  popups; the `WindowInfo` parser with a property dirty set; the built-in WM (EWMH announce on server window 0x107,
+  `WM_S0`, `WM_STATE`, client lists, root ClientMessages → `WmRequest`, SubstructureRedirect on root = BadAccess);
+  `Message::Rootless(HostRequest)` with serial acks (spec §4.2.1) through `configure_window_apply`; local-coordinate
+  pointer input with a scoped hit test, activation; transient centring under the Global policy. Decisions D1-D8 as
+  in the plan: P1 byte order merged first; P2 (AtMostOneClient) still open, RL0 refuses SubstructureRedirect on the
+  root itself; no `--rootless` flag; `next_wakeup` is RL1's; screensaver window excluded; a close never kills, only
+  `ForceKill`; `ScreenLayout` takes exactly one output; `PopupDismissed` left out. Review follow-ups: transients
+  re-resolve when the parent maps or goes away; the WM check window is excluded by identity.
 
 - **2026-10-19 property byte order (branch `fix/property-byte-order`, RL0 prerequisite P1):** oracle
   `tools/vng-scenarios/prop-order-probe.py` (`prop-order`, stored golden from Xorg 21.1.24), a raw `B` and a raw `l`

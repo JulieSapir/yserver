@@ -412,7 +412,7 @@ pub fn process_request(
         // ── selections + SendEvent (cross-client fanout) ──
         22 => handle_set_selection_owner(state, client_id, sequence, body),
         24 => handle_convert_selection(state, client_id, sequence, body),
-        25 => handle_send_event(state, client_id, sequence, header, body),
+        25 => handle_send_event(state, backend, client_id, sequence, header, body),
         // ── fonts (state mutation + backend lifecycle) ──
         45 => handle_open_font(state, backend, origin, client_id, sequence, body),
         46 => handle_close_font(state, backend, origin, client_id, sequence, body),

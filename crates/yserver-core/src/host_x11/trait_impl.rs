@@ -192,7 +192,8 @@ impl Backend for HostX11Backend {
             HostInputEvent::DeviceAdded(_)
             | HostInputEvent::DeviceSuspended { .. }
             | HostInputEvent::DeviceResumed(_)
-            | HostInputEvent::DeviceRemoved { .. } => {}
+            | HostInputEvent::DeviceRemoved { .. }
+            | HostInputEvent::Rootless(_) => {}
         }
     }
 

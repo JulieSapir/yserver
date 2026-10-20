@@ -10,6 +10,7 @@ pub mod present_scheduler;
 pub mod properties;
 pub mod randr;
 pub mod resources;
+pub mod rootless;
 pub mod server;
 pub mod transport;
 mod unix_fd;

@@ -2791,6 +2791,9 @@ fn run_core_with_inventory(
                             Message::DumpScanout => backend.dump_scanout(),
                             Message::DumpDrawables => backend.dump_drawables(),
                             Message::PlatformEvent => backend.on_platform_event(state),
+                            Message::Rootless(r) => {
+                                crate::rootless::host_request(state, backend, r)
+                            }
                         }
                         if state.server_grab_owner.is_none() {
                             release_server_grab_waiters(
@@ -3095,6 +3098,8 @@ pub(crate) fn run_iteration_tail(state: &mut ServerState, backend: &mut dyn Back
     // `maybe_composite`, or it slips a full period whenever unrelated
     // damage exists.
     drain_present_completions(state, backend);
+
+    crate::rootless::reconcile_and_dispatch(state, backend);
 
     // Wake the composite path back up if the backend went dormant
     // after the previous pageflip-complete (because nothing was
@@ -4297,6 +4302,9 @@ fn handle_setup_allocate(
 /// repeat-state wrapper instead of calling `backend.on_host_input`
 /// directly.
 pub fn handle_host_input(state: &mut ServerState, backend: &mut dyn Backend, ev: HostInputEvent) {
+    if let HostInputEvent::Rootless(input) = ev {
+        return crate::rootless::map_input(state, backend, input);
+    }
     update_repeat_state(state, &ev);
     backend.on_host_input(state, ev);
 }

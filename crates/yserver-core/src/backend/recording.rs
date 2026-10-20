@@ -43,6 +43,14 @@ pub enum RecordedCall {
         pressed: bool,
         repeat: bool,
     },
+    /// Pointer motion or a button handed to `on_host_input`; `button` 0 is
+    /// a motion to `(x, y)`.
+    HostPointer {
+        x: i32,
+        y: i32,
+        button: u16,
+        pressed: bool,
+    },
     CreateSubwindow {
         parent: u32,
         x: i16,
@@ -257,6 +265,8 @@ pub enum RecordedCall {
     /// can pin this running strictly after `maybe_composite` (the KMS gate
     /// this arm hides behind only clears post-compose).
     ArmPresentCompletionIdleVblanks,
+    /// `on_rootless_events()` called with a non-empty batch.
+    RootlessEvents(Vec<crate::rootless::RootlessEvent>),
 }
 
 type GammaTriplet = (Vec<u16>, Vec<u16>, Vec<u16>);
@@ -844,6 +854,14 @@ impl Backend for RecordingBackend {
         self.platform_events += 1;
     }
 
+    fn on_rootless_events(
+        &mut self,
+        _state: &crate::server::ServerState,
+        events: &[crate::rootless::RootlessEvent],
+    ) {
+        self.record(RecordedCall::RootlessEvents(events.to_vec()));
+    }
+
     fn note_client_count(&mut self, count: usize) {
         self.client_count
             .store(count, std::sync::atomic::Ordering::Release);
@@ -1278,6 +1296,26 @@ impl Backend for RecordingBackend {
         let (key, repeat) = match ev {
             HostInputEvent::Key(key) => (key, false),
             HostInputEvent::KeyRepeat(key) => (key, true),
+            HostInputEvent::PointerMotion { x, y, .. } => {
+                self.record(RecordedCall::HostPointer {
+                    x,
+                    y,
+                    button: 0,
+                    pressed: false,
+                });
+                return;
+            }
+            HostInputEvent::PointerButton {
+                button, pressed, ..
+            } => {
+                self.record(RecordedCall::HostPointer {
+                    x: 0,
+                    y: 0,
+                    button,
+                    pressed,
+                });
+                return;
+            }
             _ => return,
         };
         self.record(RecordedCall::HostKey {

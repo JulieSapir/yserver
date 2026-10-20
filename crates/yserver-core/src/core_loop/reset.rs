@@ -412,6 +412,13 @@ pub(crate) fn reset_generation(
     // re-derived from the LIVE backend through the same snapshot type
     // startup uses, so the second generation is built exactly the way
     // the first one was.
+    // Rootless: the host hears that this generation's top-levels are gone;
+    // the id counter survives so no `ToplevelId` is reused.
+    crate::rootless::reconcile_and_dispatch(state, backend);
+    let rootless = state
+        .rootless
+        .as_ref()
+        .map(crate::rootless::Rootless::for_next_generation);
     let topology = BackendTopology::from_backend(backend);
     let mut fresh = topology.into_server_state();
     // The single field that survives literally. X11 timestamps must not
@@ -430,6 +437,9 @@ pub(crate) fn reset_generation(
     install_backend_root_bindings(state, backend);
     // The fresh state carries identity transforms, as Xorg's reset does.
     backend.randr_layout_changed(state);
+    if let Some(rootless) = rootless {
+        crate::rootless::resume(state, backend, rootless);
+    }
 
     // -- 8. Repaint the root. ---------------------------------------
     // The fresh constructor creates a root window, but that leaves the
@@ -1049,6 +1059,103 @@ mod tests {
             "start_instant is the ONLY field that survives literally — \
              X11 timestamps must not go backwards across a reset"
         );
+    }
+
+    /// Rootless (plan RL0 Task 3): a reset tells the host every mapped
+    /// top-level is gone, and the next generation's ids are fresh (spec §4.2:
+    /// an id is never reused). Mutation: rebuild `Rootless::new()` on reset.
+    #[test]
+    fn reset_flushes_destroyed_and_keeps_ids_fresh() {
+        use crate::{
+            backend::recording::RecordedCall,
+            resources::MapState,
+            rootless::{self, CoordinatePolicy, RootlessEvent},
+        };
+        let mapped_ids = |events: &[RootlessEvent]| -> Vec<u64> {
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    RootlessEvent::Mapped { id, .. } => Some(id.get()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let last_events = |backend: &RecordingBackend| -> Vec<RootlessEvent> {
+            backend
+                .calls()
+                .iter()
+                .rev()
+                .find_map(|c| match c {
+                    RecordedCall::RootlessEvents(e) => Some(e.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+
+        let mut state = ServerState::new();
+        let mut backend = backend_with_topology().with_redirect_activation();
+        let f = seed_client_session(&mut state, &mut backend, 7);
+        rootless::enable(&mut state, &mut backend, CoordinatePolicy::Opaque).unwrap();
+        state.resources.window_mut(f.window).unwrap().map_state = MapState::Viewable;
+        rootless::reconcile_and_dispatch(&mut state, &mut backend);
+        let old = mapped_ids(&last_events(&backend));
+        assert_eq!(old.len(), 1);
+
+        let generations = GenerationCounter::new();
+        let registry = setup_thread::make_registry();
+        let inventory = InputInventory::new();
+        let mut locals = Locals::new();
+        let p = poll();
+        reset_generation(
+            &mut state,
+            &mut backend,
+            p.registry(),
+            &generations,
+            &registry,
+            &inventory,
+            locals.borrow(),
+        )
+        .expect("reset proceeds");
+
+        let flushed = last_events(&backend);
+        assert!(
+            matches!(flushed.as_slice(),
+                [RootlessEvent::Unmapped { id: a }, RootlessEvent::Destroyed { id: b }]
+                    if a.get() == old[0] && b.get() == old[0]),
+            "{flushed:?}"
+        );
+        assert!(state.rootless.is_some(), "rootless survives the reset");
+        let check = state
+            .atoms
+            .id_for("_NET_SUPPORTING_WM_CHECK")
+            .expect("re-announced");
+        assert!(
+            state
+                .resources
+                .window_property(ROOT_WINDOW, check)
+                .is_some(),
+            "the WM is re-announced on the new root"
+        );
+
+        let window = ResourceId(0x0060_0001);
+        state.resources.create_window(
+            ClientId(8),
+            CreateWindowRequest {
+                depth: 24,
+                window,
+                parent: ROOT_WINDOW,
+                width: 10,
+                height: 10,
+                class: 1,
+                visual: crate::resources::ROOT_VISUAL,
+                ..Default::default()
+            },
+        );
+        state.resources.window_mut(window).unwrap().map_state = MapState::Viewable;
+        rootless::reconcile_and_dispatch(&mut state, &mut backend);
+        let new = mapped_ids(&last_events(&backend));
+        assert_eq!(new.len(), 1);
+        assert!(new[0] > old[0], "{new:?} vs {old:?}");
     }
 
     /// Topology is re-derived from the live backend, not carried: the

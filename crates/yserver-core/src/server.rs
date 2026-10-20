@@ -1239,6 +1239,8 @@ pub struct ServerState {
     pub xfixes_cursor_hide_counts: HashMap<u32, u32>,
     /// SHAPE state per window. Missing entries mean the default window rectangle.
     pub shape_windows: HashMap<ResourceId, ShapeWindowState>,
+    /// Rootless mode; `None` unless an embedder called `rootless::enable`.
+    pub rootless: Option<crate::rootless::Rootless>,
     /// SHAPE select-input state: (client, window) -> enabled.
     pub shape_select_masks: HashMap<(u32, ResourceId), bool>,
     /// Unified pending-present store (spec "Unified pending-present
@@ -1809,6 +1811,7 @@ impl ServerState {
             xfixes_client_major: HashMap::new(),
             xfixes_cursor_hide_counts: HashMap::new(),
             shape_windows: HashMap::new(),
+            rootless: None,
             shape_select_masks: HashMap::new(),
             present_pending_exec: BTreeMap::new(),
             present_wait_to_id: HashMap::new(),
@@ -3139,9 +3142,26 @@ impl ServerState {
         Some(best)
     }
 
+    /// The window under root `(x, y)`. In rootless mode only the scoped
+    /// top-level's subtree is hit (spec §4.4).
     #[must_use]
     pub fn root_pointer_target_at(&self, x: i16, y: i16) -> Option<(ResourceId, i16, i16)> {
-        self.pointer_target_at(ROOT_WINDOW, x, y)
+        use crate::rootless::PointerScope;
+        match self
+            .rootless
+            .as_ref()
+            .map(crate::rootless::Rootless::pointer_scope)
+        {
+            Some(PointerScope::Nowhere) => Some((ROOT_WINDOW, x, y)),
+            Some(PointerScope::Within(top)) => {
+                let Some(mut best) = self.hit_test_child(top, x, y) else {
+                    return Some((ROOT_WINDOW, x, y));
+                };
+                self.pointer_target_at_inner(best.0, best.1, best.2, &mut best);
+                Some(best)
+            }
+            Some(PointerScope::Anywhere) | None => self.pointer_target_at(ROOT_WINDOW, x, y),
+        }
     }
 
     #[must_use]

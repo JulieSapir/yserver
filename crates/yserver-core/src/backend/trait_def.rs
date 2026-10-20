@@ -1048,6 +1048,15 @@ pub trait Backend {
     /// Default no-op for backends whose platform never posts one.
     fn on_platform_event(&mut self, _state: &mut ServerState) {}
 
+    /// Rootless top-level events of this iteration (spec §4.1, §4.2), after the
+    /// Present drain and before `maybe_composite`. Default no-op.
+    fn on_rootless_events(
+        &mut self,
+        _state: &ServerState,
+        _events: &[crate::rootless::RootlessEvent],
+    ) {
+    }
+
     /// `state.clients` gained or lost an established client; `count` is
     /// its new size. Default no-op.
     fn note_client_count(&mut self, _count: usize) {}

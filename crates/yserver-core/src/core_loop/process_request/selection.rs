@@ -1,4 +1,5 @@
 use crate::{
+    backend::Backend,
     core_loop::{
         fanout::{
             client_target_id, fanout_event_to_clients, fanout_raw_event_to_clients,
@@ -358,6 +359,7 @@ pub(super) fn handle_convert_selection(
 
 pub(super) fn handle_send_event(
     state: &mut ServerState,
+    backend: &mut dyn Backend,
     client_id: ClientId,
     sequence: SequenceNumber,
     header: RequestHeader,
@@ -421,6 +423,13 @@ pub(super) fn handle_send_event(
     let mut event_copy = *req.event;
     event_copy[0] |= 0x80;
     let _dropped = fanout_raw_event_to_clients(state, &targets, &event_copy, sender_byte_order);
+    crate::rootless::note_root_client_message(
+        state,
+        backend,
+        req.destination,
+        req.event,
+        sender_byte_order,
+    );
     let core_type_logged = req.event[0] & 0x7f;
     // For synthetic ConfigureNotify (type=22), decode and log x/y/w/h
     // so we can see what the WM tells clients about their root
@@ -483,7 +492,7 @@ const ALL_EVENT_MASKS: u32 = 0x01FF_FFFF;
 /// filters a synthetic core event, and `SendEvent` never produces XI2 events.
 ///
 /// `Err((code, value))` is the X error to raise.
-fn send_event_recipients(
+pub(crate) fn send_event_recipients(
     state: &ServerState,
     destination: ResourceId,
     event_mask: u32,

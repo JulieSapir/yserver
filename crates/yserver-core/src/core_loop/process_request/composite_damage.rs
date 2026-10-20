@@ -105,18 +105,8 @@ pub(super) fn handle_composite_request(
                     return error(state, x11::error::BAD_MATCH);
                 }
             }
-            // Xorg walks lastChild→prevSib, bottom-most first, as our
-            // children are stored (`composite/compalloc.c:383`, `:450`). The
-            // COW gets no record from a subwindows redirect
-            // (compRedirectWindow returns Success for it).
             let targets: Vec<ResourceId> = if subwindows {
-                state
-                    .resources
-                    .children(window)
-                    .iter()
-                    .copied()
-                    .filter(|child| *child != COMPOSITE_OVERLAY_WINDOW)
-                    .collect()
+                crate::core_loop::process_request::subwindows_redirect_targets(state, window)
             } else {
                 vec![window]
             };

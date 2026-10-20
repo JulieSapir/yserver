@@ -322,6 +322,8 @@ pub enum Message {
     /// retired, a window closed). No payload: the platform keeps its own
     /// queue, drained in `Backend::on_platform_event`.
     PlatformEvent,
+    /// A rootless host's WM-side request (spec §4.4).
+    Rootless(crate::rootless::HostRequest),
 }
 
 #[derive(Debug)]
@@ -392,6 +394,9 @@ pub enum HostInputEvent {
     DeviceRemoved {
         source_id: crate::xinput::InputSourceId,
     },
+    /// Rootless host pointer input in top-level-local coordinates; the
+    /// core converts it to root space before any backend sees it.
+    Rootless(crate::rootless::RootlessInput),
 }
 
 /// Synthetic Linux-style input codes for scroll-wheel "buttons" carried

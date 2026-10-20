@@ -1952,3 +1952,162 @@ fn window_modes_are_the_current_size_then_the_fixed_ones_that_fit() {
     assert_eq!((outputs[0].mm_width, outputs[0].mm_height), (300, 210));
     assert_eq!(modes.len(), 9);
 }
+
+/// Rootless (plan RL0 Task 7): after an enter on a top-level, a host leave
+/// moves the pointer to the root, so the client gets LeaveNotify with detail
+/// NotifyAncestor (protocol §11: from T to its parent, the root).
+/// Mutation: skip the motion after the scope change.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_leave_sends_leave_notify() {
+    use yserver_core::{
+        core_loop::InputOrigin,
+        resources::ROOT_WINDOW,
+        rootless::{self, CoordinatePolicy, RootlessInput},
+    };
+    use yserver_protocol::x11::{ClientId, RequestHeader, ResourceId, SequenceNumber};
+
+    const T: u32 = 0x0020_0001;
+    const ENTER_LEAVE: u32 = 0x10 | 0x20;
+    const LEAVE_NOTIFY: u8 = 8;
+    const NOTIFY_ANCESTOR: u8 = 0;
+
+    let Some(mut f) = input_or_skip(0) else {
+        return;
+    };
+    yserver_core::backend::install_backend_root_bindings(&mut f.state, &f.b);
+    rootless::enable(&mut f.state, &mut f.b, CoordinatePolicy::Opaque).expect("enable");
+    let mut sequence = 0;
+    let mut request = |f: &mut InputFixture, opcode: u8, data: u8, body: &[u8]| {
+        sequence += 1;
+        yserver_core::core_loop::process_request::process_request(
+            &mut f.state,
+            &mut f.b as &mut dyn Backend,
+            ClientId(9),
+            SequenceNumber(sequence),
+            RequestHeader {
+                opcode,
+                data,
+                length_units: u32::try_from(1 + body.len() / 4).expect("length"),
+            },
+            body,
+            None,
+        )
+        .expect("process_request");
+    };
+    // CreateWindow T (10,10) 20x20, InputOutput, CWEventMask Enter|Leave.
+    let create = [
+        T.to_le_bytes().as_slice(),
+        &ROOT_WINDOW.0.to_le_bytes(),
+        &10i16.to_le_bytes(),
+        &10i16.to_le_bytes(),
+        &20u16.to_le_bytes(),
+        &20u16.to_le_bytes(),
+        &0u16.to_le_bytes(),
+        &1u16.to_le_bytes(),
+        &0u32.to_le_bytes(),
+        &0x800u32.to_le_bytes(),
+        &ENTER_LEAVE.to_le_bytes(),
+    ]
+    .concat();
+    request(&mut f, 1, 24, &create);
+    request(&mut f, 8, 0, &T.to_le_bytes());
+    rootless::reconcile_and_dispatch(&mut f.state, &mut f.b);
+    let id = f
+        .state
+        .rootless
+        .as_ref()
+        .and_then(|r| r.toplevel_id(ResourceId(T)))
+        .expect("T is a top-level");
+    let origin = InputOrigin::Physical(pointer_source());
+    f.send(vec![HostInputEvent::Rootless(
+        RootlessInput::PointerEnter {
+            origin,
+            toplevel: id,
+            local: (5.0, 5.0),
+            time: 1,
+        },
+    )]);
+    f.received();
+    f.send(vec![HostInputEvent::Rootless(
+        RootlessInput::PointerLeave { origin, time: 2 },
+    )]);
+    let events = f.received();
+    assert!(
+        events
+            .iter()
+            .any(|(ty, detail, _)| (*ty, *detail) == (LEAVE_NOTIFY, NOTIFY_ANCESTOR)),
+        "LeaveNotify(NotifyAncestor) on T: {events:?}"
+    );
+}
+
+/// Rootless (review fix): deactivation releases each held key on the device
+/// that pressed it, so that device's next press of the key is a press, not a
+/// duplicate. Mutation: release as `NestedHost` (master only).
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_deactivate_releases_keys_on_the_pressing_device() {
+    use yserver_core::{
+        core_loop::InputOrigin,
+        host_x11::HostKeyEvent,
+        rootless::{self, CoordinatePolicy, HostRequest},
+    };
+
+    const KEYCODE: u8 = 38;
+    let Some(mut f) = input_or_skip(KEY_MASKS) else {
+        return;
+    };
+    yserver_core::backend::install_backend_root_bindings(&mut f.state, &f.b);
+    rootless::enable(&mut f.state, &mut f.b, CoordinatePolicy::Opaque).expect("enable");
+    let press = |pressed: bool| {
+        HostInputEvent::Key(HostKeyEvent {
+            origin: InputOrigin::Physical(keyboard_source()),
+            pressed,
+            keycode: KEYCODE,
+            time: 1,
+            root_x: 0,
+            root_y: 0,
+            event_x: 0,
+            event_y: 0,
+            state: 0,
+        })
+    };
+    let kinds = |events: &[(u8, u8, u16)]| -> Vec<u8> {
+        events
+            .iter()
+            .filter(|(_, detail, _)| *detail == KEYCODE)
+            .map(|(ty, _, _)| *ty)
+            .collect()
+    };
+
+    f.send(vec![press(true)]);
+    assert_eq!(kinds(&f.received()), vec![KEY_PRESS]);
+    rootless::host_request(&mut f.state, &mut f.b, HostRequest::Deactivated);
+    assert_eq!(kinds(&f.received()), vec![KEY_RELEASE]);
+    assert!(
+        f.state
+            .key_down_by_device
+            .values()
+            .chain(f.state.unpublished_keyboard_keys_down.values())
+            .all(|keys| !keys.contains_key(&KEYCODE)),
+        "the pressing device's record is cleared"
+    );
+    // Deactivation focused None; a client gives focus back (PointerRoot).
+    yserver_core::core_loop::process_request::process_request(
+        &mut f.state,
+        &mut f.b as &mut dyn Backend,
+        yserver_protocol::x11::ClientId(9),
+        yserver_protocol::x11::SequenceNumber(1),
+        yserver_protocol::x11::RequestHeader {
+            opcode: 42,
+            data: 1,
+            length_units: 3,
+        },
+        &[1u32.to_le_bytes(), 0u32.to_le_bytes()].concat(),
+        None,
+    )
+    .expect("SetInputFocus");
+    f.received();
+    f.send(vec![press(true)]);
+    assert_eq!(kinds(&f.received()), vec![KEY_PRESS], "pressed again");
+}

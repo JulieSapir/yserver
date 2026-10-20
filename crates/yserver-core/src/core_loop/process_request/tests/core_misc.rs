@@ -1304,6 +1304,7 @@ fn send_event_empty_mask_delivers_synthetic_button_to_owner_despite_xi2_selectio
     };
     handle_send_event(
         &mut state,
+        &mut RecordingBackend::new(),
         ClientId(SENDER),
         SequenceNumber(1),
         header,
@@ -1369,7 +1370,15 @@ fn run_send_event(state: &mut ServerState, sender: u32, propagate: u8, body: &[u
         data: propagate,
         length_units: 11,
     };
-    handle_send_event(state, ClientId(sender), SequenceNumber(1), header, body).expect("SendEvent");
+    handle_send_event(
+        state,
+        &mut RecordingBackend::new(),
+        ClientId(sender),
+        SequenceNumber(1),
+        header,
+        body,
+    )
+    .expect("SendEvent");
 }
 
 fn drain_wire(peer: &mut UnixStream) -> Vec<u8> {

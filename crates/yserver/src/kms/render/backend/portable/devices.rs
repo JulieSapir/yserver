@@ -788,6 +788,11 @@ impl<P: Platform> XBackend<P> {
                 self.synchronize_floating_keyboard_states(state);
                 return;
             }
+            // The core maps rootless input to root space before any backend sees it.
+            HostInputEvent::Rootless(input) => {
+                log::debug!("xbackend: unmapped rootless input {input:?} dropped");
+                return;
+            }
         }
 
         // Drain pointer events queued by the process_pointer_* call.

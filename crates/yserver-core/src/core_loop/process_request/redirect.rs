@@ -287,6 +287,23 @@ fn flip_redirect_target_mode(
     }
 }
 
+/// The children a `RedirectSubwindows(parent)` applies to: all of them but
+/// the COW, which gets no record (compRedirectWindow returns Success for it).
+/// Bottom-most first, as Xorg walks `lastChild` → `prevSib`
+/// (`composite/compalloc.c:383`).
+pub(crate) fn subwindows_redirect_targets(
+    state: &ServerState,
+    parent: ResourceId,
+) -> Vec<ResourceId> {
+    state
+        .resources
+        .children(parent)
+        .iter()
+        .copied()
+        .filter(|child| *child != COMPOSITE_OVERLAY_WINDOW)
+        .collect()
+}
+
 /// Xorg `compCheckRedirect` after `window`'s redirect records changed from
 /// effective mode `before`: allocate, flip or drop its backing to match.
 /// Allocation and the flip need `supports_redirect_activation()`; a

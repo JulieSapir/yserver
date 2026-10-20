@@ -1330,7 +1330,7 @@ pub(super) fn handle_change_window_attributes(
     sequence: SequenceNumber,
     body: &[u8],
 ) -> io::Result<RequestOutcome> {
-    let Some(request) = x11::change_window_attributes_request(body) else {
+    let Some(mut request) = x11::change_window_attributes_request(body) else {
         return Ok(RequestOutcome::Handled);
     };
     if state.resources.window(request.window).is_none() {
@@ -1370,6 +1370,7 @@ pub(super) fn handle_change_window_attributes(
     {
         return emit_x11_error(state, client_id, sequence, x11::error::BAD_MATCH, 0, 2);
     }
+    let refused = crate::rootless::refuse_root_redirect(state, &mut request);
     // Resource-id validation of attribute values, mirroring Xorg's
     // `dix/window.c::ChangeWindowAttributes` per-attribute
     // `dixLookupResource`. Values 0 and 1 on CWBackPixmap are reserved
@@ -1663,6 +1664,9 @@ pub(super) fn handle_change_window_attributes(
         "client {} #{} ChangeWindowAttributes",
         client_id.0, sequence.0
     );
+    if refused {
+        return emit_x11_error(state, client_id, sequence, x11::error::BAD_ACCESS, 0, 2);
+    }
     Ok(RequestOutcome::Handled)
 }
 
@@ -1707,6 +1711,27 @@ pub(super) fn handle_configure_window(
     let Some(request) = x11::configure_window_request(body) else {
         return Ok(RequestOutcome::Handled);
     };
+    configure_window_apply(
+        state,
+        backend,
+        origin,
+        client_id,
+        sequence,
+        request,
+        crate::rootless::ConfigureSource::Client,
+    )
+}
+
+/// ConfigureWindow after parsing; `source` feeds rootless acks (spec §4.2.1).
+pub(crate) fn configure_window_apply(
+    state: &mut ServerState,
+    backend: &mut dyn Backend,
+    origin: Option<OriginContext>,
+    client_id: ClientId,
+    sequence: SequenceNumber,
+    request: x11::ConfigureWindowRequest,
+    source: crate::rootless::ConfigureSource,
+) -> io::Result<RequestOutcome> {
     log::trace!(
         target: "yserver::input::restack",
         "CONFIGURE-REQ client={} win={} stack_mode={:?} sibling={}",
@@ -1838,6 +1863,7 @@ pub(super) fn handle_configure_window(
         });
         return Ok(RequestOutcome::Handled);
     }
+    crate::rootless::note_configure(state, &request, source);
     let old_size = state
         .resources
         .window(request.window)
