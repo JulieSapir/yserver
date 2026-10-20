@@ -1808,7 +1808,7 @@ fn active_test_output_carries_its_owning_device_key() {
 }
 
 #[test]
-fn connector_only_probe_reconciles_state_and_retains_disconnected_modes() {
+fn connector_only_probe_reconciles_state_and_drops_disconnected_modes() {
     use crate::platform::drm::{ConnectorProbe, Mode};
 
     fn mode(width: u16, height: u16, preferred: bool) -> Mode {
@@ -1874,10 +1874,11 @@ fn connector_only_probe_reconciles_state_and_retains_disconnected_modes() {
 
     let dp1 = b.pstate.randr_id_alloc.connectors.get(&dp1_key).unwrap();
     assert!(!dp1.connected);
-    assert_eq!(
-        dp1.modes,
-        vec![mode(2560, 1440, true)],
-        "disconnect retains the last-known mode list"
+    // #273: Xorg's `xf86ProbeOutputModes` (xf86Crtc.c:1688-1691) deletes
+    // the probed modes of a disconnected output and skips probing it.
+    assert!(
+        dp1.modes.is_empty(),
+        "a disconnected output advertises no modes"
     );
     assert!(dp1.edid.is_empty(), "disconnect invalidates monitor EDID");
     assert_eq!((dp1.mm_width, dp1.mm_height), (0, 0));
@@ -1938,407 +1939,66 @@ fn relight_test_snapshot(
     }
 }
 
-fn rects_overlap(
-    a: crate::kms::render::platform::LayoutRect,
-    b: crate::kms::render::platform::LayoutRect,
-) -> bool {
-    let (ax, ay, aw, ah) = a;
-    let (bx, by, bw, bh) = b;
-    ax < bx + i32::from(bw)
-        && bx < ax + i32::from(aw)
-        && ay < by + i32::from(bh)
-        && by < ay + i32::from(ah)
-}
-
 #[test]
-fn a_physical_disconnect_remembers_the_route_and_the_reconnect_relights_it() {
+fn a_physical_disconnect_keeps_the_route_and_the_reconnect_needs_no_relight() {
+    // #273 changed this from "remember the route and relight it on
+    // reconnect" (2026-09-17 P1b) to Xorg parity: the disconnect never
+    // retires the route, so there is nothing to remember or relight.
     let mut backend = KmsBackend::for_tests();
     clear_test_outputs(&mut backend);
     let key = push_enabled_test_output(&mut backend, "HDMI-3", 7, 0, 0, 1920, 1080);
+    let enabled = crate::kms::render::backend::ConnectorConfig::Enabled {
+        mode_w: 1920,
+        mode_h: 1080,
+        vrefresh: 60,
+        x: 0,
+        y: 0,
+    };
     let snapshot = relight_test_snapshot(&key, vec![test_advertised_mode(1920, 1080, 60, true)]);
 
     // ── Physical departure ───────────────────────────────────────────
     let rescan = backend
         .platform
         .apply_connector_snapshot(Vec::new(), &std::collections::HashSet::from([key.clone()]));
-    let _ = backend.reconcile_connector_registry(
+    assert!(rescan.dropped_old_indices.is_empty());
+    assert!(rescan.dropped_layouts.is_empty());
+    assert_eq!(backend.platform.outputs.len(), 1, "the route stays live");
+    assert!(!backend.platform.outputs[0].connector_connected);
+    let delta = backend.reconcile_connector_registry(
         &rescan.connected,
         &rescan.dropped_keys,
         &rescan.dropped_layouts,
     );
+    assert!(delta.config_changed);
 
     let entry = backend.pstate.randr_id_alloc.entry(&key).unwrap();
     assert!(!entry.connected);
-    assert_eq!(
-        entry.config,
-        crate::kms::render::backend::ConnectorConfig::Off
-    );
-    assert_eq!(
-        entry.last_enabled,
-        Some(crate::kms::render::backend::ConnectorConfig::Enabled {
-            mode_w: 1920,
-            mode_h: 1080,
-            vrefresh: 60,
-            x: 0,
-            y: 0,
-        }),
-        "the departed route is remembered from the layout that actually departed",
-    );
-    assert_eq!(backend.reserved_layout_slots(), vec![(0, 0, 1920, 1080)]);
+    assert_eq!(entry.config, enabled, "the CRTC configuration is kept");
     assert!(
-        backend.take_relight_requests().is_empty(),
-        "a connector that has not come back is not relit",
+        entry.modes.is_empty(),
+        "Xorg lists no modes while disconnected"
     );
-    assert!(
-        backend
-            .pstate
-            .randr_id_alloc
-            .entry(&key)
-            .unwrap()
-            .last_enabled
-            .is_some(),
-        "and it keeps its reservation while it is away",
-    );
+    assert!(entry.last_enabled.is_none(), "nothing departed");
+    assert!(backend.reserved_layout_slots().is_empty());
 
     // ── Reconnect ────────────────────────────────────────────────────
-    let _ = backend.reconcile_connector_registry(std::slice::from_ref(&snapshot), &[], &[]);
-    let requests = backend.take_relight_requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].key, key);
-    assert_eq!(
-        requests[0].mode,
-        yserver_core::backend::ModeSpec {
-            width: 1920,
-            height: 1080,
-            vrefresh: 60,
-        },
-    );
-    assert_eq!((requests[0].x, requests[0].y), (0, 0));
-
-    backend.commit_relit_route(&requests[0]);
-    let entry = backend.pstate.randr_id_alloc.entry(&key).unwrap();
-    assert_eq!(
-        entry.config,
-        crate::kms::render::backend::ConnectorConfig::Enabled {
-            mode_w: 1920,
-            mode_h: 1080,
-            vrefresh: 60,
-            x: 0,
-            y: 0,
-        },
-    );
-    assert!(
-        !entry.client_configured,
-        "an auto-relight restores a previous state; it is not a client intent",
-    );
-    assert!(entry.last_enabled.is_none(), "the reservation is released");
-    assert!(backend.reserved_layout_slots().is_empty());
-}
-
-#[test]
-fn a_route_that_was_already_off_when_it_departed_is_never_relit() {
-    // A client's explicit SetCrtcConfig(mode=None) leaves the entry Off,
-    // so the later unplug has no route to remember. Unplugging a
-    // deliberately disabled monitor must not resurrect it (invariant 6).
-    let mut backend = KmsBackend::for_tests();
-    clear_test_outputs(&mut backend);
-    let key = push_enabled_test_output(&mut backend, "HDMI-3", 7, 0, 0, 1920, 1080);
-    backend.pstate.randr_id_alloc.entry_mut(&key).config =
-        crate::kms::render::backend::ConnectorConfig::Off;
-    backend
-        .pstate
-        .randr_id_alloc
-        .entry_mut(&key)
-        .client_configured = true;
-    let snapshot = relight_test_snapshot(&key, vec![test_advertised_mode(1920, 1080, 60, true)]);
-
     let rescan = backend
         .platform
-        .apply_connector_snapshot(Vec::new(), &std::collections::HashSet::from([key.clone()]));
-    assert_eq!(
-        rescan.dropped_layouts.len(),
-        1,
-        "the live route was still there to drop",
-    );
+        .apply_connector_snapshot(vec![snapshot.clone()], &std::collections::HashSet::new());
+    assert!(backend.platform.outputs[0].connector_connected);
     let _ = backend.reconcile_connector_registry(
         &rescan.connected,
         &rescan.dropped_keys,
         &rescan.dropped_layouts,
     );
-
-    assert!(
-        backend
-            .pstate
-            .randr_id_alloc
-            .entry(&key)
-            .unwrap()
-            .last_enabled
-            .is_none(),
-    );
-    assert!(backend.reserved_layout_slots().is_empty());
-
-    let _ = backend.reconcile_connector_registry(std::slice::from_ref(&snapshot), &[], &[]);
-    assert!(backend.take_relight_requests().is_empty());
-}
-
-#[test]
-fn a_client_config_on_a_departed_output_releases_its_reservation() {
-    // Design, "Layout policy — reserved slots" point 4: a client
-    // SetCrtcConfig on a departed output releases the reservation, and
-    // releasing it is exactly clearing `last_enabled`.
-    let mut backend = KmsBackend::for_tests();
-    clear_test_outputs(&mut backend);
-    let key = push_enabled_test_output(&mut backend, "HDMI-3", 7, 0, 0, 1920, 1080);
-    let output_id = backend.pstate.randr_id_alloc.ids_for(&key).output_id;
-    let snapshot = relight_test_snapshot(&key, vec![test_advertised_mode(1920, 1080, 60, true)]);
-
-    let rescan = backend
-        .platform
-        .apply_connector_snapshot(Vec::new(), &std::collections::HashSet::from([key.clone()]));
-    let _ = backend.reconcile_connector_registry(
-        &rescan.connected,
-        &rescan.dropped_keys,
-        &rescan.dropped_layouts,
-    );
-    assert_eq!(backend.reserved_layout_slots(), vec![(0, 0, 1920, 1080)]);
-
-    // Publish, so the request path can resolve the output XID.
-    let (outputs, modes) = backend.randr_outputs_and_modes();
-    let mut state = ServerState::with_randr_outputs_and_modes(
-        backend.platform.fb_w,
-        backend.platform.fb_h,
-        outputs,
-        modes,
-        yserver_core::server::BackendCapabilities::from_backend(&backend),
-    );
-    backend.rebuild_randr_state(&mut state, None, false);
-
-    // The route is already gone, so this disable is the no-op path: it
-    // touches no hardware but is still an explicit client statement.
-    assert!(
-        !backend
-            .apply_crtc_config(output_id, "HDMI-3", None, 0, 0)
-            .expect("disabling an already-off output is a no-op"),
-    );
-
-    assert!(
-        backend
-            .pstate
-            .randr_id_alloc
-            .entry(&key)
-            .unwrap()
-            .last_enabled
-            .is_none(),
-    );
-    assert!(backend.reserved_layout_slots().is_empty());
-    let _ = backend.reconcile_connector_registry(std::slice::from_ref(&snapshot), &[], &[]);
-    assert!(backend.take_relight_requests().is_empty());
-}
-
-#[test]
-fn an_incompatible_mode_reconnect_leaves_the_output_off_and_does_not_re_reserve() {
-    let mut backend = KmsBackend::for_tests();
-    clear_test_outputs(&mut backend);
-    let key = push_enabled_test_output(&mut backend, "HDMI-3", 7, 0, 0, 1920, 1080);
-    // The monitor is replaced by a panel that cannot do 1920x1080@60.
-    let replacement = relight_test_snapshot(&key, vec![test_advertised_mode(1024, 768, 60, true)]);
-
-    let rescan = backend
-        .platform
-        .apply_connector_snapshot(Vec::new(), &std::collections::HashSet::from([key.clone()]));
-    let _ = backend.reconcile_connector_registry(
-        &rescan.connected,
-        &rescan.dropped_keys,
-        &rescan.dropped_layouts,
-    );
-    assert_eq!(backend.reserved_layout_slots(), vec![(0, 0, 1920, 1080)]);
-
-    // First rescan after the replacement panel appears.
-    let _ = backend.reconcile_connector_registry(std::slice::from_ref(&replacement), &[], &[]);
     assert!(backend.take_relight_requests().is_empty());
     let entry = backend.pstate.randr_id_alloc.entry(&key).unwrap();
+    assert!(entry.connected);
+    assert_eq!(entry.config, enabled);
     assert_eq!(
-        entry.config,
-        crate::kms::render::backend::ConnectorConfig::Off
+        entry.modes, snapshot.modes,
+        "the reconnect re-probes the modes"
     );
-    assert!(
-        entry.last_enabled.is_none(),
-        "the remembered route is cleared, which is what releases the slot",
-    );
-    assert!(backend.reserved_layout_slots().is_empty());
-
-    // A SECOND rescan: a stale reservation would re-reserve the slot here,
-    // and the single-rescan assertion above would not have caught it.
-    let _ = backend.reconcile_connector_registry(std::slice::from_ref(&replacement), &[], &[]);
-    assert!(backend.take_relight_requests().is_empty());
-    assert!(backend.reserved_layout_slots().is_empty());
-    assert_eq!(
-        backend.pstate.randr_id_alloc.entry(&key).unwrap().config,
-        crate::kms::render::backend::ConnectorConfig::Off,
-    );
-}
-
-#[test]
-fn a_reserved_slot_keeps_the_survivor_in_place_and_the_relight_cannot_overlap_it() {
-    // codex's counterexample: A at x=0, B at x=1920. Without the
-    // reservation, unplugging A compacts B to x=0 and shrinks the extent,
-    // so restoring A at its remembered x=0 overlaps B (invariant 7).
-    let mut backend = KmsBackend::for_tests();
-    clear_test_outputs(&mut backend);
-    let a = push_enabled_test_output(&mut backend, "A", 7, 0, 0, 1920, 1080);
-    let b = push_enabled_test_output(&mut backend, "B", 8, 1920, 0, 3200, 1440);
-    backend.platform.fb_w = 5120;
-    backend.platform.fb_h = 1440;
-    let snapshot_a = relight_test_snapshot(&a, vec![test_advertised_mode(1920, 1080, 60, true)]);
-    let snapshot_b = relight_test_snapshot(&b, vec![test_advertised_mode(3200, 1440, 60, true)]);
-
-    // ── Unplug A ─────────────────────────────────────────────────────
-    let rescan = backend.platform.apply_connector_snapshot(
-        vec![snapshot_b.clone()],
-        &std::collections::HashSet::from([a.clone(), b.clone()]),
-    );
-    let _ = backend.reconcile_connector_registry(
-        &rescan.connected,
-        &rescan.dropped_keys,
-        &rescan.dropped_layouts,
-    );
-    let reserved = backend.reserved_layout_slots();
-    assert_eq!(reserved, vec![(0, 0, 1920, 1080)]);
-    let configured = backend.pstate.randr_id_alloc.client_configured_keys();
-    assert!(configured.is_empty(), "a bare session pins nothing");
-    backend
-        .platform
-        .recompact_horizontal_layout(&configured, &reserved);
-    backend
-        .platform
-        .recompute_fb_extent_with_reservations(&reserved);
-
-    assert_eq!(backend.platform.outputs.len(), 1);
-    assert_eq!(
-        (backend.platform.outputs[0].x, backend.platform.outputs[0].y),
-        (1920, 0),
-        "B must not move into A's reserved slot",
-    );
-    assert_eq!(backend.platform.fb_dimensions(), (5120, 1440));
-
-    // ── Replug A ─────────────────────────────────────────────────────
-    let _ = backend.reconcile_connector_registry(&[snapshot_a, snapshot_b], &[], &[]);
-    let requests = backend.take_relight_requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].key, a);
-    assert_eq!(
-        (requests[0].x, requests[0].y),
-        (0, 0),
-        "A returns to its own slot"
-    );
-
-    let a_rect = (
-        requests[0].x,
-        requests[0].y,
-        requests[0].mode.width,
-        requests[0].mode.height,
-    );
-    let survivor = &backend.platform.outputs[0];
-    let b_rect = (survivor.x, survivor.y, survivor.width, survivor.height);
-    assert!(
-        !rects_overlap(a_rect, b_rect),
-        "the relit route {a_rect:?} must not overlap the survivor {b_rect:?}",
-    );
-}
-
-/// The reservation feeds the DERIVED extent only. `rebuild_randr_state`
-/// still carries a client-set logical size forward over it, so a desktop
-/// that laid itself out with `RRSetScreenSize` keeps the size it asked
-/// for while a slot is reserved (Xorg keeps `pScreen->width/height`
-/// until the client resizes).
-#[test]
-fn a_client_set_logical_size_survives_a_rebuild_while_a_slot_is_reserved() {
-    let mut backend = KmsBackend::for_tests();
-    clear_test_outputs(&mut backend);
-    let a = push_enabled_test_output(&mut backend, "A", 7, 0, 0, 1920, 1080);
-    let b = push_enabled_test_output(&mut backend, "B", 8, 1920, 0, 1920, 1080);
-    let snapshot_a = relight_test_snapshot(&a, vec![test_advertised_mode(1920, 1080, 60, true)]);
-
-    // B departs physically: its slot is reserved, the extent holds.
-    let rescan = backend
-        .platform
-        .apply_connector_snapshot(vec![snapshot_a], &std::collections::HashSet::from([a, b]));
-    let _ = backend.reconcile_connector_registry(
-        &rescan.connected,
-        &rescan.dropped_keys,
-        &rescan.dropped_layouts,
-    );
-    let reserved = backend.reserved_layout_slots();
-    assert_eq!(reserved, vec![(1920, 0, 1920, 1080)]);
-    backend
-        .platform
-        .recompute_fb_extent_with_reservations(&reserved);
-    assert_eq!(backend.platform.fb_dimensions(), (3840, 1080));
-
-    let (outputs, modes) = backend.randr_outputs_and_modes();
-    let (fb_w, fb_h) = backend.fb_dimensions();
-    let mut state = ServerState::with_randr_outputs_and_modes(
-        fb_w,
-        fb_h,
-        outputs,
-        modes,
-        yserver_core::server::BackendCapabilities::from_backend(&backend),
-    );
-    // The desktop shrank the logical screen around the survivor.
-    state.randr.set_logical_size(1920, 1080, 508, 286);
-
-    backend.rebuild_randr_state(&mut state, None, true);
-
-    assert_eq!(
-        (
-            state.randr.screen_width,
-            state.randr.screen_height,
-            state.randr.width_mm,
-            state.randr.height_mm,
-        ),
-        (1920, 1080, 508, 286),
-        "the client-owned logical size is carried forward verbatim",
-    );
-}
-
-#[test]
-fn dropping_a_never_enabled_output_reserves_nothing_and_survivors_compact() {
-    // The reservation must not freeze the layout unconditionally.
-    let mut backend = KmsBackend::for_tests();
-    clear_test_outputs(&mut backend);
-    let a = push_enabled_test_output(&mut backend, "A", 7, 0, 0, 1920, 1080);
-    let b = push_enabled_test_output(&mut backend, "B", 8, 1920, 0, 3200, 1440);
-    // A was never enabled — it is connected-but-Off, as a runtime-added
-    // connector enters the registry.
-    backend.pstate.randr_id_alloc.entry_mut(&a).config =
-        crate::kms::render::backend::ConnectorConfig::Off;
-    let snapshot_b = relight_test_snapshot(&b, vec![test_advertised_mode(3200, 1440, 60, true)]);
-
-    let rescan = backend.platform.apply_connector_snapshot(
-        vec![snapshot_b],
-        &std::collections::HashSet::from([a.clone(), b]),
-    );
-    let _ = backend.reconcile_connector_registry(
-        &rescan.connected,
-        &rescan.dropped_keys,
-        &rescan.dropped_layouts,
-    );
-
-    let reserved = backend.reserved_layout_slots();
-    assert!(reserved.is_empty(), "nothing enabled, nothing to reserve");
-    let configured = backend.pstate.randr_id_alloc.client_configured_keys();
-    backend
-        .platform
-        .recompact_horizontal_layout(&configured, &reserved);
-    backend
-        .platform
-        .recompute_fb_extent_with_reservations(&reserved);
-
-    assert_eq!(
-        (backend.platform.outputs[0].x, backend.platform.outputs[0].y),
-        (0, 0),
-    );
-    assert_eq!(backend.platform.fb_dimensions(), (3200, 1440));
 }
 
 #[test]
@@ -2868,7 +2528,10 @@ fn heavy_disconnect_projection_does_not_revive_stale_active_output() {
 
     assert_eq!(output.crtc_id, ids.1);
     assert!(!output.connected);
-    assert_eq!(output.mode_id, 0);
+    // #273: the live route keeps its CRTC and mode (Xorg leaves the CRTC
+    // programmed); only the advertised mode list empties.
+    assert_ne!(output.mode_id, 0, "the CRTC keeps scanning out its mode");
+    assert!(output.mode_ids.is_empty());
     let mut state = ServerState::new();
     backend.rebuild_randr_state(&mut state, None, false);
     assert_eq!(
@@ -3063,4 +2726,493 @@ fn not_live_output_reports_connected_off_vs_disconnected() {
         !dp.connected,
         "physically-absent connector reports RR_Disconnected",
     );
+}
+
+// ── #273: a connector disconnect behaves like Xorg's modesetting driver ──
+//
+// Expected values come from the Xorg 21.1.24 source:
+// - `drmmode_handle_uevents` → `drmmode_update_kms_state`
+//   (hw/xfree86/drivers/modesetting/drmmode_display.c:3965) issues no KMS
+//   commit for a disconnect; the detect result is ignored (:3987). The CRTC
+//   keeps its mode, position and outputs.
+// - `xf86ProbeOutputModes` (hw/xfree86/modes/xf86Crtc.c:1688-1691) reports
+//   the output Disconnected with an empty mode list and no EDID.
+// - The client sees RRScreenChangeNotify (size unchanged) and an
+//   RROutputChangeNotify carrying the CRTC and its mode (randr/rroutput.c:339).
+//   No RRCrtcChangeNotify.
+
+/// Every physical-topology probe answers with the scripted snapshot.
+struct ScriptedConnectorProbe(std::cell::RefCell<Vec<ConnectorSnapshot>>);
+
+impl crate::kms::render::backend::kms::session::VtResumeExecutor for ScriptedConnectorProbe {
+    fn acquire_master(
+        &self,
+        _device: &crate::kms::render::platform::KmsDevice,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn release_master(
+        &self,
+        _device: &crate::kms::render::platform::KmsDevice,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn probe_connector_snapshot(
+        &self,
+        _platform: &crate::kms::render::platform::PlatformBackend,
+    ) -> std::io::Result<Vec<ConnectorSnapshot>> {
+        Ok(self.0.borrow().clone())
+    }
+}
+
+/// Records every output power commit; refuses `enable` for the named
+/// connectors, like a kernel that cannot light a connector that is gone.
+#[derive(Default)]
+struct RecordingOutputPower {
+    commits: std::cell::RefCell<Vec<String>>,
+    refuse_enable: std::cell::RefCell<std::collections::HashSet<String>>,
+}
+
+impl crate::kms::render::platform::OutputPowerExecutor for RecordingOutputPower {
+    fn disable(
+        &self,
+        _device: &crate::drm::Device,
+        output: &crate::platform::drm::Output,
+    ) -> std::io::Result<()> {
+        self.commits
+            .borrow_mut()
+            .push(format!("off {}", output.connector_name));
+        Ok(())
+    }
+
+    fn enable(
+        &self,
+        _device: &crate::drm::Device,
+        output: &crate::platform::drm::Output,
+        _framebuffer: ::drm::control::framebuffer::Handle,
+    ) -> std::io::Result<()> {
+        self.commits
+            .borrow_mut()
+            .push(format!("on {}", output.connector_name));
+        if self.refuse_enable.borrow().contains(&output.connector_name) {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        Ok(())
+    }
+}
+
+/// A RANDR-selecting client on the root window; returns the peer socket.
+fn subscribe_randr_client(state: &mut ServerState) -> std::os::unix::net::UnixStream {
+    use std::{
+        collections::{HashMap, HashSet, VecDeque},
+        os::unix::net::UnixStream,
+        sync::{Arc, Mutex, atomic::AtomicU16},
+    };
+    use yserver_core::server::ClientState;
+    use yserver_protocol::x11::{ClientByteOrder, randr as x11randr};
+
+    let (peer, writer) = UnixStream::pair().unwrap();
+    writer.set_nonblocking(true).unwrap();
+    peer.set_nonblocking(true).unwrap();
+    // StructureNotify on the root: a root resize would show up as a
+    // ConfigureNotify (core event 22).
+    let event_masks = HashMap::from([(yserver_core::resources::ROOT_WINDOW, 1_u32 << 17)]);
+    state.clients.insert(
+        7,
+        ClientState {
+            writer: Arc::new(Mutex::new(yserver_core::transport::Transport::Unix(writer))),
+            byte_order: ClientByteOrder::LittleEndian,
+            last_sequence: Arc::new(AtomicU16::new(9)),
+            resource_id_base: 0,
+            resource_id_mask: 0,
+            event_masks,
+            save_set: HashSet::new(),
+            big_requests_enabled: false,
+            xi2_masks: HashMap::new(),
+            xi1_event_classes: HashSet::new(),
+            xi1_window_event_classes: HashMap::new(),
+            outbound: VecDeque::new(),
+            watching_writable: false,
+            write_failed: false,
+            focused_window: yserver_core::resources::ROOT_WINDOW,
+            reader_control: None,
+            is_local: true,
+            fd_passing: true,
+            internal: false,
+        },
+    );
+    state.randr_select_masks.insert(
+        (7, yserver_core::resources::ROOT_WINDOW),
+        x11randr::NOTIFY_MASK_SCREEN_CHANGE
+            | x11randr::NOTIFY_MASK_CRTC_CHANGE
+            | x11randr::NOTIFY_MASK_OUTPUT_CHANGE,
+    );
+    peer
+}
+
+/// A decoded event the #273 tests care about.
+#[derive(Debug, PartialEq, Eq)]
+enum TopologyEvent {
+    /// RRScreenChangeNotify: width, height.
+    Screen(u16, u16),
+    /// RRNotify/CrtcChange: crtc, mode, x, y.
+    Crtc(u32, u32, i16, i16),
+    /// RRNotify/OutputChange: output, crtc, mode, connection.
+    Output(u32, u32, u32, u8),
+    /// Any core ConfigureNotify (a root resize).
+    Configure,
+}
+
+fn drain_topology_events(peer: &mut std::os::unix::net::UnixStream) -> Vec<TopologyEvent> {
+    use std::io::Read;
+    use yserver_protocol::x11::randr as x11randr;
+
+    let mut bytes = Vec::new();
+    let mut buf = [0_u8; 4096];
+    loop {
+        match peer.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&buf[..n]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("read events: {error}"),
+        }
+    }
+    assert_eq!(bytes.len() % 32, 0, "whole events only");
+    let u16_at = |e: &[u8], o: usize| u16::from_le_bytes(e[o..o + 2].try_into().unwrap());
+    let u32_at = |e: &[u8], o: usize| u32::from_le_bytes(e[o..o + 4].try_into().unwrap());
+    bytes
+        .chunks_exact(32)
+        .map(|e| match e[0] & 0x7f {
+            89 => TopologyEvent::Screen(u16_at(e, 24), u16_at(e, 26)),
+            90 if e[1] == x11randr::NOTIFY_CRTC_CHANGE => TopologyEvent::Crtc(
+                u32_at(e, 12),
+                u32_at(e, 16),
+                i16::from_le_bytes(e[22..24].try_into().unwrap()),
+                i16::from_le_bytes(e[24..26].try_into().unwrap()),
+            ),
+            90 if e[1] == x11randr::NOTIFY_OUTPUT_CHANGE => {
+                TopologyEvent::Output(u32_at(e, 16), u32_at(e, 20), u32_at(e, 24), e[30])
+            }
+            22 => TopologyEvent::Configure,
+            other => panic!("unexpected event code {other}"),
+        })
+        .collect()
+}
+
+struct OutputCrtcIds {
+    output_id: u32,
+    crtc_id: u32,
+}
+
+struct DualHead {
+    backend: KmsBackend,
+    state: ServerState,
+    peer: std::os::unix::net::UnixStream,
+    hdmi: OutputKey,
+    probe: std::rc::Rc<ScriptedConnectorProbe>,
+    power: std::rc::Rc<RecordingOutputPower>,
+}
+
+/// The reporter's layout: DP-1 at 0,0 and HDMI-3 at 2560,0, both
+/// 2560x1440, root 5120x1440.
+fn dual_head_fixture() -> DualHead {
+    let mut backend = KmsBackend::for_tests();
+    clear_test_outputs(&mut backend);
+    let dp = push_enabled_test_output(&mut backend, "DP-1", 7, 0, 0, 2560, 1440);
+    let hdmi = push_enabled_test_output(&mut backend, "HDMI-3", 8, 2560, 0, 2560, 1440);
+    backend.platform.fb_w = 5120;
+    backend.platform.fb_h = 1440;
+    let probe = std::rc::Rc::new(ScriptedConnectorProbe(std::cell::RefCell::new(vec![
+        relight_test_snapshot(&dp, vec![test_advertised_mode(2560, 1440, 60, true)]),
+        relight_test_snapshot(&hdmi, vec![test_advertised_mode(2560, 1440, 60, true)]),
+    ])));
+    backend.for_tests_set_vt_resume_executor(probe.clone());
+    let power = std::rc::Rc::new(RecordingOutputPower::default());
+    backend
+        .platform
+        .for_tests_set_output_power_executor(power.clone());
+    let mut state = ServerState::new();
+    backend.rebuild_randr_state(&mut state, None, true);
+    state.randr.screen_width = 5120;
+    state.randr.screen_height = 1440;
+    let peer = subscribe_randr_client(&mut state);
+    let mut fixture = DualHead {
+        backend,
+        state,
+        peer,
+        hdmi,
+        probe,
+        power,
+    };
+    // Settle the fixture's registry against the scripted probe (the base
+    // fixture's own "test" connector is gone; connector types refresh).
+    fixture.rescan();
+    let _ = drain_topology_events(&mut fixture.peer);
+    assert!(fixture.power.commits.borrow().is_empty());
+    fixture
+}
+
+impl DualHead {
+    /// (output XID, CRTC XID).
+    fn ids(&self, key: &OutputKey) -> OutputCrtcIds {
+        let ids = self.backend.pstate.randr_id_alloc.entry(key).unwrap().ids;
+        OutputCrtcIds {
+            output_id: ids.output_id,
+            crtc_id: ids.crtc_id,
+        }
+    }
+
+    fn rescan(&mut self) {
+        self.backend.pstate.hotplug_rescan_deadline = Some(std::time::Instant::now());
+        self.backend
+            .backend_session_poll_deferred_input(&mut self.state);
+    }
+
+    fn unplug_hdmi(&mut self) {
+        self.probe.0.borrow_mut().retain(|s| s.key != self.hdmi);
+    }
+
+    fn replug_hdmi(&mut self) {
+        let snapshot =
+            relight_test_snapshot(&self.hdmi, vec![test_advertised_mode(2560, 1440, 60, true)]);
+        self.probe.0.borrow_mut().push(snapshot);
+    }
+}
+
+#[test]
+fn disconnect_keeps_the_crtc_and_reports_no_modes_like_xorg() {
+    let mut f = dual_head_fixture();
+    let hdmi = f.ids(&f.hdmi);
+    let hdmi_mode = f
+        .state
+        .randr
+        .crtc_info(hdmi.crtc_id, 0)
+        .expect("HDMI CRTC")
+        .mode_id;
+    assert_ne!(hdmi_mode, 0);
+
+    f.unplug_hdmi();
+    f.rescan();
+
+    assert_eq!(
+        f.backend.platform.outputs.len(),
+        2,
+        "the disconnected route keeps its row and scanout pool"
+    );
+    let crtc = f.state.randr.crtc_info(hdmi.crtc_id, 0).expect("HDMI CRTC");
+    assert_eq!(crtc.mode_id, hdmi_mode, "the CRTC keeps its mode");
+    assert_eq!((crtc.x, crtc.y), (2560, 0), "and its position");
+    assert_eq!((crtc.width, crtc.height), (2560, 1440));
+    assert_eq!(crtc.outputs, vec![hdmi.output_id], "and its output");
+
+    let info = f
+        .state
+        .randr
+        .output_info(hdmi.output_id, 0)
+        .expect("HDMI output");
+    assert_eq!(
+        info.connection,
+        yserver_protocol::x11::randr::CONNECTION_DISCONNECTED
+    );
+    assert_eq!(info.crtc, hdmi.crtc_id);
+    assert_eq!(info.mode_id, hdmi_mode);
+    assert!(
+        info.mode_ids.is_empty(),
+        "a disconnected output lists no modes"
+    );
+    assert_eq!(info.num_preferred, 0);
+    assert!(
+        f.state
+            .randr
+            .screen_resources_current()
+            .modes
+            .iter()
+            .any(|mode| mode.id == hdmi_mode),
+        "the CRTC's current mode stays in the screen's mode table"
+    );
+    assert_eq!(
+        (f.state.randr.screen_width, f.state.randr.screen_height),
+        (5120, 1440)
+    );
+}
+
+#[test]
+fn disconnect_and_reconnect_commit_nothing_and_send_xorgs_events() {
+    use yserver_protocol::x11::randr::{CONNECTION_CONNECTED, CONNECTION_DISCONNECTED};
+
+    let mut f = dual_head_fixture();
+    let hdmi = f.ids(&f.hdmi);
+    let hdmi_mode = f.state.randr.crtc_info(hdmi.crtc_id, 0).unwrap().mode_id;
+
+    f.unplug_hdmi();
+    f.rescan();
+    assert!(
+        f.power.commits.borrow().is_empty(),
+        "Xorg issues no KMS commit on a disconnect; got {:?}",
+        f.power.commits.borrow()
+    );
+    assert_eq!(
+        drain_topology_events(&mut f.peer),
+        vec![
+            TopologyEvent::Screen(5120, 1440),
+            TopologyEvent::Output(
+                hdmi.output_id,
+                hdmi.crtc_id,
+                hdmi_mode,
+                CONNECTION_DISCONNECTED
+            ),
+        ],
+    );
+
+    f.replug_hdmi();
+    f.rescan();
+    assert!(
+        f.power.commits.borrow().is_empty(),
+        "the CRTC never stopped, so the reconnect needs no commit; got {:?}",
+        f.power.commits.borrow()
+    );
+    assert_eq!(
+        drain_topology_events(&mut f.peer),
+        vec![
+            TopologyEvent::Screen(5120, 1440),
+            TopologyEvent::Output(
+                hdmi.output_id,
+                hdmi.crtc_id,
+                hdmi_mode,
+                CONNECTION_CONNECTED
+            ),
+        ],
+    );
+    let info = f.state.randr.output_info(hdmi.output_id, 0).unwrap();
+    assert_eq!(info.mode_ids.len(), 1, "the reconnect re-probes the modes");
+    let crtc = f.state.randr.crtc_info(hdmi.crtc_id, 0).unwrap();
+    assert_eq!((crtc.mode_id, crtc.x, crtc.y), (hdmi_mode, 2560, 0));
+}
+
+#[test]
+fn screen_resources_probe_disconnect_reports_no_modes_and_keeps_the_crtc() {
+    let mut f = dual_head_fixture();
+    let hdmi = f.ids(&f.hdmi);
+    let hdmi_mode = f.state.randr.crtc_info(hdmi.crtc_id, 0).unwrap().mode_id;
+    let probes = vec![(
+        f.hdmi.device_key,
+        vec![
+            crate::platform::drm::ConnectorProbe {
+                connector_name: "DP-1".into(),
+                connected: true,
+                modes: vec![test_advertised_mode(2560, 1440, 60, true)],
+            },
+            crate::platform::drm::ConnectorProbe {
+                connector_name: "HDMI-3".into(),
+                connected: false,
+                modes: Vec::new(),
+            },
+        ],
+    )];
+    assert!(f.backend.publish_connector_probes(&mut f.state, &probes));
+    let info = f.state.randr.output_info(hdmi.output_id, 0).unwrap();
+    assert_eq!(
+        info.connection,
+        yserver_protocol::x11::randr::CONNECTION_DISCONNECTED
+    );
+    assert_eq!((info.crtc, info.mode_id), (hdmi.crtc_id, hdmi_mode));
+    assert!(
+        info.mode_ids.is_empty(),
+        "a disconnected output lists no modes"
+    );
+    let crtc = f.state.randr.crtc_info(hdmi.crtc_id, 0).unwrap();
+    assert_eq!((crtc.mode_id, crtc.x, crtc.y), (hdmi_mode, 2560, 0));
+    assert_eq!(crtc.outputs, vec![hdmi.output_id]);
+
+    // The later heavy boundary agrees and still commits nothing.
+    f.unplug_hdmi();
+    f.rescan();
+    assert!(f.power.commits.borrow().is_empty());
+    let crtc = f.state.randr.crtc_info(hdmi.crtc_id, 0).unwrap();
+    assert_eq!((crtc.mode_id, crtc.x, crtc.y), (hdmi_mode, 2560, 0));
+    assert!(
+        f.state
+            .randr
+            .output_info(hdmi.output_id, 0)
+            .unwrap()
+            .mode_ids
+            .is_empty()
+    );
+}
+
+#[test]
+#[ignore = "needs live Vulkan ICD (lavapipe)"]
+fn dpms_on_and_vt_resume_light_the_others_with_a_disconnected_configured_output() {
+    use yserver_core::{backend::Backend, core_loop::input_inventory::InputInventory};
+
+    let Some(mut backend) =
+        super::commit_identity::recording_scene::build_recording_scene_backend(2, false, false)
+            .unwrap_or_else(|error| panic!("recording scene fixture unavailable: {error}"))
+    else {
+        return;
+    };
+    let lit = backend.platform.outputs[0].key.clone();
+    let gone = backend.platform.outputs[1].key.clone();
+    let probe = std::rc::Rc::new(ScriptedConnectorProbe(std::cell::RefCell::new(vec![
+        relight_test_snapshot(
+            &lit,
+            vec![backend.platform.outputs[0].output.picked.clone()],
+        ),
+    ])));
+    backend.for_tests_set_vt_resume_executor(probe);
+    let power = std::rc::Rc::new(RecordingOutputPower::default());
+    power
+        .refuse_enable
+        .borrow_mut()
+        .insert(gone.connector_name.clone());
+    backend
+        .platform
+        .for_tests_set_output_power_executor(power.clone());
+    let mut state = ServerState::new();
+    backend.rebuild_randr_state(&mut state, None, true);
+
+    // The second connector goes away; its route stays configured.
+    backend.pstate.hotplug_rescan_deadline = Some(std::time::Instant::now());
+    backend.backend_session_poll_deferred_input(&mut state);
+    assert_eq!(backend.platform.outputs.len(), 2);
+    power.commits.borrow_mut().clear();
+
+    Backend::set_dpms_power(&mut backend, 3).expect("DPMS off");
+    power.commits.borrow_mut().clear();
+    Backend::set_dpms_power(&mut backend, 0)
+        .expect("a disconnected output's refused commit must not fail DPMS on");
+    assert_eq!(
+        *power.commits.borrow(),
+        vec![
+            format!("on {}", lit.connector_name),
+            format!("on {}", gone.connector_name),
+        ],
+        "DPMS on attempts every configured CRTC",
+    );
+    assert!(backend.kms_outputs_active, "the connected output is lit");
+
+    Backend::finish_vt_release(&mut backend, &mut state, &InputInventory::default());
+    power.commits.borrow_mut().clear();
+    Backend::on_vt_acquire(&mut backend, &mut state);
+    assert_eq!(backend.pstate.vt_state, crate::vt::state::VtState::Active);
+    assert!(
+        power
+            .commits
+            .borrow()
+            .contains(&format!("on {}", lit.connector_name)),
+        "VT resume relights the connected output: {:?}",
+        power.commits.borrow()
+    );
+    assert!(
+        power
+            .commits
+            .borrow()
+            .contains(&format!("on {}", gone.connector_name)),
+        "and attempts the disconnected one: {:?}",
+        power.commits.borrow()
+    );
+    assert!(backend.kms_outputs_active);
+    assert_eq!(backend.platform.outputs.len(), 2);
 }

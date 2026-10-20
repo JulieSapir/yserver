@@ -43,6 +43,8 @@ use connectors::*;
 use cursor::*;
 #[cfg(test)]
 use init::*;
+#[cfg(test)]
+pub(in crate::kms::render) use power::OutputPowerExecutor;
 pub(crate) use qualify::*;
 #[cfg(test)]
 use scanout_bos::*;

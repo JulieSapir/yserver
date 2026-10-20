@@ -48,6 +48,11 @@ pub(crate) struct ActiveOutput {
     pub y: i32,
     pub width: u16,
     pub height: u16,
+    /// Whether the connector was connected at the last physical topology
+    /// snapshot. A disconnect keeps the route live (Xorg modesetting leaves
+    /// the CRTC programmed), so power commits on a route whose connector is
+    /// gone are attempted but allowed to fail.
+    pub connector_connected: bool,
 }
 
 impl ActiveOutput {
@@ -70,6 +75,7 @@ impl ActiveOutput {
             y,
             width,
             height,
+            connector_connected: true,
         }
     }
 }
@@ -122,6 +128,7 @@ impl PlatformInitOutput {
             y: self.y,
             width: self.width,
             height: self.height,
+            connector_connected: true,
         }
     }
 }

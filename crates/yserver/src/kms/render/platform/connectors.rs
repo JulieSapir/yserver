@@ -76,13 +76,18 @@ impl ConnectorSnapshot {
         }
     }
 
-    pub(crate) fn preserves_active_output(&self, output: &ActiveOutput) -> bool {
-        // A monitor replacement on the same connector does not revoke the
-        // mode already programmed in KMS. Keep that live route until a RANDR
-        // client selects a replacement; only a disconnected/no-mode probe
-        // forces it Off. The registry's exact mode identities are
-        // authoritative without changing this live-mode preservation policy.
-        self.key == output.key && !self.modes.is_empty()
+    /// Whether this connected-connector snapshot forces `output`'s live route
+    /// off: the connector is still present but advertises no usable mode.
+    ///
+    /// A connector absent from the snapshot (physically disconnected) never
+    /// retires its route. Xorg's modesetting driver does not commit on a
+    /// disconnect: `drmmode_update_kms_state`
+    /// (`hw/xfree86/drivers/modesetting/drmmode_display.c:3965`) only
+    /// re-detects, and the CRTC keeps its mode, position and outputs until a
+    /// client reconfigures it. A monitor replacement on the same connector
+    /// likewise keeps the mode already programmed in KMS.
+    pub(crate) fn retires_active_output(&self, output: &ActiveOutput) -> bool {
+        self.key == output.key && self.modes.is_empty()
     }
 }
 
@@ -162,6 +167,19 @@ impl PlatformBackend {
             all.push((device.key, probes));
         }
         Ok(all)
+    }
+
+    /// Whether a physical snapshot of connected connectors forces any live
+    /// route off. See [`ConnectorSnapshot::retires_active_output`].
+    pub(crate) fn snapshot_retires_any_active_output(
+        &self,
+        snapshot: &[ConnectorSnapshot],
+    ) -> bool {
+        self.outputs.iter().any(|output| {
+            snapshot
+                .iter()
+                .any(|entry| entry.retires_active_output(output))
+        })
     }
 
     /// Gather the complete connected-connector snapshot without mutating any
@@ -1038,8 +1056,11 @@ impl PlatformBackend {
     }
 
     /// Apply a previously gathered all-device connector snapshot. Callers must
-    /// quiesce GPU/page-flip state before invoking this method: it may remove
-    /// scanout pools and ActiveOutputs for disconnected connectors.
+    /// quiesce GPU/page-flip state before invoking this method whenever
+    /// [`Self::snapshot_retires_any_active_output`] holds: it then removes
+    /// scanout pools and ActiveOutputs for connected connectors without a
+    /// usable mode. A disconnected connector only has its live route flagged
+    /// `connector_connected = false`.
     ///
     /// Topology ownership only: the dropped routes' rectangles are reported
     /// in [`RescanResult::dropped_layouts`] and the caller owns packing and
@@ -1054,16 +1075,18 @@ impl PlatformBackend {
             .map(|snapshot| snapshot.key.clone())
             .collect();
         let connected_keys: HashSet<OutputKey> = connected_order.iter().cloned().collect();
-        // A connector can be physically connected yet advertise no usable
-        // mode. Keep it connected in RANDR, but it cannot retain a live CRTC
-        // route or scanout pool.
+        // A physically disconnected connector keeps its live route, pool and
+        // CRTC (Xorg parity, see `retires_active_output`). A connector can
+        // also be physically connected yet advertise no usable mode: keep it
+        // connected in RANDR, but it cannot retain a live CRTC route or
+        // scanout pool.
         let active_survivor_keys: HashSet<OutputKey> = self
             .outputs
             .iter()
             .filter(|output| {
-                connected
+                !connected
                     .iter()
-                    .any(|snapshot| snapshot.preserves_active_output(output))
+                    .any(|snapshot| snapshot.retires_active_output(output))
             })
             .map(|output| output.key.clone())
             .collect();
@@ -1090,7 +1113,7 @@ impl PlatformBackend {
                 continue;
             }
             log::warn!(
-                "render rescan: output {} disconnected — dropping active scanout",
+                "render rescan: output {} advertises no usable mode — dropping active scanout",
                 layout.output.connector_name,
             );
             rescan.dropped_old_indices.push(idx);
@@ -1142,7 +1165,16 @@ impl PlatformBackend {
         }
 
         for layout in &mut self.outputs {
-            if let Some(snapshot) = snapshot_by_key.get(&layout.key) {
+            let snapshot = snapshot_by_key.get(&layout.key);
+            if layout.connector_connected && snapshot.is_none() {
+                log::info!(
+                    "render rescan: output {} disconnected — keeping its CRTC and scanout \
+                     (Xorg modesetting parity)",
+                    layout.output.connector_name,
+                );
+            }
+            layout.connector_connected = snapshot.is_some();
+            if let Some(snapshot) = snapshot {
                 // A probe does not commit a route. Preserve the exact live
                 // connector/CRTC/plane handles, property IDs, picked mode and
                 // DRM mode blob; refresh only connector-owned metadata. The

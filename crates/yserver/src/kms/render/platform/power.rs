@@ -237,10 +237,21 @@ impl PlatformBackend {
                     }
                     continue;
                 };
-                if let Err(e) = self
+                let result = self
                     .output_power_executor
-                    .enable(&device, &layout.output, fb_id)
+                    .enable(&device, &layout.output, fb_id);
+                if let Err(e) = &result
+                    && !layout.connector_connected
                 {
+                    // Xorg keeps a disconnected output's CRTC configured; the
+                    // kernel may refuse to light a connector that is gone.
+                    // That must never keep the connected outputs dark.
+                    log::debug!(
+                        "dpms_set_outputs_active(true): {} is disconnected; its commit \
+                         failed ({e}), continuing",
+                        layout.output.connector_name,
+                    );
+                } else if let Err(e) = result {
                     log::error!(
                         "dpms_set_outputs_active(true): commit_modeset for {} failed: {e}",
                         layout.output.connector_name,
@@ -318,5 +329,13 @@ impl PlatformBackend {
     #[cfg(test)]
     pub(crate) fn for_tests_accept_output_power_commits(&mut self) {
         self.output_power_executor = Rc::new(AcceptingOutputPowerExecutor);
+    }
+
+    #[cfg(test)]
+    pub(in crate::kms::render) fn for_tests_set_output_power_executor(
+        &mut self,
+        executor: Rc<dyn OutputPowerExecutor>,
+    ) {
+        self.output_power_executor = executor;
     }
 }

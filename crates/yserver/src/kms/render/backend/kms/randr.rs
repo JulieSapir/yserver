@@ -39,8 +39,10 @@ pub(in crate::kms::render::backend) fn reconcile_connector_probe(
             entry_changed = true;
             config_changed = true;
         }
-        // Retain the last-known mode list while disconnected, matching the
-        // registry's existing hot-unplug semantics.
+        // A disconnected output advertises no modes (Xorg
+        // `xf86ProbeOutputModes`, xf86Crtc.c:1688-1691, deletes the probed
+        // list and skips probing). A live CRTC keeps its current mode in the
+        // screen's mode table through the projection instead.
         if probe.connected && entry.modes != probe.modes {
             entry.modes.clone_from(&probe.modes);
             // A changed advertised list can identify a replacement monitor,
@@ -55,6 +57,11 @@ pub(in crate::kms::render::backend) fn reconcile_connector_probe(
         }
         if !probe.connected {
             entry_changed |= !entry.edid.is_empty() || entry.mm_width != 0 || entry.mm_height != 0;
+            if !entry.modes.is_empty() {
+                entry.modes.clear();
+                entry_changed = true;
+                config_changed = true;
+            }
             entry.edid.clear();
             entry.mm_width = 0;
             entry.mm_height = 0;
@@ -65,8 +72,8 @@ pub(in crate::kms::render::backend) fn reconcile_connector_probe(
         delta.config_changed |= config_changed;
     }
     // Connectors the registry knows but the probe no longer sees are
-    // disconnected. Their mode lists and live/client configuration are
-    // retained; only the later heavy topology path may detach a CRTC.
+    // disconnected. Their mode lists are dropped (as above); their live and
+    // client configuration is retained.
     let known: Vec<OutputKey> = randr_id_alloc
         .known_connectors()
         .into_iter()
@@ -84,6 +91,11 @@ pub(in crate::kms::render::backend) fn reconcile_connector_probe(
                 config_changed = true;
             }
             entry_changed |= !entry.edid.is_empty() || entry.mm_width != 0 || entry.mm_height != 0;
+            if !entry.modes.is_empty() {
+                entry.modes.clear();
+                entry_changed = true;
+                config_changed = true;
+            }
             entry.edid.clear();
             entry.mm_width = 0;
             entry.mm_height = 0;
@@ -302,6 +314,11 @@ impl KmsBackend {
                 .iter()
                 .find(|route| &route.key == key)
                 .cloned();
+            let still_live = self
+                .platform
+                .outputs
+                .iter()
+                .any(|layout| &layout.key == key);
             let entry = self.pstate.randr_id_alloc.entry_mut(key);
             if connected_keys.contains(key) {
                 // Physically connected but no longer usable by the live CRTC
@@ -318,6 +335,31 @@ impl KmsBackend {
                 entry.last_enabled = None;
                 continue;
             }
+            // Physically disconnected while its route is still live. Xorg's
+            // modesetting driver issues no commit on a disconnect: the CRTC
+            // keeps its mode, position and outputs and keeps scanning out
+            // (`drmmode_update_kms_state`, drmmode_display.c:3965, ignores the
+            // detect result). `xf86ProbeOutputModes` (xf86Crtc.c:1688-1691)
+            // then reports the output Disconnected with no probed modes and
+            // clears its EDID. Keep the client/auto-layout config untouched.
+            if still_live {
+                let config_changed = entry.connected || !entry.modes.is_empty();
+                if config_changed
+                    || !entry.edid.is_empty()
+                    || entry.mm_width != 0
+                    || entry.mm_height != 0
+                {
+                    delta.changed_keys.push(key.clone());
+                }
+                delta.config_changed |= config_changed;
+                entry.crtc_associated = true;
+                entry.connected = false;
+                entry.modes.clear();
+                entry.edid.clear();
+                entry.mm_width = 0;
+                entry.mm_height = 0;
+                continue;
+            }
             // The connector physically departed. Remember the route it was
             // scanning out so the reconnect relights it without a client
             // request, and so its slot stays reserved meanwhile.
@@ -332,7 +374,7 @@ impl KmsBackend {
                     y: route.y,
                 });
             }
-            let config_changed = entry.connected;
+            let config_changed = entry.connected || !entry.modes.is_empty();
             let output_changed = config_changed
                 || !entry.edid.is_empty()
                 || entry.mm_width != 0
@@ -345,8 +387,10 @@ impl KmsBackend {
             entry.connected = false;
             entry.config = ConnectorConfig::Off;
             entry.client_configured = false;
-            // Retain stable mode resources and connector-owned type, but do
-            // not project the departed monitor's identity while disconnected.
+            // Retain stable XIDs and connector-owned type, but, like Xorg, do
+            // not advertise the departed monitor's modes or identity while
+            // disconnected.
+            entry.modes.clear();
             entry.edid.clear();
             entry.mm_width = 0;
             entry.mm_height = 0;
@@ -757,10 +801,12 @@ impl KmsBackend {
         // KMS devices) so identities stay stable and collision-free.
         self.reserve_randr_provider_ids();
 
-        // A lightweight disconnect leaves the registry config Enabled, so
-        // the live CRTC remains projected while `connected` flips false. A
-        // heavy drop (and a startup force-probe miss) sets config Off; do not
-        // let a stale `platform.outputs` row revive that route.
+        // A disconnect (lightweight or heavy) leaves the registry config
+        // Enabled, so the live CRTC remains projected with its mode and
+        // position while `connected` flips false (Xorg parity). A route
+        // retired for lack of a usable mode (and a startup force-probe miss)
+        // sets config Off; do not let a stale `platform.outputs` row revive
+        // that route.
         let live_keys: HashSet<OutputKey> = self
             .platform
             .outputs
@@ -912,8 +958,8 @@ impl KmsBackend {
         //     report RR_Connected with mode=0/crtc-unassigned so a client
         //     can enable it (GetOutputInfo offers the advertised modes).
         //   - connected=false → physically disconnected: RR_Disconnected.
-        // Either way the last-known advertised mode list is retained so
-        // GetOutputInfo stays consistent with the GetScreenResources union.
+        // A disconnected connector advertises no modes (the registry clears
+        // them), matching Xorg's `xf86ProbeOutputModes`.
         // Collect owned first to release the &self borrow before the
         // &mut self mode_id() allocations below.
         let not_live: Vec<NotLiveConnector> = self
@@ -1517,6 +1563,7 @@ impl KmsBackend {
         }
         // Gather first. A card-level probe error aborts the combined rescan
         // without touching the last-known topology.
+        // The same physical-topology probe VT resume uses (and its test seam).
         let snapshot = match self
             .pstate
             .vt_resume_executor
@@ -1528,11 +1575,9 @@ impl KmsBackend {
                 return;
             }
         };
-        let active_removed = self.platform.outputs.iter().any(|output| {
-            !snapshot
-                .iter()
-                .any(|entry| entry.preserves_active_output(output))
-        });
+        // A physical disconnect keeps its route (Xorg parity); only a
+        // connected connector without a usable mode retires one.
+        let active_removed = self.platform.snapshot_retires_any_active_output(&snapshot);
 
         // Only an active removal can drop a pool or invalidate the scene's
         // output-index ledger. Metadata and inactive-connector changes leave

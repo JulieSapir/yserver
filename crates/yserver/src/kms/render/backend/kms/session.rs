@@ -565,7 +565,8 @@ impl KmsBackend {
     ///
     /// Steps:
     /// 1. State is already `Resuming`.
-    /// 2. Re-query connectors, drop missing, re-commit modeset on the
+    /// 2. Re-query connectors, retire routes without a usable mode (a
+    ///    disconnected route is kept, #273), re-commit modeset on the
     ///    existing device. If all commits fail (card gone), log + exit
     ///    (Risk #4).
     /// 3. Re-arm the hardware cursor plane.
@@ -595,11 +596,9 @@ impl KmsBackend {
                 return false;
             }
         };
-        let active_removed = self.platform.outputs.iter().any(|output| {
-            !snapshot
-                .iter()
-                .any(|entry| entry.preserves_active_output(output))
-        });
+        // A physical disconnect keeps its route (Xorg parity); only a
+        // connected connector without a usable mode retires one.
+        let active_removed = self.platform.snapshot_retires_any_active_output(&snapshot);
 
         // A retained direct framebuffer must be released against the old
         // routes even when the connector set is unchanged. Any active removal

@@ -929,7 +929,17 @@ fn connector_snapshot_reports_dropped_rectangles_and_leaves_layout_to_the_caller
     platform.fb_h = 600;
     let key = platform.outputs[0].key.clone();
 
-    let rescan = platform.apply_connector_snapshot(Vec::new(), &HashSet::from([key.clone()]));
+    // Connected but without a usable mode: the one snapshot that still
+    // retires a live route (a disconnect keeps it, #273).
+    let no_modes = ConnectorSnapshot {
+        key: key.clone(),
+        modes: Vec::new(),
+        mm_width: 0,
+        mm_height: 0,
+        edid: Vec::new(),
+        connector_type: "unknown".to_string(),
+    };
+    let rescan = platform.apply_connector_snapshot(vec![no_modes], &HashSet::from([key.clone()]));
 
     assert!(platform.outputs.is_empty());
     assert_eq!(
