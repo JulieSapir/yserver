@@ -47,9 +47,10 @@ if [ -n "$forbidden" ]; then
     fail=1
 fi
 
-# 4. The surface platform is OS-neutral; window-system code lives in src/macos/.
-if grep -rnE 'objc2|AppKit|\bMetal|target_os' crates/yserver/src/surface; then
-    echo "surface: crates/yserver/src/surface names a window system or target_os (matches above)"
+# 4. The surface platform and rootless presenter are OS-neutral; window-system
+#    code lives in src/macos/.
+if grep -rnE 'objc2|AppKit|\bMetal|target_os' crates/yserver/src/surface crates/yserver/src/rootless; then
+    echo "surface: crates/yserver/src/{surface,rootless} names a window system or target_os (matches above)"
     fail=1
 fi
 

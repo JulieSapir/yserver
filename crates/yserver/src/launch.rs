@@ -127,11 +127,18 @@ pub struct LaunchOptions {
     /// XDMCP configuration: `None` unless one of `-query`, `-broadcast`
     /// or `-indirect` was given. See [`XdmcpOptions`].
     pub xdmcp: Option<XdmcpOptions>,
-    /// `--headless`: on a platform without KMS, run without a window.
+    /// `--headless`: run the surface platform without a window or display
+    /// device (on KMS builds too: no DRM, no input).
     pub headless: bool,
     /// `--geometry WxH`: the screen size in pixels on a platform without
     /// KMS.
     pub geometry: Option<(u16, u16)>,
+    /// `--rootless` (with `--headless`): every top-level becomes a native
+    /// window of a recording host (spec RL1, plan Task 9).
+    pub rootless: bool,
+    /// `--rootless-record DIR`: the recording host writes its event log and
+    /// every delivered frame there.
+    pub rootless_record: Option<PathBuf>,
     /// `--scale auto|1|2`: backing pixels per X pixel in a window.
     pub scale: ScaleOption,
     /// Not from argv: set for a launch that cannot be given a display (the
@@ -160,6 +167,22 @@ fn parse_scale(value: &str) -> Result<ScaleOption, String> {
             "invalid --scale argument: {value} (expected auto, 1 or 2)"
         )),
     }
+}
+
+/// `--rootless` runs only headless (the recording host) until a window
+/// system hosts it (RL2); `--rootless-record` only with `--rootless`.
+///
+/// # Errors
+///
+/// The combination is refused, with the reason.
+pub fn validate_rootless(o: &LaunchOptions) -> Result<(), String> {
+    if o.rootless && !o.headless {
+        return Err("--rootless needs --headless (KMS is never rootless)".into());
+    }
+    if o.rootless_record.is_some() && !o.rootless {
+        return Err("--rootless-record needs --rootless".into());
+    }
+    Ok(())
 }
 
 /// Parse a `WxH` screen size; both sides must be non-zero.
@@ -255,6 +278,10 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<LaunchOption
             // Known no-arg no-op (lightdm passes it).
         } else if arg == "--headless" {
             o.headless = true;
+        } else if arg == "--rootless" {
+            o.rootless = true;
+        } else if arg == "--rootless-record" {
+            o.rootless_record = Some(PathBuf::from(next_value(&mut it, "--rootless-record")?));
         } else if arg == "--geometry" {
             o.geometry = Some(parse_geometry(&next_value(&mut it, "--geometry")?)?);
         } else if arg == "--scale" {
@@ -1224,6 +1251,30 @@ mod tests {
     #[test]
     fn explicit_colon_display() {
         assert_eq!(parse(&[":42"]).unwrap().display, Some(42));
+    }
+
+    #[test]
+    fn rootless_flags_parse_and_need_headless() {
+        let o = parse(&[":1"]).unwrap();
+        assert!(!o.rootless);
+        assert_eq!(o.rootless_record, None);
+        assert_eq!(validate_rootless(&o), Ok(()));
+        let o = parse(&[
+            ":1",
+            "--headless",
+            "--rootless",
+            "--rootless-record",
+            "/tmp/r",
+        ])
+        .unwrap();
+        assert!(o.rootless);
+        assert_eq!(o.rootless_record, Some(PathBuf::from("/tmp/r")));
+        assert_eq!(validate_rootless(&o), Ok(()));
+        assert!(parse(&["--rootless-record"]).is_err(), "missing value");
+        let o = parse(&[":1", "--rootless"]).unwrap();
+        assert!(validate_rootless(&o).is_err(), "rootless needs --headless");
+        let o = parse(&[":1", "--headless", "--rootless-record", "/tmp/r"]).unwrap();
+        assert!(validate_rootless(&o).is_err(), "a record needs --rootless");
     }
 
     #[test]

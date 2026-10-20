@@ -10,7 +10,6 @@ mod platform;
 mod present;
 #[cfg_attr(all(kms, not(test)), allow(dead_code))] // A window shell's.
 pub(crate) mod resize;
-#[cfg(not(kms))]
 pub(crate) mod server;
 mod slots;
 pub(crate) mod swapchain;

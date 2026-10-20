@@ -10,6 +10,8 @@ use std::{
 use yserver_core::{
     backend::{Backend as _, BackendTopology, install_backend_root_bindings},
     core_loop::{self, poll_tokens::ClientIdAllocator},
+    rootless::CoordinatePolicy,
+    server::ServerState,
 };
 
 use super::{
@@ -26,6 +28,7 @@ use crate::{
         vk::device::{VkContext, VkContextOptions},
     },
     launch,
+    rootless::record::RecordHost,
 };
 
 /// The screen size without `--geometry`, in X pixels.
@@ -34,6 +37,7 @@ pub(crate) const DEFAULT_SIZE: (u16, u16) = (1280, 800);
 /// A window shell's half of the server: its surface, the surface's frame
 /// clock (ticked by the shell), its link, its UI commands, the count of
 /// established X clients the core keeps for it and the host pasteboard.
+#[allow(dead_code, reason = "a window shell's; only macOS has one")]
 pub(crate) struct WindowSpec {
     pub(crate) surface: NativeSurface,
     pub(crate) clock: Arc<FrameClock>,
@@ -62,7 +66,9 @@ pub(crate) fn run_headless(opts: launch::LaunchOptions) -> io::Result<()> {
         ));
     }
     let size = opts.geometry.unwrap_or(DEFAULT_SIZE);
-    serve(
+    // `--rootless`: the recording host answers on its own link.
+    let link = opts.rootless.then(|| Arc::new(ShellLink::default()));
+    let result = serve(
         &opts,
         |opts| {
             let vk = VkContext::new_with_options(VkContextOptions {
@@ -71,12 +77,28 @@ pub(crate) fn run_headless(opts: launch::LaunchOptions) -> io::Result<()> {
                 wants_kms_interop: false,
             })
             .map_err(|e| io::Error::other(format!("vulkan: {e}")))?;
-            super::headless_backend(vk, size, opts.layout.clone())
+            let mut backend = super::headless_backend(vk, size, opts.layout.clone())?;
+            backend.pstate.link.clone_from(&link);
+            Ok(backend)
         },
-        None,
+        |state, backend| {
+            let Some(link) = &link else {
+                return Ok(());
+            };
+            let host = RecordHost::new(Arc::clone(link), opts.rootless_record.clone())?;
+            crate::rootless::start(state, backend, Box::new(host), CoordinatePolicy::Opaque)
+                .map_err(|e| io::Error::other(format!("rootless: {e}")))?;
+            log::info!("yserver: rootless, recording host");
+            Ok(())
+        },
+        link.as_deref(),
         None,
         |_| {},
-    )
+    );
+    if let Some(link) = &link {
+        link.disconnect();
+    }
+    result
 }
 
 /// Run the server in the shell's window; tells the shell to quit when the
@@ -85,6 +107,7 @@ pub(crate) fn run_headless(opts: launch::LaunchOptions) -> io::Result<()> {
 /// # Errors
 ///
 /// Vulkan, the sockets or the core loop failed.
+#[allow(dead_code, reason = "a window shell's; only macOS has one")]
 pub(crate) fn run_windowed(opts: launch::LaunchOptions, spec: WindowSpec) -> io::Result<()> {
     let size = opts.geometry.unwrap_or(DEFAULT_SIZE);
     let WindowSpec {
@@ -119,6 +142,7 @@ pub(crate) fn run_windowed(opts: launch::LaunchOptions, spec: WindowSpec) -> io:
             backend.platform.output_mm = output_mm;
             Ok(backend)
         },
+        |_, _| Ok(()),
         Some(&link),
         Some(pasteboard),
         |display| ui.set_title(&format!("yserver DISPLAY=:{display}")),
@@ -135,6 +159,7 @@ pub(crate) fn run_windowed(opts: launch::LaunchOptions, spec: WindowSpec) -> io:
 fn serve(
     opts: &launch::LaunchOptions,
     build: impl FnOnce(&launch::LaunchOptions) -> io::Result<XBackend<SurfacePlatform>>,
+    setup: impl FnOnce(&mut ServerState, &mut XBackend<SurfacePlatform>) -> io::Result<()>,
     link: Option<&ShellLink>,
     pasteboard: Option<Box<dyn Pasteboard>>,
     on_display: impl FnOnce(u16),
@@ -159,6 +184,7 @@ fn serve(
     let mut state = topology.into_server_state();
     crate::clock::init(state.start_instant);
     install_backend_root_bindings(&mut state, &backend);
+    setup(&mut state, &mut backend)?;
 
     let socket_dir = PathBuf::from("/tmp/.X11-unix");
     fs::create_dir_all(&socket_dir).map_err(|e| {

@@ -18,10 +18,10 @@ mod macos;
 pub(crate) mod platform;
 #[cfg(kms)]
 pub mod present;
+pub(crate) mod rootless;
 pub(crate) mod scroll_v120;
-#[cfg(any(not(kms), test))]
 // Only the macOS shell opens windows; elsewhere the window half is unused.
-#[cfg_attr(all(not(kms), not(target_os = "macos")), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub(crate) mod surface;
 pub mod version;
 #[cfg(kms)]
@@ -297,26 +297,30 @@ pub const RESOURCE_TELEMETRY_TARGET: &str = "yserver::resources";
 /// Run the server on macOS.
 #[cfg(all(not(kms), target_os = "macos"))]
 pub fn run(opts: launch::LaunchOptions) -> io::Result<()> {
+    launch::validate_rootless(&opts).map_err(io::Error::other)?;
     macos::run(opts)
 }
 
 /// Run the server on a platform with neither KMS nor a window shell.
 #[cfg(all(not(kms), not(target_os = "macos")))]
 pub fn run(opts: launch::LaunchOptions) -> io::Result<()> {
+    launch::validate_rootless(&opts).map_err(io::Error::other)?;
     surface::server::run_headless(opts)
 }
 
 /// Run the server on the DRM/KMS platform.
 #[cfg(kms)]
 pub fn run(opts: launch::LaunchOptions) -> io::Result<()> {
+    launch::validate_rootless(&opts).map_err(io::Error::other)?;
+    if opts.headless {
+        // The surface platform with no surface: no DRM device, no input.
+        return surface::server::run_headless(opts);
+    }
     if opts.geometry.is_some() {
-        log::warn!("yserver: --geometry is for platforms without KMS; ignored");
+        log::warn!("yserver: --geometry is for --headless or platforms without KMS; ignored");
     }
     if opts.scale != launch::ScaleOption::Auto {
         log::warn!("yserver: --scale is for platforms without KMS; ignored");
-    }
-    if opts.headless {
-        log::warn!("yserver: --headless is for platforms without KMS; ignored");
     }
 
     // A dedicated target so the hardware recipes (which log at `warn` plus the

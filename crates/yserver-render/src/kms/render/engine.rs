@@ -34,6 +34,7 @@ mod for_tests;
 mod frame;
 mod glyphs;
 mod gradients;
+mod handoff;
 mod lifecycle;
 mod pixels;
 mod put_get;
@@ -50,6 +51,7 @@ pub use fill_copy::*;
 #[cfg(test)]
 use frame::*;
 pub use glyphs::*;
+pub use handoff::PendingReadback;
 pub use pixels::*;
 #[cfg(test)]
 use put_get::clamp_put_rect;

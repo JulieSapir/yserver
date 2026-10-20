@@ -791,6 +791,51 @@ impl Drawable {
     }
 }
 
+impl DrawableStore {
+    /// Transition `id` to `TRANSFER_SRC_OPTIMAL` after all prior writes, on a
+    /// caller's command buffer; returns its image and extent.
+    pub fn begin_external_read(
+        &mut self,
+        id: DrawableId,
+        vk: &crate::kms::vk::device::VkContext,
+        cb: vk::CommandBuffer,
+    ) -> Option<(vk::Image, vk::Extent2D)> {
+        let d = self.entries.get_mut(&id)?;
+        d.record_layout_transition(
+            vk,
+            cb,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::PipelineStageFlags2::ALL_COMMANDS,
+            vk::AccessFlags2::SHADER_SAMPLED_READ
+                | vk::AccessFlags2::TRANSFER_WRITE
+                | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags2::COPY | vk::PipelineStageFlags2::BLIT,
+            vk::AccessFlags2::TRANSFER_READ,
+        );
+        Some((d.storage.image, d.storage.extent))
+    }
+
+    /// Back to `SHADER_READ_ONLY_OPTIMAL` for the scene and paint paths.
+    pub fn end_external_read(
+        &mut self,
+        id: DrawableId,
+        vk: &crate::kms::vk::device::VkContext,
+        cb: vk::CommandBuffer,
+    ) {
+        if let Some(d) = self.entries.get_mut(&id) {
+            d.record_layout_transition(
+                vk,
+                cb,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::PipelineStageFlags2::COPY | vk::PipelineStageFlags2::BLIT,
+                vk::AccessFlags2::TRANSFER_READ,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
+            );
+        }
+    }
+}
+
 // ────────────────────────────────────────────────────────────────
 // Errors + retirement decision
 // ────────────────────────────────────────────────────────────────

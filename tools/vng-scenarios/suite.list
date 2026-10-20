@@ -52,3 +52,4 @@ damage-after-map     guest=damage-after-map.sh       timeout=300
 expose-order         guest=expose-order.sh           timeout=900
 redirected-backing   guest=redirected-backing.sh     timeout=300 golden=live
 prop-order           guest=prop-order.sh             timeout=300
+rootless-headless    guest=rootless-headless.sh      host=rootless-headless-host.sh      timeout=300

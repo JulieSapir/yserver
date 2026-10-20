@@ -9,10 +9,13 @@
 //! hidden window) leaves the composed slot pending, and the next tick
 //! retries, so a compose never strands an acquired image or semaphore.
 
+pub(crate) mod chain;
+
 use std::{ffi::CStr, sync::Arc};
 
 use ash::vk;
 
+use self::chain::{Acquire, AlphaMode, Chain, Present, Swapchain};
 use super::{
     clock::FrameClock,
     slots::{SlotPhase, SlotRing, SlotState},
@@ -115,22 +118,11 @@ struct FrameSync {
     copied: vk::Fence,
 }
 
-/// The swapchain and its per-image present semaphores.
-struct Swapchain {
-    handle: vk::SwapchainKHR,
-    images: Vec<vk::Image>,
-    extent: vk::Extent2D,
-    /// Signalled by the copy into image `i`, waited by its present.
-    ready: Vec<vk::Semaphore>,
-}
-
 /// One surface: swapchain, slots, clock.
 pub(crate) struct SurfaceOutput {
     vk: Arc<VkContext>,
-    surface_fns: ash::khr::surface::Instance,
-    swapchain_fns: ash::khr::swapchain::Device,
     surface: vk::SurfaceKHR,
-    swapchain: Option<Swapchain>,
+    chain: Chain,
     /// The X output size, which is the slot size.
     extent: vk::Extent2D,
     targets: Vec<OffscreenTarget>,
@@ -151,8 +143,23 @@ pub(crate) struct SurfaceOutput {
     blit_warned: bool,
     clock: Arc<FrameClock>,
     commit: Option<Arc<SurfaceCommit>>,
+    /// Present fences (swapchain maintenance1): an old swapchain retires
+    /// until they signal instead of a queue-idle per rebuild.
+    maintenance1: bool,
+    /// The current swapchain's present fences, until signalled.
+    present_fences: Vec<vk::Fence>,
+    /// A present on the current swapchain was out of date: its fence may
+    /// never signal.
+    uncertain: bool,
+    retired: Vec<RetiredSwapchain>,
     #[cfg(test)]
     frames_presented: u64,
+    /// Queue-idles a swapchain rebuild waited.
+    #[cfg(test)]
+    pub(crate) rebuild_waits: u64,
+    /// The next `vkQueuePresentKHR` fails before it is queued.
+    #[cfg(test)]
+    pub(crate) fail_next_present: bool,
     #[cfg(test)]
     pub(super) trace: Vec<&'static str>,
 }
@@ -169,16 +176,12 @@ impl SurfaceOutput {
         extent: vk::Extent2D,
         clock: Arc<FrameClock>,
     ) -> Result<Self, vk::Result> {
-        let surface_fns = ash::khr::surface::Instance::new(&vk.entry, &vk.instance);
-        let swapchain_fns = ash::khr::swapchain::Device::new(&vk.instance, &vk.device);
         let surface = (native.create)(&vk.entry, &vk.instance)?;
         // From here `Drop` releases whatever exists.
         let mut output = Self {
             vk: Arc::clone(&vk),
-            surface_fns,
-            swapchain_fns,
             surface,
-            swapchain: None,
+            chain: Chain::new(&vk, surface),
             extent,
             targets: Vec::new(),
             copy_command_buffers: Vec::new(),
@@ -194,18 +197,29 @@ impl SurfaceOutput {
             blit_warned: false,
             clock,
             commit: native.commit.clone(),
+            maintenance1: vk.swapchain_maintenance1,
+            present_fences: Vec::new(),
+            uncertain: false,
+            retired: Vec::new(),
             #[cfg(test)]
             frames_presented: 0,
+            #[cfg(test)]
+            rebuild_waits: 0,
+            #[cfg(test)]
+            fail_next_present: false,
             #[cfg(test)]
             trace: Vec::new(),
         };
         // SAFETY: the surface belongs to this instance and device.
         let supported = unsafe {
-            output.surface_fns.get_physical_device_surface_support(
-                vk.physical_device,
-                vk.graphics_queue_family,
-                surface,
-            )
+            output
+                .chain
+                .surface_fns()
+                .get_physical_device_surface_support(
+                    vk.physical_device,
+                    vk.graphics_queue_family,
+                    surface,
+                )
         }?;
         if !supported {
             return Err(vk::Result::ERROR_SURFACE_LOST_KHR);
@@ -326,15 +340,16 @@ impl SurfaceOutput {
     ///
     /// Vulkan failed on acquire, submit or present.
     pub(crate) fn present_pending(&mut self) -> Result<bool, vk::Result> {
+        self.poll_retired();
         let Some((bo_idx, SlotPhase::Composed)) = self.slots.pending() else {
             return Ok(false);
         };
         if self.hidden {
             return Ok(false);
         }
-        if self.needs_recreate || self.swapchain.is_none() {
+        if self.needs_recreate || self.chain.current().is_none() {
             self.recreate_swapchain()?;
-            if self.swapchain.is_none() {
+            if self.chain.current().is_none() {
                 return Ok(false);
             }
         }
@@ -344,37 +359,27 @@ impl SurfaceOutput {
         if !unsafe { self.vk.device.get_fence_status(sync.copied) }? {
             return Ok(false);
         }
-        let Some(swapchain) = self.swapchain.as_ref() else {
-            return Ok(false);
-        };
-        // SAFETY: the swapchain and an unsignalled acquire semaphore (its last
-        // wait completed: the fence above signalled).
-        let acquired = unsafe {
-            self.swapchain_fns.acquire_next_image(
-                swapchain.handle,
-                0,
-                sync.acquire,
-                vk::Fence::null(),
-            )
-        };
-        let image_idx = match acquired {
-            Ok((image_idx, suboptimal)) => {
+        // The acquire semaphore is unsignalled: its last wait completed (the
+        // fence above signalled).
+        let image_idx = match self.chain.acquire(sync.acquire)? {
+            Acquire::Image { index, suboptimal } => {
                 self.needs_recreate |= suboptimal;
-                image_idx
+                index
             }
-            Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) => return Ok(false),
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+            Acquire::NotReady => return Ok(false),
+            Acquire::OutOfDate => {
                 self.note_out_of_date();
                 return Ok(false);
             }
-            Err(e) => return Err(e),
         };
         #[cfg(test)]
         self.trace.push("acquire");
+        let Some(swapchain) = self.chain.current() else {
+            return Ok(false);
+        };
         let image = swapchain.images[image_idx as usize];
         let ready = swapchain.ready[image_idx as usize];
         let image_extent = swapchain.extent;
-        let handle = swapchain.handle;
         let cb = self.copy_command_buffers[bo_idx];
         let region = copy_region(self.extent, image_extent, self.effective_scale());
         let device = &self.vk.device;
@@ -422,22 +427,35 @@ impl SurfaceOutput {
         self.pending_sync = Some(sync_idx);
         self.slots.presented();
 
-        let swapchains = [handle];
-        let indices = [image_idx];
-        let present_waits = [ready];
-        let present = vk::PresentInfoKHR::default()
-            .wait_semaphores(&present_waits)
-            .swapchains(&swapchains)
-            .image_indices(&indices);
-        // SAFETY: the image was acquired above and its copy submitted.
-        match unsafe {
-            self.swapchain_fns
-                .queue_present(self.vk.graphics_queue, &present)
-        } {
-            Ok(suboptimal) => self.needs_recreate |= suboptimal,
-            // The present's semaphore wait still executes.
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => self.note_out_of_date(),
-            Err(e) => return Err(e),
+        let fence = if self.maintenance1 {
+            Some(unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) }?)
+        } else {
+            None
+        };
+        #[cfg(test)]
+        let presented = if std::mem::take(&mut self.fail_next_present) {
+            Err(vk::Result::ERROR_OUT_OF_HOST_MEMORY)
+        } else {
+            self.chain.present_with_fence(image_idx, fence)
+        };
+        #[cfg(not(test))]
+        let presented = self.chain.present_with_fence(image_idx, fence);
+        self.present_fences.extend(fence);
+        match presented {
+            // SUBOPTIMAL is a success: queued, its fence signals.
+            Ok(Present::Queued { suboptimal }) => self.needs_recreate |= suboptimal,
+            // Maybe not queued: the fence may never signal, the image may
+            // stay acquired. The swapchain is rebuilt and the old one goes
+            // after a queue-idle.
+            Ok(Present::OutOfDate) => {
+                self.uncertain = true;
+                self.note_out_of_date();
+            }
+            Err(e) => {
+                self.uncertain = true;
+                self.note_out_of_date();
+                return Err(e);
+            }
         }
         #[cfg(test)]
         {
@@ -561,6 +579,12 @@ impl SurfaceOutput {
         &self.clock
     }
 
+    /// Replaced swapchains still waiting for their presents.
+    #[cfg(test)]
+    pub(crate) fn retired_count(&self) -> usize {
+        self.retired.len()
+    }
+
     /// Frames copied into the swapchain and queued for present.
     #[cfg(test)]
     pub(crate) fn frames_presented(&self) -> u64 {
@@ -570,7 +594,7 @@ impl SurfaceOutput {
     /// The slot extent and the swapchain's (none while there is none).
     #[cfg(test)]
     pub(crate) fn extents(&self) -> (vk::Extent2D, Option<vk::Extent2D>) {
-        (self.extent, self.swapchain.as_ref().map(|s| s.extent))
+        (self.extent, self.chain.current().map(|s| s.extent))
     }
 
     #[cfg(test)]
@@ -609,8 +633,8 @@ impl SurfaceOutput {
     /// The current swapchain handle (null while there is none).
     #[cfg(test)]
     pub(crate) fn swapchain_handle(&self) -> vk::SwapchainKHR {
-        self.swapchain
-            .as_ref()
+        self.chain
+            .current()
             .map_or(vk::SwapchainKHR::null(), |s| s.handle)
     }
 
@@ -626,16 +650,8 @@ impl SurfaceOutput {
     }
 
     fn rebuild_swapchain(&mut self) -> Result<(), vk::Result> {
-        let pd = self.vk.physical_device;
-        // SAFETY: the surface belongs to this instance.
-        let caps = unsafe {
-            self.surface_fns
-                .get_physical_device_surface_capabilities(pd, self.surface)
-        }?;
-        let formats = unsafe {
-            self.surface_fns
-                .get_physical_device_surface_formats(pd, self.surface)
-        }?;
+        let caps = self.chain.capabilities()?;
+        let formats = self.chain.formats()?;
         let format = pick_surface_format(&formats);
         self.blit = format.is_some_and(|format| self.blits_to(format.format));
         if self.copy_scale > 1 && !self.blit && !self.blit_warned {
@@ -662,96 +678,91 @@ impl SurfaceOutput {
         } else {
             caps.current_extent
         };
-        // Wait for every copy and present before the old swapchain goes.
-        unsafe { self.vk.device.queue_wait_idle(self.vk.graphics_queue) }?;
-        let old = self.swapchain.take();
+        if !self.maintenance1 {
+            // Without present fences: wait for every copy and present before
+            // the old swapchain goes.
+            #[cfg(test)]
+            {
+                self.rebuild_waits += 1;
+            }
+            unsafe { self.vk.device.queue_wait_idle(self.vk.graphics_queue) }?;
+        }
+        let old = self.chain.take();
         self.needs_recreate = false;
         if extent.width == 0 || extent.height == 0 {
-            self.destroy_swapchain(old);
+            self.retire(old);
             return Ok(());
         }
         if !caps
             .supported_usage_flags
             .contains(vk::ImageUsageFlags::TRANSFER_DST)
         {
-            self.destroy_swapchain(old);
+            self.retire(old);
             return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT);
         }
         let Some(format) = format else {
-            self.destroy_swapchain(old);
+            self.retire(old);
             return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED);
         };
-        let mut image_count = caps.min_image_count.max(3);
-        if caps.max_image_count != 0 {
-            image_count = image_count.min(caps.max_image_count);
-        }
-        let alpha = [
-            vk::CompositeAlphaFlagsKHR::OPAQUE,
-            vk::CompositeAlphaFlagsKHR::INHERIT,
-            vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
-            vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED,
-        ]
-        .into_iter()
-        .find(|flag| caps.supported_composite_alpha.contains(*flag))
-        .unwrap_or(vk::CompositeAlphaFlagsKHR::OPAQUE);
-        let info = vk::SwapchainCreateInfoKHR::default()
-            .surface(self.surface)
-            .min_image_count(image_count)
-            .image_format(format.format)
-            .image_color_space(format.color_space)
-            .image_extent(extent)
-            .image_array_layers(1)
-            .image_usage(vk::ImageUsageFlags::TRANSFER_DST)
-            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .pre_transform(caps.current_transform)
-            .composite_alpha(alpha)
-            .present_mode(vk::PresentModeKHR::FIFO)
-            .clipped(true)
-            .old_swapchain(old.as_ref().map_or(vk::SwapchainKHR::null(), |s| s.handle));
-        // SAFETY: valid surface and (optional) retired old swapchain.
-        let created = unsafe { self.swapchain_fns.create_swapchain(&info, None) };
-        self.destroy_swapchain(old);
-        let handle = created?;
-        let images = match unsafe { self.swapchain_fns.get_swapchain_images(handle) } {
-            Ok(images) => images,
-            Err(e) => {
-                unsafe { self.swapchain_fns.destroy_swapchain(handle, None) };
-                return Err(e);
-            }
+        let created = self
+            .chain
+            .create(&caps, format, extent, AlphaMode::Opaque, old.as_ref());
+        self.retire(old);
+        created
+    }
+
+    /// An old swapchain goes once its presents are done: at once after the
+    /// rebuild's queue-idle, else when its present fences signalled.
+    fn retire(&mut self, old: Option<Swapchain>) {
+        let fences = std::mem::take(&mut self.present_fences);
+        let wait_idle = std::mem::take(&mut self.uncertain);
+        let Some(swapchain) = old else {
+            self.destroy_fences(fences);
+            return;
         };
-        let mut ready = Vec::with_capacity(images.len());
-        for _ in &images {
-            match unsafe {
-                self.vk
-                    .device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-            } {
-                Ok(semaphore) => ready.push(semaphore),
-                Err(e) => {
-                    self.destroy_swapchain(Some(Swapchain {
-                        handle,
-                        images,
-                        extent,
-                        ready,
-                    }));
-                    return Err(e);
+        if self.maintenance1 {
+            self.retired.push(RetiredSwapchain {
+                swapchain,
+                fences,
+                wait_idle,
+            });
+        } else {
+            self.destroy_fences(fences);
+            self.chain.destroy(Some(swapchain));
+        }
+    }
+
+    fn fence_signalled(&self, fence: vk::Fence) -> bool {
+        // SAFETY: a fence of this device.
+        unsafe { self.vk.device.get_fence_status(fence) }.unwrap_or(true)
+    }
+
+    fn destroy_fences(&self, fences: Vec<vk::Fence>) {
+        for fence in fences {
+            unsafe { self.vk.device.destroy_fence(fence, None) };
+        }
+    }
+
+    /// Destroy retired swapchains whose presents finished; forget the
+    /// current swapchain's signalled present fences.
+    fn poll_retired(&mut self) {
+        let (done, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.present_fences)
+            .into_iter()
+            .partition(|f| self.fence_signalled(*f));
+        self.present_fences = pending;
+        self.destroy_fences(done);
+        let retired = std::mem::take(&mut self.retired);
+        for r in retired {
+            if r.wait_idle || r.fences.iter().all(|f| self.fence_signalled(*f)) {
+                if r.wait_idle {
+                    let _ = unsafe { self.vk.device.queue_wait_idle(self.vk.graphics_queue) };
                 }
+                self.destroy_fences(r.fences);
+                self.chain.destroy(Some(r.swapchain));
+            } else {
+                self.retired.push(r);
             }
         }
-        log::info!(
-            "surface: swapchain {}x{} with {} images ({:?})",
-            extent.width,
-            extent.height,
-            images.len(),
-            format.format
-        );
-        self.swapchain = Some(Swapchain {
-            handle,
-            images,
-            extent,
-            ready,
-        });
-        Ok(())
     }
 
     /// Whether a slot blits into an optimal-tiling `format` image.
@@ -768,19 +779,14 @@ impl SurfaceOutput {
         features(SLOT_FORMAT).contains(vk::FormatFeatureFlags::BLIT_SRC)
             && features(format).contains(vk::FormatFeatureFlags::BLIT_DST)
     }
+}
 
-    /// Destroy a swapchain whose presents and copies have completed.
-    fn destroy_swapchain(&self, swapchain: Option<Swapchain>) {
-        let Some(swapchain) = swapchain else {
-            return;
-        };
-        unsafe {
-            for semaphore in swapchain.ready {
-                self.vk.device.destroy_semaphore(semaphore, None);
-            }
-            self.swapchain_fns.destroy_swapchain(swapchain.handle, None);
-        }
-    }
+/// A replaced swapchain and the fences of its presents.
+struct RetiredSwapchain {
+    swapchain: Swapchain,
+    fences: Vec<vk::Fence>,
+    /// A present on it was out of date: one queue-idle instead.
+    wait_idle: bool,
 }
 
 /// Where a slot lands in a swapchain image.
@@ -961,8 +967,14 @@ impl Drop for SurfaceOutput {
         // Nothing of this surface may still run; a lost device has nothing
         // left to wait for.
         let _ = unsafe { device.device_wait_idle() };
-        let swapchain = self.swapchain.take();
-        self.destroy_swapchain(swapchain);
+        let swapchain = self.chain.take();
+        self.chain.destroy(swapchain);
+        for r in std::mem::take(&mut self.retired) {
+            self.destroy_fences(r.fences);
+            self.chain.destroy(Some(r.swapchain));
+        }
+        let fences = std::mem::take(&mut self.present_fences);
+        self.destroy_fences(fences);
         unsafe {
             for sync in self.syncs.drain(..) {
                 device.destroy_semaphore(sync.acquire, None);
@@ -973,7 +985,7 @@ impl Drop for SurfaceOutput {
             }
         }
         self.targets.clear();
-        unsafe { self.surface_fns.destroy_surface(self.surface, None) };
+        unsafe { self.chain.surface_fns().destroy_surface(self.surface, None) };
     }
 }
 

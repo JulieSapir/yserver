@@ -29,7 +29,6 @@ pub(crate) mod probe_executor;
 pub use backend::KmsBackend;
 #[cfg(test)]
 pub(crate) use backend::seam::inject_resize_fault;
-#[cfg(any(not(kms), test))]
 pub(crate) use backend::{
     XBackend,
     seam::{Platform, ResizeFault, resize_fault},

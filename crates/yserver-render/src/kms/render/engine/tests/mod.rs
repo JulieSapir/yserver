@@ -1,6 +1,7 @@
 mod core_ops;
 mod glyph_atlas;
 mod glyph_runs;
+mod handoff;
 mod memory_frame;
 mod pixel_clamp;
 mod render_composite;

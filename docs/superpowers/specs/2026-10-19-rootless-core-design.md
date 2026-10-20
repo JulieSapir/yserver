@@ -595,6 +595,10 @@ pub trait RootlessHost {
 }
 ```
 
+- **Δ RL1:** the trait also has `frame_wanted(id)` (a Busy window has damage: arm the pacing signal, D7) and
+  `surface_released(id)` (the presenter destroyed the window's last swapchain and its `VkSurfaceKHR`: the host may
+  free the native window now). RL1's GPU copy is full-extent (D5); `Dmabuf` is answered with CPU frames until RL3
+  (D4). The headless CLI came with RL1 Task 9 (`--headless --rootless`, a recording host), not RL2 (D2, D3).
 - **GPU path (macOS, Windows):** reuses `SurfaceOutput`'s swapchain/present logic (`surface/swapchain.rs:166`,
   `present_pending` :325, out-of-date recreation :617), with the backing as the "slot". Depth 24 → opaque swapchain;
   depth 32 → `PRE_MULTIPLIED` composite alpha when the surface offers it (X ARGB visuals are premultiplied).
@@ -717,6 +721,11 @@ Invariant: **every byte of a delivered `CpuFrame.pixels` equals the window's can
   (§4.5, ack rule).
 
 ### 4.6 Where `RootlessHost` attaches
+
+**Δ RL1 (as built):** no `rootless_host()` accessor. The presenter is a field of the surface platform's
+`SurfaceBackendState` (rootless is surface-only, §7) and needs the store, engine, GPU and host at once; one seam
+hook, `Platform::on_rootless_events` (no-op default), applies the batch to the presenter before the host sees it.
+The presenter runs at the end of the surface `maybe_composite`, after the scene. The text below is the r3 design.
 
 `Platform` gets one optional accessor: `fn rootless_host(&mut self) -> Option<&mut dyn RootlessHost>` (default
 `None`, `seam.rs:28`). `XBackend<P>` implements `on_rootless_events` by forwarding to it and runs the presenter in

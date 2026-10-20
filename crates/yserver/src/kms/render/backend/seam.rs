@@ -214,6 +214,15 @@ pub trait Platform: OutputSink + Sized + 'static {
     /// Drain the platform's queue after it posted `Message::PlatformEvent`.
     fn on_platform_event(_b: &mut XBackend<Self>, _state: &mut ServerState) {}
 
+    /// Rootless top-level events of this iteration (spec §4.1); only a
+    /// rootless presenter takes them.
+    fn on_rootless_events(
+        _b: &mut XBackend<Self>,
+        _state: &ServerState,
+        _events: &[yserver_core::rootless::RootlessEvent],
+    ) {
+    }
+
     /// The core's established-client count changed.
     fn note_client_count(_b: &mut XBackend<Self>, _count: usize) {}
 

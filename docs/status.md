@@ -46,6 +46,29 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   reached, `add_fb2` rejects mpv's linear buffer on both builds), with no unmatched events. Not run: dual-head, a
   physical copied display, VT switch, Intel, Asahi. Record:
   [`plans/2026-10-19-drm-commit-identity-validation.md`](superpowers/plans/2026-10-19-drm-commit-identity-validation.md).
+- **2026-10-20 rootless core RL1 (branch `feat/rootless-rl0`, plan `plans/2026-10-19-rootless-rl1.md`):**
+  `yserver::rootless` (built where `surface` is: `any(not(kms), test)`), a `Presenter` in `SurfaceBackendState`
+  installed only by `rootless::start`; the one seam hook `Platform::on_rootless_events` (no-op default, KMS
+  untouched). Frame events ride a second `ShellLink` queue. CPU path: async `begin_readback` (yserver-render, never a
+  fence wait; `core_thread_fence_waits` counts waits), canonical image, pool of 3 filled from each buffer's own seq,
+  snapshots acked on `Delivered` only, stale generations discarded. GPU path: per-window swapchain on the shared
+  `surface::swapchain::chain::Chain`, full-extent copy (D5), the copy ticket is the backing's render ticket, old
+  swapchains retire on present fences (`VK_EXT_swapchain_maintenance1`, now enabled on presenting contexts) or one
+  queue-idle without it; `surface_released` after the last chain. `next_wakeup`: now for a frame the tick would
+  start, 1 ms while a readback is in flight or a swapchain retires (D6), none while Busy; `frame_wanted` once per Busy
+  period (D7); the tick flushes recorded paint before deciding. Rooted fix (7b): `SurfaceOutput` rebuilds no longer
+  queue-idle when maintenance1 is there. Task 9 (approved): `surface` and `rootless` are built on every target,
+  `--headless` runs the surface platform on KMS builds too (no DRM, no input; nothing changes without it), and
+  `--headless --rootless [--rootless-record DIR]` installs a recording host (`rootless/record.rs`: events.log,
+  frames.log, one `<id>-<seq>.bgra` per frame). vng `rootless-headless` (xterm -bw 3, xmessage, xeyes when
+  installed, a popup and a SHAPEd window from `rootless-clients.py`) checks each top-level's newest frame, cropped
+  by its border, against GetImage of the window (`rootless-check.py`). Error paths after review: every present
+  error retires its swapchain with a queue-idle (its fence may never signal), and an allocation failure after an
+  acquire consumes the semaphore and gives the image back. Dmabuf answered with CPU frames (D4); root reads are
+  RL1b (D8). Measured: store damage is recorded at paint-record time (fill and RENDER composite), so the
+  tick's flush matters for GPU ordering, not for the damage snapshot. Lavapipe validation does not flag destroying
+  a swapchain right after its replacement; the retirement tests assert the queue-idle count instead.
+
 - **2026-10-19 rootless core RL0 (branch `feat/rootless-rl0`, plan `plans/2026-10-19-rootless-rl0.md`, spec
   `specs/2026-10-19-rootless-core-design.md`):** `yserver-core::rootless`, inert until an embedder calls
   `rootless::enable` (nothing does yet; RL1 adds `run_headless --rootless`, RL2 macOS). In it: server-owned Manual

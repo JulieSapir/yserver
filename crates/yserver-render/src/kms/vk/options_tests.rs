@@ -107,3 +107,73 @@ fn surface_context_refuses_dmabuf_export() {
     );
     assert!(vk.tfp_tiling_strategy.get().is_none(), "no strategy probed");
 }
+
+/// Plan RL1 Task 7a: a presenting context enables swapchain maintenance1
+/// exactly when the device offers it (lavapipe does, measured 2026-10-19).
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn presenting_context_enables_swapchain_maintenance1_when_offered() {
+    let Some(vk) = vk_or_skip(HEADLESS_PRESENT) else {
+        return;
+    };
+    let offered = unsafe {
+        vk.instance
+            .enumerate_device_extension_properties(vk.physical_device)
+    }
+    .expect("device extensions")
+    .iter()
+    .any(|p| {
+        p.extension_name_as_c_str().is_ok_and(|n| {
+            n == ash::ext::swapchain_maintenance1::NAME || n == c"VK_KHR_swapchain_maintenance1"
+        })
+    });
+    assert_eq!(vk.swapchain_maintenance1, offered);
+    if vk.is_software_rasterizer() {
+        assert!(vk.swapchain_maintenance1, "lavapipe offers it");
+    }
+    let plain = vk_or_skip(VkContextOptions {
+        wants_present: false,
+        surface_extension: None,
+        wants_kms_interop: false,
+    })
+    .expect("plain context");
+    assert!(!plain.swapchain_maintenance1, "only a presenting context");
+}
+
+/// Validation errors are counted per context, so parallel tests do not see
+/// each other's (VUID-VkImageCreateInfo-extent-00944: a zero extent).
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn validation_errors_are_counted_per_context() {
+    let options = VkContextOptions {
+        wants_present: false,
+        surface_extension: None,
+        wants_kms_interop: false,
+    };
+    let (Some(a), Some(b)) = (vk_or_skip(options), vk_or_skip(options)) else {
+        return;
+    };
+    if !a.validation_enabled() {
+        eprintln!("validation layer off: nothing to count");
+        return;
+    }
+    assert_eq!(a.validation_errors(), 0);
+    let info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::B8G8R8A8_UNORM)
+        .extent(vk::Extent3D {
+            width: 0,
+            height: 0,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::TRANSFER_DST);
+    if let Ok(image) = unsafe { a.device.create_image(&info, None) } {
+        unsafe { a.device.destroy_image(image, None) };
+    }
+    assert!(a.validation_errors() >= 1, "the invalid call was counted");
+    assert_eq!(b.validation_errors(), 0, "another context's count");
+}

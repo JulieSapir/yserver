@@ -17,12 +17,25 @@ pub fn wanted_instance_extensions(options: &VkContextOptions) -> Vec<&'static CS
         ash::ext::debug_utils::NAME,
     ];
     wanted.extend(required_instance_extensions(options));
+    if options.wants_present {
+        // What `VK_*_swapchain_maintenance1` (present fences) needs.
+        wanted.extend([
+            ash::khr::get_surface_capabilities2::NAME,
+            ash::ext::surface_maintenance1::NAME,
+            KHR_SURFACE_MAINTENANCE1,
+        ]);
+    }
     if !options.wants_kms_interop {
         // Lets the loader list portability ICDs; harmless where none exist.
         wanted.push(ash::khr::portability_enumeration::NAME);
     }
     wanted
 }
+
+/// Promoted from the EXT; ash 0.38 has no name constant for it.
+pub const KHR_SURFACE_MAINTENANCE1: &CStr = c"VK_KHR_surface_maintenance1";
+/// Promoted from the EXT; ash 0.38 has no name constant for it.
+pub const KHR_SWAPCHAIN_MAINTENANCE1: &CStr = c"VK_KHR_swapchain_maintenance1";
 
 /// Instance extensions without which context creation fails.
 #[must_use]

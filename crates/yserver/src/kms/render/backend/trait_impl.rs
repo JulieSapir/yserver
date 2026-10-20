@@ -192,6 +192,14 @@ impl<P: Platform> Backend for XBackend<P> {
         P::on_platform_event(self, state);
     }
 
+    fn on_rootless_events(
+        &mut self,
+        state: &ServerState,
+        events: &[yserver_core::rootless::RootlessEvent],
+    ) {
+        P::on_rootless_events(self, state, events);
+    }
+
     fn note_client_count(&mut self, count: usize) {
         P::note_client_count(self, count);
     }

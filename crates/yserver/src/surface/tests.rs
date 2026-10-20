@@ -2111,3 +2111,65 @@ fn rootless_deactivate_releases_keys_on_the_pressing_device() {
     f.send(vec![press(true)]);
     assert_eq!(kinds(&f.received()), vec![KEY_PRESS], "pressed again");
 }
+
+/// Plan RL1 Task 7b: window resizes with a frame between each retire the
+/// old swapchains after their presents (present fences, maintenance1)
+/// instead of a queue-idle per rebuild, and validation stays clean.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn surface_resize_storm_is_validation_clean() {
+    let Some(mut w) = window_or_skip() else {
+        return;
+    };
+    w.frame();
+    for k in 1..=8u16 {
+        w.host_resize((64 + 8 * k, 48 + 4 * k), None);
+        w.frame();
+    }
+    let vk = Arc::clone(w.f.b.platform.outputs[0].vk());
+    if vk.swapchain_maintenance1 {
+        assert_eq!(
+            w.f.b.platform.outputs[0].rebuild_waits, 0,
+            "no queue-idle per rebuild"
+        );
+    }
+    drop(w);
+    if vk.validation_enabled() {
+        assert_eq!(vk.validation_errors(), 0);
+    } else {
+        eprintln!("validation was off");
+    }
+}
+
+/// A present that fails before it is queued leaves a fence that never
+/// signals: the old swapchain must still retire (queue-idle), and
+/// validation stays clean.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn surface_present_failure_does_not_stall_retirement() {
+    let Some(mut w) = window_or_skip() else {
+        return;
+    };
+    w.frame();
+    w.f.b.platform.outputs[0].fail_next_present = true;
+    let xid = WindowHandle::from_raw(1).expect("root").as_raw();
+    fill(&mut w.f.b, xid, 0x00ff_0000, (0, 0, 8, 8));
+    w.frame();
+    for k in 1..=3u16 {
+        w.host_resize((64 + 8 * k, 48), None);
+        fill(&mut w.f.b, xid, 0x0000_ff00, (0, 0, 8, 8));
+        w.frame();
+    }
+    assert_eq!(
+        w.f.b.platform.outputs[0].retired_count(),
+        0,
+        "retirement stalled"
+    );
+    let vk = Arc::clone(w.f.b.platform.outputs[0].vk());
+    drop(w);
+    if vk.validation_enabled() {
+        assert_eq!(vk.validation_errors(), 0);
+    } else {
+        eprintln!("validation was off");
+    }
+}

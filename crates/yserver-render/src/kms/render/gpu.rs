@@ -22,6 +22,8 @@ mod init;
 mod storage_alloc;
 mod submit;
 
+pub use fence::core_thread_fence_waits;
+
 #[cfg(test)]
 mod tests;
 

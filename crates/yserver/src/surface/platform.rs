@@ -105,6 +105,8 @@ pub(crate) struct SurfaceBackendState {
     /// shell reports it done.
     window_request: Option<u64>,
     next_window_request: u64,
+    /// Rootless mode's presenter; `None` unless `rootless::start` ran.
+    pub(crate) rootless: Option<crate::rootless::Presenter>,
 }
 
 impl SurfacePlatform {
@@ -851,6 +853,7 @@ impl Platform for SurfacePlatform {
 
     fn before_block(b: &mut XBackend<Self>) {
         b.reclaim_retired_gpu_work();
+        b.rootless_before_block();
     }
 
     fn flush_before_damage_notify(b: &mut XBackend<Self>) {
@@ -872,19 +875,39 @@ impl Platform for SurfacePlatform {
             .any_surface_visible()
             .then(|| b.cursor_anim_deadline())
             .flatten();
+        let rootless = b
+            .pstate
+            .rootless
+            .as_ref()
+            .and_then(|p| p.next_wakeup(&b.store, now));
         b.gpu_work_deadline(now)
             .into_iter()
             .chain(scene)
             .chain(cursor_frame)
+            .chain(rootless)
             .min()
     }
 
     fn on_platform_event(b: &mut XBackend<Self>, state: &mut ServerState) {
-        if let Some(link) = b.pstate.link.as_ref() {
+        if let Some(link) = b.pstate.link.clone() {
             let events = link.drain();
             b.apply_shell_events(state, events);
+            if let Some(presenter) = b.pstate.rootless.as_mut() {
+                presenter.apply_frame_events(&mut b.store, link.drain_frames());
+            }
         }
         b.service_surfaces();
+    }
+
+    fn on_rootless_events(
+        b: &mut XBackend<Self>,
+        state: &ServerState,
+        events: &[yserver_core::rootless::RootlessEvent],
+    ) {
+        if let Some(presenter) = b.pstate.rootless.as_mut() {
+            presenter.apply_events(state, events);
+            presenter.host.on_events(events);
+        }
     }
 
     fn note_client_count(b: &mut XBackend<Self>, count: usize) {
@@ -961,6 +984,7 @@ impl Platform for SurfacePlatform {
         }
         b.tick_cursor_animation();
         b.compose_tick();
+        b.rootless_tick();
         b.drain_paint_submit_telemetry();
         b.flush_host_cursor();
         Ok(())

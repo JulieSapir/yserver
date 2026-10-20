@@ -15,6 +15,17 @@ use std::{
     sync::Arc,
 };
 
+/// `FenceTicket::wait` calls on this thread (spec §10 "the engine's wait
+/// counter"); per thread, so parallel tests each see their own.
+#[must_use]
+pub fn core_thread_fence_waits() -> u64 {
+    FENCE_WAITS.with(Cell::get)
+}
+
+thread_local! {
+    static FENCE_WAITS: Cell<u64> = const { Cell::new(0) };
+}
+
 impl std::fmt::Debug for FenceTicketInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `VkContext` owns raw Vulkan handles and doesn't impl
@@ -103,6 +114,7 @@ impl FenceTicket {
     /// Synchronous wait. **Off the hot path** — used by
     /// `get_image` readback and shutdown teardown.
     pub fn wait(&self, vk: &VkContext) -> Result<(), vk::Result> {
+        FENCE_WAITS.with(|n| n.set(n.get() + 1));
         if self.inner.signaled_cache.get() {
             return Ok(());
         }

@@ -15,6 +15,7 @@
 #   LVP_ICD=/path/lvp_icd.json tools/vng-shot.sh --gpu none   # other lavapipe ICD
 #   VNG_OUT=target/elsewhere tools/vng-shot.sh    # artifacts in $VNG_OUT/<name>/
 #   tools/vng-shot.sh --root-hook hook.sh         # sourced as guest root once :7 listens
+#   tools/vng-shot.sh --server-arg --headless     # extra yserver argument, repeatable
 #
 # The host root is read-only in the guest behind discarded overlays; only the
 # artifact directory is shared writable, at the same path inside and out, so
@@ -48,6 +49,7 @@ outputs=1
 server=yserver
 dump=scanout
 declare -a extra_env=()
+declare -a server_args=()
 
 usage() {
     sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \?//;$d'
@@ -68,6 +70,7 @@ while [ $# -gt 0 ]; do
         --server) server=$2; shift 2;;
         --outputs) outputs=$2; shift 2;;
         --env) extra_env+=("$2"); shift 2;;
+        --server-arg) server_args+=("$2"); shift 2;;
         --gpu) gpu=$2; shift 2;;
         -h|--help) usage 0;;
         *) echo "vng-shot: unknown argument $1" >&2; usage 1;;
@@ -233,7 +236,9 @@ client=$out/client.sh
         echo "    -config '$out/xorg.conf' -logfile '$out/xorg-server.log' \\"
         echo "    > xorg-stdio.log 2>&1 &"
     else
-        echo "'$binary' 7 > yserver.log 2>&1 &"
+        printf "'%s' 7" "$binary"
+        for a in ${server_args+"${server_args[@]}"}; do printf " '%s'" "$a"; done
+        echo " > yserver.log 2>&1 &"
     fi
     echo 'server=$!'
     echo 'i=0'

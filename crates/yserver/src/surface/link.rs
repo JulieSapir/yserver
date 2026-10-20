@@ -11,6 +11,7 @@ use std::sync::{
 use yserver_core::core_loop::{CoreSender, HostInputEvent, Message};
 
 use super::input::devices;
+use crate::rootless::host::FrameEvent;
 
 /// What the shell reports about a surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub(crate) enum ShellEvent {
 pub(crate) struct ShellLink {
     sender: Mutex<Option<CoreSender>>,
     events: Mutex<Vec<ShellEvent>>,
+    /// Rootless host → presenter; not `Copy`, so a queue of its own.
+    frames: Mutex<Vec<FrameEvent>>,
     /// A `PlatformEvent` is in flight (or owed once connected).
     posted: AtomicBool,
     /// Shutdown was asked for before the core connected.
@@ -94,6 +97,25 @@ impl ShellLink {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(event);
         self.wake();
+    }
+
+    /// Queue a rootless frame event and wake the core loop.
+    pub(crate) fn post_frame(&self, event: FrameEvent) {
+        self.frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+        self.wake();
+    }
+
+    /// The presenter's drain, after [`Self::drain`] re-armed the wake.
+    pub(crate) fn drain_frames(&self) -> Vec<FrameEvent> {
+        std::mem::take(
+            &mut *self
+                .frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Send the input `build` makes at the current server time; nothing,

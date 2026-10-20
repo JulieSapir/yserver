@@ -10,7 +10,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -274,6 +274,13 @@ pub struct VkContext {
     /// v3dv); component-alpha masks then fall back to grayscale AA
     /// instead of requesting an unavailable feature.
     pub component_alpha_supported: bool,
+    /// `VK_EXT`/`VK_KHR_swapchain_maintenance1` is enabled (present fences,
+    /// `vkReleaseSwapchainImages`); a presenting context only.
+    pub swapchain_maintenance1: bool,
+    /// The validation layer reports to this context's messenger.
+    validation: bool,
+    /// Validation messages of severity ERROR, counted by the messenger.
+    validation_errors: Arc<AtomicU64>,
     drop_wait_policy: DropWaitPolicy,
 }
 
@@ -450,6 +457,10 @@ impl VkContext {
             ));
         }
         let debug_utils_enabled = ext_cstrs.contains(&ash::ext::debug_utils::NAME);
+        let surface_maintenance1 = options.wants_present
+            && ext_cstrs.contains(&ash::khr::get_surface_capabilities2::NAME)
+            && (ext_cstrs.contains(&ash::ext::surface_maintenance1::NAME)
+                || ext_cstrs.contains(&super::instance::KHR_SURFACE_MAINTENANCE1));
         let instance_flags = if ext_cstrs.contains(&ash::khr::portability_enumeration::NAME) {
             vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
         } else {
@@ -501,14 +512,18 @@ impl VkContext {
         // applies to debug messenger / device once they exist.
         let debug_utils_instance = ash::ext::debug_utils::Instance::new(&entry, &instance);
 
-        let debug_messenger =
-            match create_debug_messenger(&debug_utils_instance, debug_utils_enabled) {
-                Ok(m) => m,
-                Err(e) => {
-                    unsafe { instance.destroy_instance(None) };
-                    return Err(e);
-                }
-            };
+        let validation_errors = Arc::new(AtomicU64::new(0));
+        let debug_messenger = match create_debug_messenger(
+            &debug_utils_instance,
+            debug_utils_enabled,
+            Arc::as_ptr(&validation_errors).cast_mut().cast(),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                unsafe { instance.destroy_instance(None) };
+                return Err(e);
+            }
+        };
 
         let PickedPhysicalDevice {
             physical_device,
@@ -648,6 +663,32 @@ impl VkContext {
         if options.wants_present {
             device_extension_names.push(ash::khr::swapchain::NAME);
         }
+        // Present fences and image release (RL1 swapchain retirement). The
+        // EXT first: ash 0.38 loads only its entry points.
+        let swapchain_maintenance1 = surface_maintenance1
+            .then(|| {
+                [
+                    ash::ext::swapchain_maintenance1::NAME,
+                    super::instance::KHR_SWAPCHAIN_MAINTENANCE1,
+                ]
+                .into_iter()
+                .find(|name| has_device_extension(name))
+            })
+            .flatten()
+            .filter(|_| {
+                let mut m1 = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default();
+                let mut features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut m1);
+                unsafe {
+                    instance.get_physical_device_features2(physical_device, &mut features2);
+                }
+                m1.swapchain_maintenance1 == vk::TRUE
+            });
+        if let Some(name) = swapchain_maintenance1 {
+            device_extension_names.push(name);
+        }
+        let mut maintenance1_features =
+            vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
+                .swapchain_maintenance1(true);
         // The spec requires enabling it wherever it is advertised.
         if has_device_extension(ash::khr::portability_subset::NAME) {
             device_extension_names.push(ash::khr::portability_subset::NAME);
@@ -734,6 +775,9 @@ impl VkContext {
                     device_info = device_info.push_next(&mut dynamic_rendering_features);
                 }
             }
+        }
+        if swapchain_maintenance1.is_some() {
+            device_info = device_info.push_next(&mut maintenance1_features);
         }
 
         let device = match unsafe { instance.create_device(physical_device, &device_info, None) } {
@@ -838,8 +882,23 @@ impl VkContext {
             device_type,
             timestamp_period,
             component_alpha_supported,
+            swapchain_maintenance1: swapchain_maintenance1.is_some(),
+            validation: validation_available && debug_messenger.is_some(),
+            validation_errors,
             drop_wait_policy,
         }))
+    }
+
+    /// Whether the validation layer reports to this context.
+    #[must_use]
+    pub fn validation_enabled(&self) -> bool {
+        self.validation
+    }
+
+    /// Validation errors this context's messenger received.
+    #[must_use]
+    pub fn validation_errors(&self) -> u64 {
+        self.validation_errors.load(Ordering::Relaxed)
     }
 
     /// True when the picked Vulkan device is a software rasterizer
@@ -1010,9 +1069,11 @@ fn validation_layer_present(entry: &ash::Entry, name: &CStr) -> bool {
     }
 }
 
+/// `errors` is the context's `AtomicU64`, which outlives the messenger.
 fn create_debug_messenger(
     debug_utils_instance: &ash::ext::debug_utils::Instance,
     debug_utils_enabled: bool,
+    errors: *mut c_void,
 ) -> Result<Option<vk::DebugUtilsMessengerEXT>, VkInitError> {
     if !debug_utils_enabled {
         return Ok(None);
@@ -1035,7 +1096,8 @@ fn create_debug_messenger(
                 | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
                 | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
         )
-        .pfn_user_callback(Some(vk_debug_callback));
+        .pfn_user_callback(Some(vk_debug_callback))
+        .user_data(errors);
     Ok(Some(unsafe {
         debug_utils_instance.create_debug_utils_messenger(&info, None)?
     }))
@@ -1667,8 +1729,12 @@ unsafe extern "system" fn vk_debug_callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     _ty: vk::DebugUtilsMessageTypeFlagsEXT,
     callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) -> vk::Bool32 {
+    if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) && !user_data.is_null() {
+        // SAFETY: the context's counter, alive while its messenger is.
+        unsafe { &*user_data.cast::<AtomicU64>() }.fetch_add(1, Ordering::Relaxed);
+    }
     // Validation can call this with a null callback_data on some
     // drivers; defend against that.
     if callback_data.is_null() {
