@@ -616,23 +616,14 @@ impl KmsBackend {
         let rescan = self
             .platform
             .apply_connector_snapshot(snapshot, &known_connected);
-        let registry_delta = self.reconcile_connector_registry(
-            &rescan.connected,
-            &rescan.dropped_keys,
-            &rescan.dropped_layouts,
-        );
+        let registry_delta =
+            self.reconcile_connector_registry(&rescan.connected, &rescan.dropped_keys);
         let active_topology_changed = !rescan.dropped_old_indices.is_empty();
         // Layout policy is the caller's (see the connector-snapshot doc
-        // comment). A VT resume does not relight remembered routes — the
-        // rescan that owns that runs once the VT is Active again — but it
-        // must still honour the reserved slots, or a survivor packs into a
-        // hole the later relight lands in (invariant 7).
+        // comment).
         if active_topology_changed {
-            let reserved = self.reserved_layout_slots();
-            self.platform
-                .recompact_horizontal_layout(&configured, &reserved);
-            self.platform
-                .recompute_fb_extent_with_reservations(&reserved);
+            self.platform.recompact_horizontal_layout(&configured);
+            self.platform.recompute_fb_extent();
         }
         if (!registry_delta.is_empty() || active_topology_changed)
             && !self.fire_randr_changes(

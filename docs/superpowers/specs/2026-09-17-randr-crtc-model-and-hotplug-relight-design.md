@@ -12,8 +12,8 @@
 > pools and `bo_generations` to an absent connector is accepted: about 44 MB
 > for a 2560x1440 output stays pinned while the monitor is unplugged, the
 > same cost Xorg pays. The P1b remember/relight/reserved-slot machinery
-> (`last_enabled`, `reserved_layout_slots`, `take_relight_requests`) is no
-> longer reached by any hotplug path. Link-status BAD re-commit (Xorg
+> (`last_enabled`, `reserved_layout_slots`, `take_relight_requests`) was
+> unreachable after this change and has been removed. Link-status BAD re-commit (Xorg
 > :3995-4009) is not implemented yet.
 
 > **Status: P1 implemented and hardware-validated; P3 remains deferred.**

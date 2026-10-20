@@ -4,9 +4,8 @@ use crate::{
         backend::{ActiveOutput, OutputKey},
         render::platform::{
             BoGenerationEntry, ConnectorSnapshot, CopiedScanoutError, CopyFreeScanoutError,
-            DroppedRoute, ExactPlanReplay, KmsDevice, LayoutRect, PlatformBackend,
-            PreparedQualifiedConnector, QualifiedScanoutPlan, RescanResult,
-            ResolvedConnectorEnable, SCANOUT_POOL_DEPTH,
+            ExactPlanReplay, KmsDevice, LayoutRect, PlatformBackend, PreparedQualifiedConnector,
+            QualifiedScanoutPlan, RescanResult, ResolvedConnectorEnable, SCANOUT_POOL_DEPTH,
             cursor::initialize_cursor_plane_for_device,
             qualify::{
                 allocate_copied_scanout_pool, allocate_copy_free_scanout_pool,
@@ -53,14 +52,6 @@ pub(super) fn mode_via_connector_handle<T: Copy>(
     }))
 }
 
-impl DroppedRoute {
-    /// The layout rectangle this route occupied, in the `(x, y, w, h)` shape
-    /// [`recompute_fb_extent_from`] consumes.
-    pub(crate) fn rect(&self) -> LayoutRect {
-        (self.x, self.y, self.width, self.height)
-    }
-}
-
 impl ConnectorSnapshot {
     fn from_probe(
         device_key: crate::platform::drm::DrmDeviceKey,
@@ -96,37 +87,6 @@ impl ConnectorSnapshot {
 /// 2-D: `fb_w = max(x + width)`, `fb_h = max(y + height)`. A client may
 /// place a CRTC at any `(x, y)` (e.g. a monitor stacked below), so the
 /// framebuffer must encompass `y + height`, not just `max(height)`.
-/// Advance `next_x` past every reserved slot a `width`-wide placement
-/// starting there would straddle.
-///
-/// Reservations are rectangles of routes that are physically gone but
-/// restorable, so nothing may be packed over them. Repeat until the
-/// placement is clear: stepping past one reservation can push the
-/// placement into the next.
-pub(super) fn advance_past_reservations(
-    mut next_x: i32,
-    width: u16,
-    reserved: &[LayoutRect],
-) -> i32 {
-    loop {
-        let end = next_x.saturating_add(i32::from(width));
-        let Some(blocking_end) = reserved
-            .iter()
-            .filter(|(rx, _, rw, _)| {
-                let r_end = rx.saturating_add(i32::from(*rw));
-                // Half-open overlap: a reservation ending exactly at `next_x`
-                // does not block, and a zero-width one never blocks.
-                *rx < end && next_x < r_end
-            })
-            .map(|(rx, _, rw, _)| rx.saturating_add(i32::from(*rw)))
-            .max()
-        else {
-            return next_x;
-        };
-        next_x = blocking_end;
-    }
-}
-
 pub(super) fn recompute_fb_extent_from(layouts: &[LayoutRect]) -> (u16, u16) {
     let fb_w = layouts
         .iter()
@@ -1012,44 +972,27 @@ impl PlatformBackend {
     /// real workload needs it; the common case is all-auto at boot or
     /// all-pinned after the desktop configures the layout.)
     ///
-    /// Layout policy is the backend caller's, not the connector snapshot's:
-    /// only the backend knows which departed routes are restorable, so only
-    /// it can decide when survivors may move. See
-    /// `docs/superpowers/specs/2026-09-17-randr-crtc-model-and-hotplug-relight-design.md`,
-    /// "Layout policy — reserved slots".
-    pub(crate) fn recompact_horizontal_layout(
-        &mut self,
-        client_configured: &HashSet<OutputKey>,
-        reserved: &[LayoutRect],
-    ) {
+    /// Layout policy is the backend caller's, not the connector snapshot's.
+    pub(crate) fn recompact_horizontal_layout(&mut self, client_configured: &HashSet<OutputKey>) {
         let mut next_x: i32 = 0;
         for layout in &mut self.outputs {
             if client_configured.contains(&layout.key) {
                 next_x = next_x.max(layout.x.saturating_add(i32::from(layout.width)));
                 continue;
             }
-            // A reserved slot belongs to a route that is physically gone but
-            // restorable. Packing over it would let the relight land on top
-            // of a survivor that moved into the hole (invariant 7), so step
-            // past every reservation this placement would straddle.
-            next_x = advance_past_reservations(next_x, layout.width, reserved);
             layout.x = next_x;
             layout.y = 0;
             next_x = next_x.saturating_add(i32::from(layout.width));
         }
     }
 
-    /// Recompute the virtual-screen extent over the live layouts unioned with
-    /// `reserved`. A reserved slot keeps the extent from shrinking while its
-    /// monitor is away, which is what stops the `SetScreenSize` churn the
-    /// hotplug trace showed.
-    pub(crate) fn recompute_fb_extent_with_reservations(&mut self, reserved: &[LayoutRect]) {
-        let mut layouts: Vec<LayoutRect> = self
+    /// Recompute the virtual-screen extent over the live layouts.
+    pub(crate) fn recompute_fb_extent(&mut self) {
+        let layouts: Vec<LayoutRect> = self
             .outputs
             .iter()
             .map(|layout| (layout.x, layout.y, layout.width, layout.height))
             .collect();
-        layouts.extend_from_slice(reserved);
         let (fb_w, fb_h) = recompute_fb_extent_from(&layouts);
         self.fb_w = fb_w;
         self.fb_h = fb_h;
@@ -1062,9 +1005,8 @@ impl PlatformBackend {
     /// usable mode. A disconnected connector only has its live route flagged
     /// `connector_connected = false`.
     ///
-    /// Topology ownership only: the dropped routes' rectangles are reported
-    /// in [`RescanResult::dropped_layouts`] and the caller owns packing and
-    /// the virtual-screen extent.
+    /// Topology ownership only: the caller owns packing and the
+    /// virtual-screen extent.
     pub(crate) fn apply_connector_snapshot(
         &mut self,
         connected: Vec<ConnectorSnapshot>,
@@ -1136,14 +1078,6 @@ impl PlatformBackend {
         for idx in rescan.dropped_old_indices.iter().copied() {
             let dropped_key = self.outputs[idx].key.clone();
             let dropped_crtc = self.outputs[idx].output.crtc;
-            rescan.dropped_layouts.push(DroppedRoute {
-                key: dropped_key.clone(),
-                x: self.outputs[idx].x,
-                y: self.outputs[idx].y,
-                width: self.outputs[idx].width,
-                height: self.outputs[idx].height,
-                vrefresh: self.outputs[idx].output.picked.vrefresh,
-            });
             self.cancel_scanout_render_completions_for_output(&dropped_key);
             if let Err(error) = self.drain_scanout_pool_at(idx) {
                 log::error!(

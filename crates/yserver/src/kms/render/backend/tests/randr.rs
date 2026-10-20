@@ -1168,8 +1168,7 @@ fn randr_rebuild_restores_the_stable_provider_projection() {
                     edid: Vec::new(),
                     connector_type: "unknown".to_string(),
                 }],
-                &[],
-                &[],
+                &[]
             )
             .is_empty()
     );
@@ -1290,8 +1289,7 @@ fn explicit_detach_survives_rebuild_disconnect_and_reconnect() {
                     edid: Vec::new(),
                     connector_type: "DisplayPort".to_string(),
                 }],
-                &[],
-                &[],
+                &[]
             )
             .is_empty()
     );
@@ -1356,7 +1354,7 @@ fn explicit_detach_survives_rebuild_disconnect_and_reconnect() {
 
     assert!(
         !backend
-            .reconcile_connector_registry(&[], std::slice::from_ref(&sink_output), &[])
+            .reconcile_connector_registry(&[], std::slice::from_ref(&sink_output))
             .is_empty()
     );
     backend.rebuild_randr_state(&mut state, None, true);
@@ -1381,8 +1379,7 @@ fn explicit_detach_survives_rebuild_disconnect_and_reconnect() {
                     edid: Vec::new(),
                     connector_type: "DisplayPort".to_string(),
                 }],
-                &[],
-                &[],
+                &[]
             )
             .is_empty()
     );
@@ -1919,11 +1916,8 @@ fn connector_only_probe_reconciles_state_and_drops_disconnected_modes() {
     );
 }
 
-// ── P1: hotplug relight, remembered routes and reserved slots ────────
-//
-// Design:
-// `docs/superpowers/specs/2026-09-17-randr-crtc-model-and-hotplug-relight-design.md`,
-// "P1 — restore the reconnect relight".
+// ── Hotplug: a disconnect keeps the route (#273, superseding the
+// 2026-09-17 P1b relight design) ──────────────────────────────────────
 
 fn relight_test_snapshot(
     key: &OutputKey,
@@ -1940,7 +1934,7 @@ fn relight_test_snapshot(
 }
 
 #[test]
-fn a_physical_disconnect_keeps_the_route_and_the_reconnect_needs_no_relight() {
+fn a_physical_disconnect_keeps_the_route_and_the_reconnect_needs_no_commit() {
     // #273 changed this from "remember the route and relight it on
     // reconnect" (2026-09-17 P1b) to Xorg parity: the disconnect never
     // retires the route, so there is nothing to remember or relight.
@@ -1961,14 +1955,9 @@ fn a_physical_disconnect_keeps_the_route_and_the_reconnect_needs_no_relight() {
         .platform
         .apply_connector_snapshot(Vec::new(), &std::collections::HashSet::from([key.clone()]));
     assert!(rescan.dropped_old_indices.is_empty());
-    assert!(rescan.dropped_layouts.is_empty());
     assert_eq!(backend.platform.outputs.len(), 1, "the route stays live");
     assert!(!backend.platform.outputs[0].connector_connected);
-    let delta = backend.reconcile_connector_registry(
-        &rescan.connected,
-        &rescan.dropped_keys,
-        &rescan.dropped_layouts,
-    );
+    let delta = backend.reconcile_connector_registry(&rescan.connected, &rescan.dropped_keys);
     assert!(delta.config_changed);
 
     let entry = backend.pstate.randr_id_alloc.entry(&key).unwrap();
@@ -1978,20 +1967,13 @@ fn a_physical_disconnect_keeps_the_route_and_the_reconnect_needs_no_relight() {
         entry.modes.is_empty(),
         "Xorg lists no modes while disconnected"
     );
-    assert!(entry.last_enabled.is_none(), "nothing departed");
-    assert!(backend.reserved_layout_slots().is_empty());
 
     // ── Reconnect ────────────────────────────────────────────────────
     let rescan = backend
         .platform
         .apply_connector_snapshot(vec![snapshot.clone()], &std::collections::HashSet::new());
     assert!(backend.platform.outputs[0].connector_connected);
-    let _ = backend.reconcile_connector_registry(
-        &rescan.connected,
-        &rescan.dropped_keys,
-        &rescan.dropped_layouts,
-    );
-    assert!(backend.take_relight_requests().is_empty());
+    let _ = backend.reconcile_connector_registry(&rescan.connected, &rescan.dropped_keys);
     let entry = backend.pstate.randr_id_alloc.entry(&key).unwrap();
     assert!(entry.connected);
     assert_eq!(entry.config, enabled);
@@ -2149,12 +2131,12 @@ fn connector_registry_detects_edid_only_replacement_and_keeps_xids() {
 
     assert!(
         !backend
-            .reconcile_connector_registry(std::slice::from_ref(&first), &[], &[])
+            .reconcile_connector_registry(std::slice::from_ref(&first), &[])
             .is_empty()
     );
     let ids = backend.pstate.randr_id_alloc.entry(&key).unwrap().ids;
     let replacement_delta =
-        backend.reconcile_connector_registry(std::slice::from_ref(&replacement), &[], &[]);
+        backend.reconcile_connector_registry(std::slice::from_ref(&replacement), &[]);
     assert!(
         !replacement_delta.is_empty(),
         "a changed EDID must invalidate the heavy RANDR projection"
@@ -2168,7 +2150,7 @@ fn connector_registry_detects_edid_only_replacement_and_keeps_xids() {
     assert_eq!(entry.edid, replacement.edid);
     assert!(
         backend
-            .reconcile_connector_registry(std::slice::from_ref(&replacement), &[], &[])
+            .reconcile_connector_registry(std::slice::from_ref(&replacement), &[])
             .is_empty(),
         "the refreshed heavy snapshot is idempotent"
     );
@@ -2192,7 +2174,7 @@ fn live_randr_projection_uses_heavy_registry_identity() {
 
     assert!(
         !backend
-            .reconcile_connector_registry(std::slice::from_ref(&replacement), &[], &[])
+            .reconcile_connector_registry(std::slice::from_ref(&replacement), &[])
             .is_empty()
     );
     let (refreshed, mode_table) = backend.randr_outputs_and_modes();
@@ -2227,7 +2209,7 @@ fn connected_off_output_exposes_identity_and_disconnect_clears_it() {
     };
     assert!(
         !backend
-            .reconcile_connector_registry(std::slice::from_ref(&snapshot), &[], &[])
+            .reconcile_connector_registry(std::slice::from_ref(&snapshot), &[])
             .is_empty()
     );
     let ids = backend.pstate.randr_id_alloc.entry(&key).unwrap().ids;
@@ -2247,7 +2229,7 @@ fn connected_off_output_exposes_identity_and_disconnect_clears_it() {
 
     assert!(
         !backend
-            .reconcile_connector_registry(&[], std::slice::from_ref(&key), &[])
+            .reconcile_connector_registry(&[], std::slice::from_ref(&key))
             .is_empty()
     );
     let (outputs, _) = backend.randr_outputs_and_modes();
@@ -2379,7 +2361,7 @@ fn lightweight_active_disconnect_retains_crtc_then_heavy_detach_publishes_off() 
     let light_config_timestamp = state.randr.config_timestamp;
     assert!(
         backend
-            .reconcile_connector_registry(&[], std::slice::from_ref(&key), &[])
+            .reconcile_connector_registry(&[], std::slice::from_ref(&key))
             .is_empty(),
         "the later heavy boundary sees no second advertised connector delta",
     );
@@ -2475,11 +2457,8 @@ fn light_mode_change_then_heavy_connected_route_retirement_is_not_a_second_confi
         mm_height: entry.mm_height,
         connector_type: entry.connector_type.clone(),
     };
-    let heavy_delta = backend.reconcile_connector_registry(
-        std::slice::from_ref(&snapshot),
-        std::slice::from_ref(&key),
-        &[],
-    );
+    let heavy_delta = backend
+        .reconcile_connector_registry(std::slice::from_ref(&snapshot), std::slice::from_ref(&key));
     assert!(heavy_delta.is_empty());
     assert!(!heavy_delta.config_changed);
     assert_eq!(
@@ -2517,7 +2496,7 @@ fn heavy_disconnect_projection_does_not_revive_stale_active_output() {
 
     assert!(
         !backend
-            .reconcile_connector_registry(&[], std::slice::from_ref(&key), &[])
+            .reconcile_connector_registry(&[], std::slice::from_ref(&key))
             .is_empty()
     );
     let projected = backend.randr_outputs();
@@ -2608,7 +2587,7 @@ fn same_signature_monitor_replacement_keeps_exact_timings_distinct() {
 
     assert!(
         !backend
-            .reconcile_connector_registry(&[replacement], &[], &[])
+            .reconcile_connector_registry(&[replacement], &[])
             .is_empty()
     );
     let (outputs, modes) = backend.randr_outputs_and_modes();

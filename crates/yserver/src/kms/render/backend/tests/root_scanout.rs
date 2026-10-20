@@ -1372,10 +1372,10 @@ fn a_hotplug_that_grew_the_extent_grows_root_backing_storage() {
         "the client resize is what leaves root storage too small",
     );
 
-    // The relight puts the second monitor back at its remembered slot and
-    // the enable path recomputes the extent over both live layouts.
+    // The second monitor is enabled again at its old slot and the enable
+    // path recomputes the extent over both live layouts.
     let relit = push_enabled_test_output(&mut b, "B", 8, 1920, 0, 1920, 1080);
-    b.platform.recompute_fb_extent_with_reservations(&[]);
+    b.platform.recompute_fb_extent();
     assert_eq!(b.platform.fb_dimensions(), (3840, 1080));
 
     let (outputs, modes) = b.randr_outputs_and_modes();
@@ -1390,7 +1390,6 @@ fn a_hotplug_that_grew_the_extent_grows_root_backing_storage() {
         added_keys: vec![relit],
         dropped_keys: Vec::new(),
         dropped_old_indices: Vec::new(),
-        dropped_layouts: Vec::new(),
         added_count: 1,
         connected: Vec::new(),
     };
@@ -1416,7 +1415,7 @@ fn a_hotplug_that_shrank_the_extent_leaves_root_storage_alone() {
     clear_test_outputs(&mut b);
     let a = push_enabled_test_output(&mut b, "A", 7, 0, 0, 1920, 1080);
     let departing = push_enabled_test_output(&mut b, "B", 8, 1920, 0, 1920, 1080);
-    b.platform.recompute_fb_extent_with_reservations(&[]);
+    b.platform.recompute_fb_extent();
     // Start from storage that actually covers the dual-head extent.
     // `set_logical_screen_size` would early-return here: the extent
     // recompute above already moved `fb_w`/`fb_h`, so drive the shared
@@ -1428,13 +1427,12 @@ fn a_hotplug_that_shrank_the_extent_leaves_root_storage_alone() {
         Some((3840, 1080)),
     );
 
-    // B departs for good: no reservation, so the extent shrinks.
-    b.pstate.randr_id_alloc.entry_mut(&departing).last_enabled = None;
+    // B's route is retired, so the extent shrinks.
     b.platform.outputs.pop();
     b.platform.scanout_pools.pop();
     b.platform.bo_generations.pop();
     b.platform.first_pageflip_logged.pop();
-    b.platform.recompute_fb_extent_with_reservations(&[]);
+    b.platform.recompute_fb_extent();
     assert_eq!(b.platform.fb_dimensions(), (1920, 1080));
 
     let (outputs, modes) = b.randr_outputs_and_modes();
@@ -1449,7 +1447,6 @@ fn a_hotplug_that_shrank_the_extent_leaves_root_storage_alone() {
         added_keys: Vec::new(),
         dropped_keys: vec![departing],
         dropped_old_indices: vec![1],
-        dropped_layouts: Vec::new(),
         added_count: 0,
         connected: Vec::new(),
     };

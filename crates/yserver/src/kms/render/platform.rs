@@ -665,23 +665,6 @@ impl PlatformBackend {
     }
 }
 
-/// One live scanout route a connector snapshot removed, with the layout
-/// rectangle and mode identity it occupied at the moment it was removed.
-///
-/// `apply_connector_snapshot` deletes the `ActiveOutput` row, so this is the
-/// only surviving record of where the route was. The backend owns layout
-/// policy (packing, the virtual-screen extent, reserved slots), and it needs
-/// the rectangle after the snapshot has already destroyed it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DroppedRoute {
-    pub key: OutputKey,
-    pub x: i32,
-    pub y: i32,
-    pub width: u16,
-    pub height: u16,
-    pub vrefresh: u32,
-}
-
 /// A placed rectangle: `(x, y, width, height)`.
 pub(super) type LayoutRect = (i32, i32, u16, u16);
 
@@ -691,9 +674,6 @@ pub(crate) struct RescanResult {
     pub added_keys: Vec<OutputKey>,
     pub dropped_keys: Vec<OutputKey>,
     pub dropped_old_indices: Vec<usize>,
-    /// Layout rectangle + mode identity of every route `dropped_old_indices`
-    /// removed, captured before the `ActiveOutput` row was deleted.
-    pub dropped_layouts: Vec<DroppedRoute>,
     pub added_count: usize,
     /// Every connector currently discovered as connected, including inactive
     /// secondary-card connectors. The backend reconciles this complete,

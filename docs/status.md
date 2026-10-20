@@ -42,7 +42,7 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   still retires its route. DPMS on and VT resume attempt a disconnected route's commit and log a refusal at debug
   instead of failing the others. Accepted cost: the absent output's scanout BOs (about 44 MB at 2560x1440) stay
   pinned, as on Xorg. This supersedes the 2026-09-17 P1b remember/relight design (see its spec note): its
-  `last_enabled`/reserved-slot machinery is no longer reached by a hotplug path. Not done: link-status BAD one-CRTC
+  `last_enabled`/reserved-slot machinery was then removed as dead code. Not done: link-status BAD one-CRTC
   re-commit (Xorg drmmode_display.c:3995-4009) needs a per-CRTC modeset path, which today only exists as the global
   quiesce (#275). Hardware validation pending.
 

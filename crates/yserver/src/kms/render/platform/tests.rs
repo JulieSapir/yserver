@@ -918,7 +918,7 @@ fn clear_test_outputs(platform: &mut PlatformBackend) {
 }
 
 #[test]
-fn connector_snapshot_reports_dropped_rectangles_and_leaves_layout_to_the_caller() {
+fn connector_snapshot_drops_an_unusable_route_and_leaves_layout_to_the_caller() {
     let mut platform = PlatformBackend::for_tests();
     // Put the sole route somewhere the old in-snapshot compaction would
     // have flattened, and pin an extent the old in-snapshot recompute
@@ -942,18 +942,8 @@ fn connector_snapshot_reports_dropped_rectangles_and_leaves_layout_to_the_caller
     let rescan = platform.apply_connector_snapshot(vec![no_modes], &HashSet::from([key.clone()]));
 
     assert!(platform.outputs.is_empty());
-    assert_eq!(
-        rescan.dropped_layouts,
-        vec![DroppedRoute {
-            key,
-            x: 1000,
-            y: 0,
-            width: 800,
-            height: 600,
-            vrefresh: 60,
-        }],
-        "the snapshot reports the rectangle it destroyed",
-    );
+    assert_eq!(rescan.dropped_old_indices, vec![0]);
+    assert_eq!(rescan.dropped_keys, vec![key]);
     assert_eq!(
         platform.fb_dimensions(),
         (1800, 600),
@@ -962,77 +952,33 @@ fn connector_snapshot_reports_dropped_rectangles_and_leaves_layout_to_the_caller
 }
 
 #[test]
-fn recompaction_packs_survivors_past_a_reserved_slot() {
-    let mut platform = PlatformBackend::for_tests();
-    clear_test_outputs(&mut platform);
-    push_placed_test_output(&mut platform, "B", 2, 1920, 0, 3200, 1440);
-    // The slot a departed-but-restorable 1920x1080 route still holds.
-    let reserved = vec![(0, 0, 1920u16, 1080u16)];
-
-    platform.recompact_horizontal_layout(&HashSet::new(), &reserved);
-    platform.recompute_fb_extent_with_reservations(&reserved);
-
-    assert_eq!(
-        (platform.outputs[0].x, platform.outputs[0].y),
-        (1920, 0),
-        "an auto-layout survivor must not pack into a reserved slot",
-    );
-    assert_eq!(
-        platform.fb_dimensions(),
-        (5120, 1440),
-        "the extent unions the reserved slot, so it does not shrink",
-    );
-}
-
-#[test]
-fn recompaction_without_a_reservation_still_packs_survivors() {
+fn recompaction_packs_auto_layout_survivors() {
     let mut platform = PlatformBackend::for_tests();
     clear_test_outputs(&mut platform);
     push_placed_test_output(&mut platform, "B", 2, 1920, 0, 3200, 1440);
 
-    platform.recompact_horizontal_layout(&HashSet::new(), &[]);
-    platform.recompute_fb_extent_with_reservations(&[]);
+    platform.recompact_horizontal_layout(&HashSet::new());
+    platform.recompute_fb_extent();
 
     assert_eq!(
         (platform.outputs[0].x, platform.outputs[0].y),
         (0, 0),
-        "dropping a never-enabled route reserves nothing, so survivors compact",
+        "an auto-layout survivor packs into the hole a retired route left",
     );
     assert_eq!(platform.fb_dimensions(), (3200, 1440));
 }
 
 #[test]
-fn a_reserved_slot_does_not_move_a_client_positioned_output() {
+fn recompaction_does_not_move_a_client_positioned_output() {
     let mut platform = PlatformBackend::for_tests();
     clear_test_outputs(&mut platform);
     let pinned = push_placed_test_output(&mut platform, "B", 2, 4000, 0, 1024, 768);
-    let reserved = vec![(0, 0, 1920u16, 1080u16)];
 
-    platform.recompact_horizontal_layout(&HashSet::from([pinned]), &reserved);
-    platform.recompute_fb_extent_with_reservations(&reserved);
+    platform.recompact_horizontal_layout(&HashSet::from([pinned]));
+    platform.recompute_fb_extent();
 
     assert_eq!((platform.outputs[0].x, platform.outputs[0].y), (4000, 0));
-    assert_eq!(platform.fb_dimensions(), (5024, 1080));
-}
-
-#[test]
-fn packing_steps_past_every_reservation_it_straddles() {
-    // Stepping past one reservation can push the placement into the next,
-    // so the skip has to repeat rather than fire once.
-    assert_eq!(
-        super::advance_past_reservations(0, 1000, &[(0, 0, 500, 100), (500, 0, 500, 100)]),
-        1000,
-    );
-    assert_eq!(
-        super::advance_past_reservations(0, 100, &[(100, 0, 500, 100)]),
-        0,
-        "a reservation the placement does not reach must not move it",
-    );
-    assert_eq!(
-        super::advance_past_reservations(0, 100, &[(0, 0, 0, 100)]),
-        0,
-        "a zero-width reservation blocks nothing",
-    );
+    assert_eq!(platform.fb_dimensions(), (5024, 768));
 }
 
 #[test]

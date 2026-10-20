@@ -494,69 +494,6 @@ pub(crate) enum ConnectorConfig {
     },
 }
 
-/// Everything a relight needs to put a remembered route back exactly where it
-/// was, read out of a [`ConnectorConfig::Enabled`].
-///
-/// P3b adds the assigned CRTC XID to `ConnectorConfig::Enabled` and to this
-/// struct; every relight reader goes through
-/// [`ConnectorConfig::restorable_route`], so that addition stays local
-/// instead of touching each consumer (design, "P3 extends `last_enabled`").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::kms::render::backend) struct RememberedRoute {
-    pub mode: yserver_core::backend::ModeSpec,
-    pub x: i32,
-    pub y: i32,
-}
-
-impl ConnectorConfig {
-    /// The route policy this config remembers, or `None` when it is `Off`.
-    pub(in crate::kms::render::backend) fn restorable_route(self) -> Option<RememberedRoute> {
-        match self {
-            Self::Off => None,
-            Self::Enabled {
-                mode_w,
-                mode_h,
-                vrefresh,
-                x,
-                y,
-            } => Some(RememberedRoute {
-                mode: yserver_core::backend::ModeSpec {
-                    width: mode_w,
-                    height: mode_h,
-                    vrefresh,
-                },
-                x,
-                y,
-            }),
-        }
-    }
-
-    /// The layout rectangle this config occupies, or `None` when it is `Off`.
-    pub(in crate::kms::render::backend) fn placed_rect(
-        self,
-    ) -> Option<crate::kms::render::platform::LayoutRect> {
-        match self {
-            Self::Off => None,
-            Self::Enabled {
-                mode_w,
-                mode_h,
-                x,
-                y,
-                ..
-            } => Some((x, y, mode_w, mode_h)),
-        }
-    }
-}
-
-/// One route [`KmsBackend::take_relight_requests`] decided to restore.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::kms::render::backend) struct RelightRequest {
-    pub(in crate::kms::render::backend) key: OutputKey,
-    pub(in crate::kms::render::backend) mode: yserver_core::backend::ModeSpec,
-    pub(in crate::kms::render::backend) x: i32,
-    pub(in crate::kms::render::backend) y: i32,
-}
-
 /// Owned request handed to the asynchronous PRIME route qualifier.
 ///
 /// The duplicate KMS fd keeps the exact DRM open-file description alive until
@@ -622,26 +559,13 @@ pub(crate) struct ConnectorEntry {
     pub crtc_associated: bool,
     /// `true` once a client SetCrtcConfig/SetScreenSize touched this
     /// output. The auto-layout (recompact / boot extend-right) only
-    /// ever touches `!client_configured` outputs. A lightweight connection
-    /// query retains it because that query does not detach the CRTC; the
-    /// later heavy physical-topology apply clears it when the route goes.
+    /// ever touches `!client_configured` outputs. A disconnect retains it
+    /// (the CRTC stays configured, #273); retiring a route that lost its
+    /// usable modes clears it.
     pub client_configured: bool,
-    /// Route policy of a connector retired by a **physical** disconnect,
-    /// kept so the reconnect edge relights it with no client request
-    /// (design P1b, invariant 1). `None` whenever nothing is remembered: a
-    /// client's explicit `SetCrtcConfig`, an incompatible-mode reconnect and
-    /// a successful relight all clear it.
-    ///
-    /// This is also the reservation record. While it is `Some` and the route
-    /// is not live, the remembered rectangle is excluded from auto-layout
-    /// packing and unioned into the virtual-screen extent, so a survivor
-    /// never moves into the hole a restorable route left (invariant 7).
-    /// Releasing a reservation is exactly clearing this field — there is no
-    /// second record to drop.
-    pub last_enabled: Option<ConnectorConfig>,
-    /// Last-known advertised mode list, preferred-first. Retained across
-    /// disconnect so a momentarily-gone monitor keeps reporting stable mode
-    /// resources until reconnect refreshes them.
+    /// Advertised mode list, preferred-first. Empty while disconnected
+    /// (Xorg `xf86ProbeOutputModes`); a live CRTC's current mode stays in
+    /// the screen mode table through the projection.
     pub modes: Vec<crate::platform::drm::Mode>,
     /// Connector identity from the latest heavy startup/hotplug/resume
     /// snapshot. Lightweight RANDR force queries never refresh these fields;
@@ -752,7 +676,6 @@ impl RandrIdAllocator {
                 config: ConnectorConfig::Off,
                 crtc_associated: false,
                 client_configured: false,
-                last_enabled: None,
                 modes: Vec::new(),
                 edid: Vec::new(),
                 mm_width: 0,

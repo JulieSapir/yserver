@@ -827,9 +827,6 @@ impl KmsBackend {
             };
             entry.client_configured = true;
             entry.connected = true;
-            // The client has placed this output itself; the remembered route
-            // and its reserved slot are released.
-            entry.last_enabled = None;
         }
         log::info!(
             "finish_crtc_config: enabled {} {}x{}@{} at ({},{}) with qualified plan",
@@ -991,11 +988,6 @@ impl KmsBackend {
             // on a real change) — this is what breaks MATE's re-assert loop.
             let entry = self.pstate.randr_id_alloc.entry_mut(&output_key);
             entry.config = requested;
-            // A client asserting a config is an explicit statement of intent
-            // about this output, so it releases any remembered route (and
-            // with it the reserved slot). Never resurrect a route the client
-            // has spoken for.
-            entry.last_enabled = None;
             return Ok(false);
         }
 
@@ -1093,10 +1085,6 @@ impl KmsBackend {
                     // client_configured is set to record that a client
                     // explicitly disabled this output (not an auto-layout op).
                     entry.client_configured = true;
-                    // An explicit disable must not be undone by a later
-                    // auto-relight (invariant 6): unplugging a deliberately
-                    // disabled monitor may not resurrect it.
-                    entry.last_enabled = None;
                 }
             }
             Some(mode_spec) => {
@@ -1165,9 +1153,6 @@ impl KmsBackend {
                     entry.crtc_associated = true;
                     entry.client_configured = true;
                     entry.connected = true;
-                    // The client has placed this output itself; the
-                    // remembered route and its reserved slot are released.
-                    entry.last_enabled = None;
                 }
 
                 log::info!(
