@@ -83,6 +83,8 @@ pub(crate) struct Translator {
     iso: bool,
     keys: Vec<u8>,
     buttons: Vec<u16>,
+    /// The button an Option- or Command-click stands for, while down.
+    fake: Option<u16>,
 }
 
 impl Translator {
@@ -153,14 +155,22 @@ impl Translator {
     }
 
     /// Translate a mouse button: `number` is the window system's 0-based
-    /// button number (0 left, 1 right, 2 middle, 3 back, 4 forward).
+    /// button number (0 left, 1 right, 2 middle, 3 back, 4 forward);
+    /// `flags` the `modifierFlags` at the event.
     pub(crate) fn button(
         &mut self,
         number: i64,
         pressed: bool,
+        flags: u64,
         time: u32,
         out: &mut Vec<HostInputEvent>,
     ) {
+        if number == 0
+            && let Some(button) = self.fake_button(pressed, flags, time, out)
+        {
+            self.change_button(button, pressed, time, out);
+            return;
+        }
         let button = match number {
             0 => BTN_LEFT,
             1 => BTN_RIGHT,
@@ -169,6 +179,16 @@ impl Translator {
             4 => BTN_EXTRA,
             _ => return,
         };
+        self.change_button(button, pressed, time, out);
+    }
+
+    fn change_button(
+        &mut self,
+        button: u16,
+        pressed: bool,
+        time: u32,
+        out: &mut Vec<HostInputEvent>,
+    ) {
         let held = self.buttons.iter().position(|&b| b == button);
         match (pressed, held) {
             (true, None) => self.buttons.push(button),
@@ -180,6 +200,41 @@ impl Translator {
         out.push(button_event(button, pressed, time));
     }
 
+    /// XQuartz's fake buttons (`darwinEvents.c:503-541`, masks `darwin.c:137-138`):
+    /// a primary click that starts with Option held is button 2, with
+    /// Command button 3; the modifier is released in X first. The release
+    /// matches the press, whatever the modifiers are by then.
+    fn fake_button(
+        &mut self,
+        pressed: bool,
+        flags: u64,
+        time: u32,
+        out: &mut Vec<HostInputEvent>,
+    ) -> Option<u16> {
+        if !pressed {
+            return self.fake.take();
+        }
+        if let Some(stale) = self.fake.take() {
+            self.change_button(stale, false, time, out);
+        }
+        let (button, group) = if flags & FLAG_OPTION != 0 {
+            (BTN_MIDDLE, FLAG_OPTION)
+        } else if flags & FLAG_COMMAND != 0 {
+            (BTN_RIGHT, FLAG_COMMAND)
+        } else {
+            return None;
+        };
+        for &(kvk, _, bit) in &MODIFIERS {
+            if bit == group
+                && let Some(keycode) = x_keycode(kvk, self.iso)
+            {
+                self.release(keycode, time, out);
+            }
+        }
+        self.fake = Some(button);
+        Some(button)
+    }
+
     /// The window lost the keyboard: release every held key, last pressed
     /// first, then every held button.
     pub(crate) fn release_all(&mut self, time: u32, out: &mut Vec<HostInputEvent>) {
@@ -189,6 +244,7 @@ impl Translator {
         while let Some(button) = self.buttons.pop() {
             out.push(button_event(button, false, time));
         }
+        self.fake = None;
     }
 }
 
@@ -236,8 +292,8 @@ mod tests {
     use yserver_core::core_loop::HostInputEvent;
 
     use super::{
-        FLAG_CAPS_LOCK, FLAG_COMMAND, FLAG_SHIFT, KeyKind, RawKey, Translator, caps_lock_sync,
-        caps_locked, nx,
+        FLAG_CAPS_LOCK, FLAG_COMMAND, FLAG_OPTION, FLAG_SHIFT, KeyKind, RawKey, Translator,
+        caps_lock_sync, caps_locked, nx,
     };
     use crate::surface::input::keymap::kvk;
 
@@ -369,8 +425,8 @@ mod tests {
             ],
         );
         let mut out = Vec::new();
-        t.button(0, true, 0, &mut out);
-        t.button(1, true, 0, &mut out);
+        t.button(0, true, 0, 0, &mut out);
+        t.button(1, true, 0, 0, &mut out);
         out.clear();
         t.release_all(0, &mut out);
         assert_eq!(
@@ -413,7 +469,7 @@ mod tests {
         let mut t = Translator::new(false);
         let mut out = Vec::new();
         for number in 0..=5 {
-            t.button(number, true, 0, &mut out);
+            t.button(number, true, 0, 0, &mut out);
         }
         assert_eq!(
             summary(&out),
@@ -426,9 +482,86 @@ mod tests {
             ]
         );
         out.clear();
-        t.button(0, true, 0, &mut out);
-        t.button(5, false, 0, &mut out);
+        t.button(0, true, 0, 0, &mut out);
+        t.button(5, false, 0, 0, &mut out);
         assert!(out.is_empty(), "a held button and button 5 send nothing");
+    }
+
+    const OPT_L: u64 = FLAG_OPTION | nx::NX_DEVICELALTKEYMASK;
+    const ALT_L: u32 = 64;
+    const SUPER_L: u32 = 133;
+    const LEFT: u32 = 256 + 0x110;
+    const RIGHT: u32 = 256 + 0x111;
+    const MIDDLE: u32 = 256 + 0x112;
+
+    fn click(t: &mut Translator, number: i64, pressed: bool, flags: u64) -> Vec<(u32, bool)> {
+        let mut out = Vec::new();
+        t.button(number, pressed, flags, 0, &mut out);
+        summary(&out)
+    }
+
+    /// XQuartz fake buttons (`darwinEvents.c:503-541`, `darwin.c:137-138`):
+    /// Option+click is button 2 with Option released in X first.
+    #[test]
+    fn option_click_is_the_middle_button_without_alt() {
+        use KeyKind::FlagsChanged as F;
+        let mut t = Translator::new(false);
+        assert_eq!(
+            run(&mut t, &[(kvk::kVK_Option, F, OPT_L, false)]),
+            [(ALT_L, true)]
+        );
+        assert_eq!(
+            click(&mut t, 0, true, OPT_L),
+            [(ALT_L, false), (MIDDLE, true)]
+        );
+        // Option let go before the button: nothing more for Alt.
+        assert!(run(&mut t, &[(kvk::kVK_Option, F, 0, false)]).is_empty());
+        assert_eq!(
+            click(&mut t, 0, false, 0),
+            [(MIDDLE, false)],
+            "matches the press"
+        );
+        assert_eq!(
+            click(&mut t, 0, true, 0),
+            [(LEFT, true)],
+            "a plain click again"
+        );
+    }
+
+    #[test]
+    fn command_click_is_the_right_button_without_super() {
+        use KeyKind::FlagsChanged as F;
+        let mut t = Translator::new(false);
+        run(&mut t, &[(kvk::kVK_Command, F, CMD_L, false)]);
+        assert_eq!(
+            click(&mut t, 0, true, CMD_L),
+            [(SUPER_L, false), (RIGHT, true)]
+        );
+        assert_eq!(click(&mut t, 0, false, CMD_L), [(RIGHT, false)]);
+        assert!(
+            run(&mut t, &[(kvk::kVK_Command, F, 0, false)]).is_empty(),
+            "Super was already released"
+        );
+    }
+
+    #[test]
+    fn only_the_primary_button_is_emulated() {
+        let mut t = Translator::new(false);
+        assert_eq!(click(&mut t, 1, true, OPT_L), [(RIGHT, true)]);
+        assert_eq!(click(&mut t, 1, false, OPT_L), [(RIGHT, false)]);
+        // A modifier pressed after the button went down changes nothing.
+        assert_eq!(click(&mut t, 0, true, 0), [(LEFT, true)]);
+        assert_eq!(click(&mut t, 0, false, OPT_L), [(LEFT, false)]);
+    }
+
+    #[test]
+    fn focus_loss_releases_an_emulated_button() {
+        let mut t = Translator::new(false);
+        click(&mut t, 0, true, OPT_L);
+        let mut out = Vec::new();
+        t.release_all(0, &mut out);
+        assert_eq!(summary(&out), [(MIDDLE, false)]);
+        assert_eq!(click(&mut t, 0, false, 0), [], "the release was sent");
     }
 
     #[test]

@@ -61,11 +61,12 @@ pub(crate) struct PointerTracker {
 }
 
 impl PointerTracker {
-    /// Motion over `id` at pointer-local `local`: `PointerEnter` on a new
-    /// window, else `PointerMotionLocal`.
+    /// Motion over `id` at pointer-local `local` (outside it during a drag):
+    /// `PointerEnter` on a new window, else `PointerMotionLocal`.
     pub(crate) fn moved(&mut self, id: ToplevelId, local: (f64, f64), time: u32) -> RootlessInput {
         let origin = pointer_origin();
-        self.leave_pending = false;
+        // Drag motion after the exit stays the grab window's motion and
+        // keeps the deferred leave; only `entered` cancels it.
         if self.inside.replace(id) == Some(id) {
             RootlessInput::PointerMotionLocal {
                 origin,
@@ -74,6 +75,7 @@ impl PointerTracker {
                 time,
             }
         } else {
+            self.leave_pending = false;
             RootlessInput::PointerEnter {
                 origin,
                 toplevel: id,
@@ -81,6 +83,50 @@ impl PointerTracker {
                 time,
             }
         }
+    }
+
+    /// The pointer entered `id`'s view; cancels a leave deferred by a held
+    /// button when it comes back to the same window.
+    pub(crate) fn entered(
+        &mut self,
+        id: ToplevelId,
+        local: (f64, f64),
+        time: u32,
+    ) -> RootlessInput {
+        if self.inside == Some(id) {
+            self.leave_pending = false;
+        }
+        self.moved(id, local, time)
+    }
+
+    /// Motion while a button is held, at the top-level the window system
+    /// says is under the pointer (`under`, `local` in its coordinates), not
+    /// the one that got the mouse-down, so a drag crosses into a popup or
+    /// another window as on Xorg (the core's grabs route the events).
+    /// `None`: over none of ours, `local` relative to the current window;
+    /// the leave then waits for the release.
+    pub(crate) fn dragged(
+        &mut self,
+        under: Option<ToplevelId>,
+        local: (f64, f64),
+        time: u32,
+    ) -> Option<RootlessInput> {
+        match under {
+            Some(id) => {
+                self.leave_pending = false;
+                Some(self.moved(id, local, time))
+            }
+            None => {
+                let id = self.inside?;
+                self.leave_pending = true;
+                Some(self.moved(id, local, time))
+            }
+        }
+    }
+
+    /// A button is held.
+    pub(crate) fn dragging(&self) -> bool {
+        self.buttons > 0
     }
 
     /// The pointer left `id`. `PointerLeave` releases buttons in the core,
@@ -143,6 +189,36 @@ impl CloseTracker {
         } else {
             CloseAction::Request
         }
+    }
+}
+
+/// X's stacking of our top-levels, bottom to top, from `Mapped.above` and
+/// `Restacked` (spec §4.2: `above` = directly above it, `None` = bottom).
+#[derive(Debug, Default)]
+pub(crate) struct XStacking(Vec<ToplevelId>);
+
+impl XStacking {
+    /// `id` now sits directly above `above` (`None`: at the bottom).
+    pub(crate) fn place(&mut self, id: ToplevelId, above: Option<ToplevelId>) {
+        self.remove(id);
+        let at = match above {
+            None => 0,
+            // A sibling not (yet) known: on top.
+            Some(below) => self
+                .0
+                .iter()
+                .position(|&w| w == below)
+                .map_or(self.0.len(), |i| i + 1),
+        };
+        self.0.insert(at, id);
+    }
+
+    pub(crate) fn remove(&mut self, id: ToplevelId) {
+        self.0.retain(|&w| w != id);
+    }
+
+    pub(crate) fn bottom_to_top(&self) -> &[ToplevelId] {
+        &self.0
     }
 }
 

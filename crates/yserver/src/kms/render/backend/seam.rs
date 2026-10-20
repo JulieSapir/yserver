@@ -110,6 +110,9 @@ pub trait Platform: OutputSink + Sized + 'static {
     /// `XWarpPointer` moved the X pointer to root `(x, y)`; a windowed
     /// platform moves the host pointer to match.
     fn host_pointer_warped(_b: &mut XBackend<Self>, _x: i32, _y: i32) {}
+    /// XTEST motion moved the X pointer to root `(x, y)`; a platform whose
+    /// host pointer follows it (rootless) warps it.
+    fn host_pointer_moved_by_server(_b: &mut XBackend<Self>, _x: i32, _y: i32) {}
     /// Move a hardware-plane cursor (scene cursor mode Hw, or Mixed).
     fn move_hw_cursor(
         b: &mut XBackend<Self>,

@@ -80,6 +80,11 @@ pub(crate) struct WindowSwapchain {
     replaced: Vec<Retiring>,
     #[cfg(test)]
     pub(crate) fail_next_submit: bool,
+    /// Every acquire reports the surface out of date; counted.
+    #[cfg(test)]
+    pub(crate) always_out_of_date: bool,
+    #[cfg(test)]
+    pub(crate) out_of_date_count: u64,
     /// The next `vkQueuePresentKHR` fails before it is queued.
     #[cfg(test)]
     pub(crate) fail_next_present: bool,
@@ -130,6 +135,10 @@ impl WindowSwapchain {
             replaced: Vec::new(),
             #[cfg(test)]
             fail_next_submit: false,
+            #[cfg(test)]
+            always_out_of_date: false,
+            #[cfg(test)]
+            out_of_date_count: 0,
             #[cfg(test)]
             fail_next_present: false,
             #[cfg(test)]
@@ -237,6 +246,22 @@ impl WindowSwapchain {
         } else {
             caps.current_extent
         };
+        log::debug!(
+            "rootless: swapchain for {}x{}: currentExtent {}x{}, min {}x{}, max {}x{} -> {}x{}; \
+             composite alphas {:?}, {:?}",
+            extent.width,
+            extent.height,
+            caps.current_extent.width,
+            caps.current_extent.height,
+            caps.min_image_extent.width,
+            caps.min_image_extent.height,
+            caps.max_image_extent.width,
+            caps.max_image_extent.height,
+            image_extent.width,
+            image_extent.height,
+            caps.supported_composite_alpha,
+            self.alpha,
+        );
         let old = self.chain.take();
         let created = self
             .chain
@@ -308,6 +333,13 @@ impl WindowSwapchain {
                 unsafe { vk.device.destroy_fence(f, None) };
             }
         };
+        #[cfg(test)]
+        if self.always_out_of_date {
+            drop_fence(fence);
+            self.out_of_date_count += 1;
+            self.needs_rebuild = true;
+            return Ok(Presented::OutOfDate);
+        }
         let index = match self.chain.acquire(self.syncs[slot].acquire) {
             Ok(Acquire::Image { index, suboptimal }) => {
                 self.needs_rebuild |= suboptimal;

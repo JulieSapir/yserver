@@ -81,6 +81,16 @@ pub(crate) fn rootless_backend(
     spec: &RootlessSpec,
     layout: Option<String>,
 ) -> io::Result<XBackend<SurfacePlatform>> {
+    log::info!(
+        "rootless: root {}x{}, swapchain maintenance1 {}",
+        spec.root.0,
+        spec.root.1,
+        if vk.swapchain_maintenance1 {
+            "on"
+        } else {
+            "off (every retirement waits for the queue)"
+        }
+    );
     let mut backend = super::headless_backend(vk, spec.root, layout)?;
     backend.platform.set_clock(Arc::clone(&spec.clock));
     backend.pstate.link = Some(Arc::clone(&spec.link));

@@ -1240,6 +1240,94 @@ fn rootless_define_and_hide_cursor() {
     assert!(ui.take().is_empty(), "idle tails send nothing");
 }
 
+/// Rootless has no output: an animated cursor still wakes the loop at its
+/// next frame and advances then.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_animated_cursor_wakes_and_advances() {
+    let Some((mut b, _state, ui)) = rootless_or_skip() else {
+        return;
+    };
+    b.maybe_composite().expect("maybe_composite");
+    ui.take();
+    let frames = [
+        (
+            CursorHandle::from_raw(bitmap_cursor(&mut b, (1, 1))).expect("frame"),
+            1,
+        ),
+        (
+            CursorHandle::from_raw(bitmap_cursor(&mut b, (2, 2))).expect("frame"),
+            1,
+        ),
+    ];
+    let anim = b
+        .create_anim_cursor(None, &frames)
+        .expect("create_anim_cursor")
+        .expect("an animated cursor")
+        .as_raw();
+    let root = b.core.window_id;
+    b.define_cursor(None, root, anim).expect("define_cursor");
+    b.maybe_composite().expect("maybe_composite");
+    let mut versions: Vec<u64> = shown(&ui.take()).into_iter().map(|(v, _, _)| v).collect();
+    // Serve only the loop's own wakeups: with nothing else going on, the
+    // animation must keep asking for them (1 ms frames).
+    let until = Instant::now() + Duration::from_millis(100);
+    while Instant::now() < until {
+        let deadline = SurfacePlatform::next_wakeup(&b).expect("a wakeup for the next frame");
+        if let Some(wait) = deadline.min(until).checked_duration_since(Instant::now()) {
+            std::thread::sleep(wait);
+        }
+        b.maybe_composite().expect("maybe_composite");
+        versions.extend(shown(&ui.take()).into_iter().map(|(v, _, _)| v));
+    }
+    assert!(versions.len() >= 3, "the frames advance: {versions:?}");
+    assert!(versions.windows(2).all(|p| p[0] < p[1]), "{versions:?}");
+}
+
+/// XTEST motion moves the host pointer, as on Xorg; real device motion
+/// does not (it came from there).
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_xtest_motion_warps_the_host_pointer() {
+    let Some((mut b, mut state, ui)) = rootless_or_skip() else {
+        return;
+    };
+    for event in announcements(0) {
+        handle_host_input(&mut state, &mut b, event);
+    }
+    ui.take();
+    let raw = RawPointer {
+        x_pt: 30.0,
+        y_pt: 10.0,
+        view_h_pt: 48.0,
+        scale: 1.0,
+        dx_pt: 1.0,
+        dy_pt: 0.0,
+    };
+    handle_host_input(&mut state, &mut b, motion(&raw, (64, 48), 1));
+    assert!(ui.take().is_empty(), "device motion warps nothing");
+    // What XTEST FakeInput MotionNotify does (process_request/xtest.rs).
+    b.on_host_input(
+        &mut state,
+        HostInputEvent::PointerMotion {
+            origin: yserver_core::core_loop::InputOrigin::XTest(
+                yserver_core::xinput::DEVICEID_XTEST_POINTER,
+            ),
+            x: 10,
+            y: 20,
+            time: 2,
+            relative: false,
+            dx: 0,
+            dy: 0,
+            motion_delta: None,
+        },
+    );
+    b.resync_input_position();
+    assert_eq!(ui.take(), [UiCall::Warp(10, 20)]);
+    b.warp_pointer_root(&mut state, 5, 6);
+    assert_eq!(ui.take(), [UiCall::Warp(5, 6)], "WarpPointer, as before");
+}
+
 /// A server over a backend, and one client (id 9) that selected
 /// StructureNotify on root and RRScreenChangeNotify, talking through the
 /// core's request dispatch.
@@ -2366,5 +2454,283 @@ fn rootless_refuses_randr_configuration() {
     assert_eq!(
         (f.state.randr.screen_width, f.state.randr.screen_height),
         root
+    );
+}
+
+/// Two top-levels for drag tests on the 64x48 root: A (2,2 20x20) and
+/// override-redirect popup P (30,2 15x15), both selecting crossing, button and motion
+/// events for client 9; their ids, and a request sender.
+fn rootless_drag_fixture() -> Option<(
+    InputFixture,
+    yserver_core::rootless::ToplevelId,
+    yserver_core::rootless::ToplevelId,
+    Box<DragRequest>,
+)> {
+    use yserver_core::rootless::{self, CoordinatePolicy};
+    use yserver_protocol::x11::{ClientId, RequestHeader, SequenceNumber};
+
+    let mut f = input_or_skip(0)?;
+    yserver_core::backend::install_backend_root_bindings(&mut f.state, &f.b);
+    rootless::enable(&mut f.state, &mut f.b, CoordinatePolicy::Opaque).expect("enable");
+    let mut sequence = 0u16;
+    let mut request: Box<DragRequest> = Box::new(
+        move |f: &mut InputFixture, opcode: u8, data: u8, body: &[u8]| {
+            sequence += 1;
+            yserver_core::core_loop::process_request::process_request(
+                &mut f.state,
+                &mut f.b as &mut dyn Backend,
+                ClientId(9),
+                SequenceNumber(sequence),
+                RequestHeader {
+                    opcode,
+                    data,
+                    length_units: u32::try_from(1 + body.len() / 4).expect("length"),
+                },
+                body,
+                None,
+            )
+            .expect("process_request");
+        },
+    );
+    let a = drag_toplevel(&mut f, &mut request, DRAG_A, (2, 2, 20), false);
+    let p = drag_toplevel(&mut f, &mut request, DRAG_P, (30, 2, 15), true);
+    Some((f, a, p, request))
+}
+
+/// Create and map top-level `wid` at `(x, y)`, `side` square, selecting
+/// the drag events; its id.
+fn drag_toplevel(
+    f: &mut InputFixture,
+    request: &mut DragRequest,
+    wid: u32,
+    (x, y, side): (i16, i16, u16),
+    popup: bool,
+) -> yserver_core::rootless::ToplevelId {
+    use yserver_core::{resources::ROOT_WINDOW, rootless};
+    use yserver_protocol::x11::ResourceId;
+    // CWOverrideRedirect (bit 9) then CWEventMask (bit 11).
+    let create = [
+        wid.to_le_bytes().as_slice(),
+        &ROOT_WINDOW.0.to_le_bytes(),
+        &x.to_le_bytes(),
+        &y.to_le_bytes(),
+        &side.to_le_bytes(),
+        &side.to_le_bytes(),
+        &0u16.to_le_bytes(),
+        &1u16.to_le_bytes(),
+        &0u32.to_le_bytes(),
+        &0xA00u32.to_le_bytes(),
+        &u32::from(popup).to_le_bytes(),
+        &DRAG_EVENTS.to_le_bytes(),
+    ]
+    .concat();
+    request(f, 1, 24, &create);
+    request(f, 8, 0, &wid.to_le_bytes());
+    rootless::reconcile_and_dispatch(&mut f.state, &mut f.b);
+    f.state
+        .rootless
+        .as_ref()
+        .and_then(|r| r.toplevel_id(ResourceId(wid)))
+        .expect("a top-level")
+}
+
+/// Sends one request as client 9.
+type DragRequest = dyn FnMut(&mut InputFixture, u8, u8, &[u8]);
+
+const DRAG_A: u32 = 0x0020_0001;
+const DRAG_P: u32 = 0x0020_0002;
+const DRAG_P2: u32 = 0x0020_0003;
+/// ButtonPress | ButtonRelease | EnterWindow | LeaveWindow | PointerMotion.
+const DRAG_EVENTS: u32 = 0x4 | 0x8 | 0x10 | 0x20 | 0x40;
+
+/// `(type, event window, event_x, event_y)` of each event the client read.
+fn drag_events(f: &mut InputFixture) -> Vec<(u8, u32, i16, i16)> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 4096];
+    while let Ok(n) = f.peer.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..n]);
+    }
+    bytes
+        .chunks_exact(32)
+        .filter(|ev| ev[0] & 0x7f >= 2)
+        .map(|ev| {
+            let word = |i: usize| u32::from_le_bytes([ev[i], ev[i + 1], ev[i + 2], ev[i + 3]]);
+            let half = |i: usize| i16::from_le_bytes([ev[i], ev[i + 1]]);
+            (ev[0] & 0x7f, word(12), half(24), half(26))
+        })
+        .collect()
+}
+
+/// gtk3-demo's combo box: a press in A opens popup P, which grabs the
+/// pointer (owner_events); the host reports the drag at the window under
+/// the pointer, so P gets the motion and the release in its coordinates.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_drag_into_a_grabbing_popup_releases_there() {
+    use yserver_core::{core_loop::InputOrigin, rootless::RootlessInput};
+    const BUTTON_RELEASE: u8 = 5;
+    const ENTER_NOTIFY: u8 = 7;
+
+    let Some((mut f, a, p, mut request)) = rootless_drag_fixture() else {
+        return;
+    };
+    let origin = InputOrigin::Physical(pointer_source());
+    let button = |pressed| HostInputEvent::PointerButton {
+        origin,
+        button: 0x110,
+        pressed,
+        time: 3,
+    };
+    f.send(vec![
+        HostInputEvent::Rootless(RootlessInput::PointerEnter {
+            origin,
+            toplevel: a,
+            local: (5.0, 5.0),
+            time: 1,
+        }),
+        button(true),
+    ]);
+    // GrabPointer(P, owner_events, the drag events, async, async).
+    let grab = [
+        DRAG_P.to_le_bytes().as_slice(),
+        &u16::try_from(DRAG_EVENTS & 0xFFFF)
+            .expect("mask")
+            .to_le_bytes(),
+        &[1, 1],
+        &0u32.to_le_bytes(),
+        &0u32.to_le_bytes(),
+        &0u32.to_le_bytes(),
+    ]
+    .concat();
+    request(&mut f, 26, 1, &grab);
+    drag_events(&mut f);
+    f.send(vec![
+        HostInputEvent::Rootless(RootlessInput::PointerEnter {
+            origin,
+            toplevel: p,
+            local: (4.0, 6.0),
+            time: 4,
+        }),
+        HostInputEvent::Rootless(RootlessInput::PointerMotionLocal {
+            origin,
+            toplevel: p,
+            local: (7.0, 8.0),
+            time: 5,
+        }),
+        button(false),
+    ]);
+    let events = drag_events(&mut f);
+    assert!(
+        events
+            .iter()
+            .any(|&(ty, w, ..)| (ty, w) == (ENTER_NOTIFY, DRAG_P)),
+        "EnterNotify on P: {events:?}"
+    );
+    assert!(
+        events.contains(&(BUTTON_RELEASE, DRAG_P, 7, 8)),
+        "the release in P's coordinates: {events:?}"
+    );
+}
+
+/// Without a grab, the press's implicit grab keeps A: a drag out to P and
+/// back releases in A, in A's coordinates.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_drag_back_into_the_pressed_window_releases_there() {
+    use yserver_core::{core_loop::InputOrigin, rootless::RootlessInput};
+    const BUTTON_RELEASE: u8 = 5;
+
+    let Some((mut f, a, p, _request)) = rootless_drag_fixture() else {
+        return;
+    };
+    let origin = InputOrigin::Physical(pointer_source());
+    let enter = |toplevel, local| {
+        HostInputEvent::Rootless(RootlessInput::PointerEnter {
+            origin,
+            toplevel,
+            local,
+            time: 2,
+        })
+    };
+    let button = |pressed| HostInputEvent::PointerButton {
+        origin,
+        button: 0x110,
+        pressed,
+        time: 3,
+    };
+    f.send(vec![enter(a, (5.0, 5.0)), button(true)]);
+    drag_events(&mut f);
+    f.send(vec![
+        enter(p, (4.0, 6.0)),
+        enter(a, (6.0, 7.0)),
+        button(false),
+    ]);
+    let events = drag_events(&mut f);
+    assert!(
+        events.contains(&(BUTTON_RELEASE, DRAG_A, 6, 7)),
+        "the release in A: {events:?}"
+    );
+}
+
+/// A menu bar: a press on A's title grabs on A (owner_events), the menu P
+/// drops down, a drag into it opens submenu P2 on hover, and the release
+/// over a P2 item reaches P2 in its coordinates.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_menubar_drag_into_a_submenu_releases_there() {
+    use yserver_core::{core_loop::InputOrigin, rootless::RootlessInput};
+    const BUTTON_RELEASE: u8 = 5;
+    const ENTER_NOTIFY: u8 = 7;
+
+    let Some((mut f, a, p, mut request)) = rootless_drag_fixture() else {
+        return;
+    };
+    let origin = InputOrigin::Physical(pointer_source());
+    let enter = |toplevel, local| {
+        HostInputEvent::Rootless(RootlessInput::PointerEnter {
+            origin,
+            toplevel,
+            local,
+            time: 2,
+        })
+    };
+    let button = |pressed| HostInputEvent::PointerButton {
+        origin,
+        button: 0x110,
+        pressed,
+        time: 3,
+    };
+    f.send(vec![enter(a, (5.0, 5.0)), button(true)]);
+    let grab = [
+        DRAG_A.to_le_bytes().as_slice(),
+        &u16::try_from(DRAG_EVENTS & 0xFFFF)
+            .expect("mask")
+            .to_le_bytes(),
+        &[1, 1],
+        &0u32.to_le_bytes(),
+        &0u32.to_le_bytes(),
+        &0u32.to_le_bytes(),
+    ]
+    .concat();
+    request(&mut f, 26, 1, &grab);
+    f.send(vec![enter(p, (4.0, 6.0))]);
+    // Hovering the item opens the submenu, mid-drag.
+    let p2 = drag_toplevel(&mut f, &mut request, DRAG_P2, (46, 2, 15), true);
+    drag_events(&mut f);
+    f.send(vec![enter(p2, (9.0, 3.0)), button(false)]);
+    let events = drag_events(&mut f);
+    assert!(
+        events
+            .iter()
+            .any(|&(ty, w, ..)| (ty, w) == (ENTER_NOTIFY, DRAG_P2)),
+        "EnterNotify on P2: {events:?}"
+    );
+    assert!(
+        events.contains(&(BUTTON_RELEASE, DRAG_P2, 9, 3)),
+        "the release in P2's coordinates: {events:?}"
     );
 }

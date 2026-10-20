@@ -92,3 +92,30 @@ impl GlobalSpace {
         )
     }
 }
+
+/// Whether `point` is in `content`, the X area of a native window: a title
+/// bar or frame around it is none of X's (bottom-left origin, half-open).
+pub(crate) fn content_contains(content: NativeRect, point: (f64, f64)) -> bool {
+    (content.x..content.x + content.width).contains(&point.0)
+        && (content.y..content.y + content.height).contains(&point.1)
+}
+
+/// Spec §4.0 puts the native content rect at the X outer rect, with any
+/// title bar above it. As `XQuartz` does, the title bar stays reachable: a
+/// content rect whose `title_bar` (points) would rise above `visible` (the
+/// display's area below the menu bar) moves down until it fits. The host
+/// reports the result to X (`GeometrySync::native_changed`).
+pub(crate) fn below_title_bar(
+    content: NativeRect,
+    title_bar: f64,
+    visible: NativeRect,
+) -> NativeRect {
+    let top = visible.y + visible.height - title_bar;
+    if content.y + content.height <= top {
+        return content;
+    }
+    NativeRect {
+        y: top - content.height,
+        ..content
+    }
+}

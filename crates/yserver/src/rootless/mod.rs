@@ -52,6 +52,15 @@ pub(crate) struct Presented {
     pub wanted: bool,
 }
 
+impl Presented {
+    /// A host event ends a GPU window's out-of-date backoff.
+    fn host_event(&mut self) {
+        if let Path::Gpu(gpu) = &mut self.path {
+            gpu.host_event();
+        }
+    }
+}
+
 /// What the presenter did, for tests that check the order against the host.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Note {
@@ -167,11 +176,13 @@ impl Presenter {
                 FrameEvent::SetupDone { id } => {
                     if let Some(w) = self.windows.get_mut(&id) {
                         w.frames.on_setup_done();
+                        w.host_event();
                     }
                 }
                 FrameEvent::Ready { id } => {
                     if let Some(w) = self.windows.get_mut(&id) {
                         w.frames.on_ready();
+                        w.host_event();
                     }
                 }
                 FrameEvent::Delivered { id, seq } => {
@@ -312,13 +323,19 @@ impl Presenter {
         for w in self.windows.values() {
             let (wants, in_flight) = match &w.path {
                 Path::Cpu(cpu) => (cpu.wants_frame(&w.frames, store), cpu.in_flight()),
-                Path::Gpu(gpu) => (gpu.wants_frame(&w.frames, store), false),
+                Path::Gpu(gpu) => {
+                    if let Some(at) = gpu.retry_at(&w.frames, store) {
+                        deadline = Some(deadline.map_or(at, |d| d.min(at)));
+                    }
+                    (gpu.wants_frame(&w.frames, store, now), false)
+                }
             };
             if wants {
                 return Some(now);
             }
             if in_flight {
-                deadline = Some(now + READBACK_POLL);
+                let poll = now + READBACK_POLL;
+                deadline = Some(deadline.map_or(poll, |d| d.min(poll)));
             }
         }
         deadline

@@ -1,4 +1,5 @@
-//! The AppKit application: a Quit menu, one window, and the core loop on its
+//! The AppKit application: a Quit menu, one window (rooted) or one window
+//! per X top-level (rootless, `super::rootless`), and the core loop on its
 //! own thread. The main thread never touches Vulkan.
 //!
 //! Every key goes to X, Cmd-Q included (as Super+Q); the menu's Quit has no
@@ -38,7 +39,7 @@ use objc2_quartz_core::CAMetalLayer;
 
 use super::{display_link::DisplayLink, input::ShellInput, scale::Metrics};
 use crate::{
-    launch::LaunchOptions,
+    launch::{LaunchOptions, ShellMode},
     surface::{
         clock::{FrameClock, SoftwareTicker},
         link::{ShellEvent, ShellLink},
@@ -49,7 +50,7 @@ use crate::{
 
 /// What the main thread and the core thread share about shutdown.
 #[derive(Default)]
-struct QuitState {
+pub(super) struct QuitState {
     /// The core loop ended and released Vulkan.
     core_done: AtomicBool,
     /// `applicationShouldTerminate:` answered `TerminateLater`.
@@ -59,6 +60,7 @@ struct QuitState {
 struct Ivars {
     /// Taken when the application finished launching.
     opts: Cell<Option<LaunchOptions>>,
+    mode: ShellMode,
     link: Arc<ShellLink>,
     quit: Arc<QuitState>,
     /// Established X clients, kept by the core.
@@ -82,13 +84,13 @@ struct Ivars {
 
 /// What ticks the frame clock: the display link, or a timer without one.
 #[allow(dead_code)] // Held for its `Drop`.
-enum TickSource {
+pub(super) enum TickSource {
     Display(DisplayLink),
     Software(SoftwareTicker),
 }
 
 impl TickSource {
-    fn start(clock: &Arc<FrameClock>) -> io::Result<Self> {
+    pub(super) fn start(clock: &Arc<FrameClock>) -> io::Result<Self> {
         match DisplayLink::start(Arc::clone(clock)) {
             Ok(link) => Ok(Self::Display(link)),
             Err(e) => {
@@ -115,7 +117,10 @@ define_class!(
         // SAFETY: the signature matches the protocol method.
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _notification: &NSNotification) {
-            self.open_window();
+            match self.ivars().mode {
+                ShellMode::Rooted => self.open_window(),
+                ShellMode::Rootless => self.start_rootless(),
+            }
         }
 
         // SAFETY: the signature matches the protocol method.
@@ -134,9 +139,27 @@ define_class!(
         }
 
         // SAFETY: the signature matches the protocol method.
+        #[unsafe(method(applicationDidBecomeActive:))]
+        fn did_become_active(&self, _notification: &NSNotification) {
+            if self.ivars().mode == ShellMode::Rootless {
+                super::rootless::app_activated();
+            }
+        }
+
+        // SAFETY: the signature matches the protocol method.
+        #[unsafe(method(applicationDidResignActive:))]
+        fn did_resign_active(&self, _notification: &NSNotification) {
+            // Rooted: the window's resign-key releases the keys.
+            if self.ivars().mode == ShellMode::Rootless {
+                super::rootless::app_deactivated();
+            }
+        }
+
+        // SAFETY: the signature matches the protocol method.
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn terminate_after_last_window_closed(&self, _sender: &NSApplication) -> bool {
-            true
+            // Rootless: closing the last X window does not quit.
+            self.ivars().mode == ShellMode::Rooted
         }
     }
 
@@ -197,9 +220,10 @@ define_class!(
 );
 
 impl YserverAppDelegate {
-    fn new(mtm: MainThreadMarker, opts: LaunchOptions) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, opts: LaunchOptions, mode: ShellMode) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
             opts: Cell::new(Some(opts)),
+            mode,
             link: Arc::new(ShellLink::default()),
             quit: Arc::new(QuitState::default()),
             clients: Arc::default(),
@@ -286,6 +310,38 @@ impl YserverAppDelegate {
         }
     }
 
+    /// Start rootless mode: no root window, one window per top-level.
+    fn start_rootless(&self) {
+        let mtm = self.mtm();
+        let ivars = self.ivars();
+        let Some(opts) = ivars.opts.take() else {
+            return;
+        };
+        NSApplication::sharedApplication(mtm).activate();
+        match super::rootless::start(
+            mtm,
+            opts,
+            Arc::clone(&ivars.link),
+            Arc::clone(&ivars.quit),
+            Arc::clone(&ivars.clients),
+        ) {
+            Ok((ticker, input)) => {
+                let _ = ivars.ticker.set(ticker);
+                match input.install_key_monitor(mtm) {
+                    Some(monitor) => {
+                        let _ = ivars.key_monitor.set(monitor);
+                    }
+                    None => log::error!("macos: no key monitor; keys reach AppKit, not X"),
+                }
+                let _ = ivars.input.set(input);
+            }
+            Err(e) => {
+                log::error!("yserver: cannot start rootless mode: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     /// Whether to quit: asks while X clients are connected, once per quit.
     fn confirm_quit(&self) -> bool {
         let ivars = self.ivars();
@@ -335,19 +391,7 @@ impl ShellUi for MainQueueUi {
     }
 
     fn quit(&self, failed: bool) {
-        self.quit.core_done.store(true, Ordering::Release);
-        let quit = Arc::clone(&self.quit);
-        DispatchQueue::main().exec_async(move || {
-            let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
-            let app = NSApplication::sharedApplication(mtm);
-            if quit.terminate_later.load(Ordering::Acquire) {
-                app.replyToApplicationShouldTerminate(true);
-            } else if failed {
-                std::process::exit(1);
-            } else {
-                app.terminate(None);
-            }
-        });
+        quit_app(&self.quit, failed);
     }
 
     fn set_cursor(&self, cursor: Option<CursorImage>) {
@@ -381,6 +425,24 @@ impl ShellUi for MainQueueUi {
             super::resize::answer_request(&window);
         });
     }
+}
+
+/// The core loop ended and released Vulkan: answer a pending terminate, or
+/// quit (exit 1 when it `failed`).
+pub(super) fn quit_app(quit: &Arc<QuitState>, failed: bool) {
+    quit.core_done.store(true, Ordering::Release);
+    let quit = Arc::clone(quit);
+    DispatchQueue::main().exec_async(move || {
+        let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
+        let app = NSApplication::sharedApplication(mtm);
+        if quit.terminate_later.load(Ordering::Acquire) {
+            app.replyToApplicationShouldTerminate(true);
+        } else if failed {
+            std::process::exit(1);
+        } else {
+            app.terminate(None);
+        }
+    });
 }
 
 /// A main menu with Quit, without a key equivalent: Cmd-Q belongs to X.
@@ -422,14 +484,14 @@ fn set_dock_icon(app: &NSApplication) {
 /// # Errors
 ///
 /// Not called on the main thread.
-pub(super) fn run(opts: LaunchOptions) -> io::Result<()> {
+pub(super) fn run(opts: LaunchOptions, mode: ShellMode) -> io::Result<()> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| io::Error::other("the window shell must run on the main thread"))?;
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     set_dock_icon(&app);
     install_menu(&app, mtm);
-    let delegate = YserverAppDelegate::new(mtm, opts);
+    let delegate = YserverAppDelegate::new(mtm, opts, mode);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.run();
     Ok(())

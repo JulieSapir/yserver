@@ -620,13 +620,20 @@ the green button and drag out of the zoomed frame: `_NET_WM_STATE` follows each 
   native:** `Restacked { from_client: true }` → `orderWindow_relativeTo(Above, other.windowNumber)` (`Below` for the
   bottom).
 - **Popups:** `PopUp` level (`NSPopUpMenuWindowLevel`, 101), never key, `acceptsFirstMouse` true on their view.
+- **A new window comes to the front** (eiger, Task 9: an xterm launched from wezterm appeared behind it). At the first
+  frame of a Managed window without a transient parent, the app activates, as XQuartz does. macOS 14+ activation is
+  cooperative: `NSApp.activate()` may be ignored unless the active app yields (`yieldActivationToApplication:`) or the
+  user initiated it, and the launching terminal never yields. So the shell also calls the deprecated
+  `activateIgnoringOtherApps:` (still honoured) and orders the window in with `orderFrontRegardless`, which needs no
+  activation. Transients and popups follow their parent and never activate. Landed early, with Task 10.
 
 **eiger:** (1) the gate; (2) `xmessage -buttons ok,cancel` from an xterm with `-transient`, or `zenity --info` if
 installed: the dialog stays above its parent and moves with it [A: R5, does the child post `windowDidMove`? check
 `xev` on the dialog]; (3) a GTK menu (gedit/`gtk3-demo` menus, combo box): opens at the right place, hover highlights,
 a click selects, a click elsewhere in the app closes it; (4) a Qt context menu; (5) tooltips; (6) `xdotool
 windowraise` on a lower window brings it forward natively; (7) Firefox if installed: menus, the URL bar drop-down, and
-tab drag-move (`BeginMove`).
+tab drag-move (`BeginMove`); (8) `DISPLAY=:1 xterm &` typed in another app's terminal: the xterm comes to the front and
+is key; a dialog it opens does not steal activation from another app.
 
 **Gate** + eiger, commit `feat(macos): rootless stacking, transients and popups`. ~180 lines.
 

@@ -533,6 +533,11 @@ Core semantics:
   X stacking can disagree with the native one (Opaque model) or lag it (Global model), and the native system is
   right about which window is under the pointer. This is SetZero's `PointerScope` (`server.rs:370`, :3198 [F]) and Xwayland's `xwl_xy_to_window`
   (`xwayland-input.c:3182-3251`).
+  **Δ RL2:** the scope follows the top-level under the pointer during a drag too. A window system that sends every
+  drag event to the window that got the mouse-down (AppKit) has the host hit-test natively and report the drag at the
+  top-level really under the pointer, so a press in one top-level dragged into a popup, a submenu or another window
+  gives that window's crossings and motion, and the release lands there by X's grab rules. A `PointerLeave` is
+  never sent mid-drag (it would release the button); over none of ours, it waits for the release.
 - `PointerLeave`: scope Nowhere; the hit test returns root so the client gets LeaveNotify (Xwayland :3239-3248),
   held buttons are released, and no X motion is generated until the next enter. This replaces XWin's
   `GetCursorPos` polling (`winwndproc.c:862-897`): hosts that know the global pointer outside our windows (macOS
@@ -967,6 +972,16 @@ Each milestone is a branch and a PR (squash unless it holds distinct changes).
   `xwd -root` and x11vnc show the windows at their X positions.
 - **RL2 — macOS rootless (M4).** `MacRootlessHost`, per-window CAMetalLayer swapchains, Global coordinates,
   activation, native move/resize/minimize/close, popups, `--rootless`/`--rooted`. Verified on eiger/air/m4.
+  **Δ RL2 (as built, plan `plans/2026-10-20-rootless-rl2-macos.md`):** one virtual RandR output spanning the
+  bounding box of all displays at one scale, fixed at startup; per-output RandR and runtime display changes are
+  follow-ups (D1, D4; §5). One display link paces every window and drives Present MSC (D3; §5). `RootlessHost` gains
+  `surface_resizing`/`surface_rebuilt` around every swapchain build (D7; §4.5). Windows are rectangular (D5; §8.1)
+  and transients are child windows (D9; §8.1). `_NET_WM_MOVERESIZE` is advertised but move-only, resize requests are
+  dropped (D12; §6.3); `_NET_WM_STATE_BELOW` is window level −1 (D13); every native state change, client- or
+  user-made, is reported with `StateChanged`, the core never writes `_NET_WM_STATE` for a request (§6.3). A titled
+  window's title bar stays reachable: the content moves down below the menu bar and X follows (§4.0). A new Managed
+  window without a transient parent activates the app. The primary button with Option or Command is button 2 or 3,
+  as XQuartz's fake buttons. During a drag the host reports the top-level under the pointer (§4.4).
 - **Interface review with SetZero (now, decision 7).** Before RL0 code moves, SetZero reviews §4 (events, acks,
   input, frame handoff) against their compositor. Their port (RL3) proceeds **alongside RL2** once RL0 has settled.
 - **RL3 — Wayland (SetZero).** They port `ywayland` onto `RootlessHost`. What we tell SetZero (jos sends it; nothing

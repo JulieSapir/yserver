@@ -435,3 +435,47 @@ fn rebuild_hooks_bracket_every_swapchain_change() {
     assert_eq!(hooks(&f), [], "a damage frame rebuilds nothing");
     f.assert_validation_clean();
 }
+
+/// A surface that stays out of date is retried on a backoff, not in a
+/// busy loop; the first frame after it recovers is shown and resets it.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn out_of_date_surface_backs_off() {
+    let Some(mut f) = Fixture::gpu_or_skip(|_| {}) else {
+        return;
+    };
+    mapped(&mut f);
+    shown_until(&mut f, 1);
+    let id = f.id(W);
+    with_swapchain(&mut f, id, |sc| sc.always_out_of_date = true);
+    f.fill(W, 0x0000_ff00, (0, 0, 4, 4));
+    // The core loop: a tail whenever the presenter's deadline is due, or
+    // (no deadline) when the host's link would wake it.
+    let start = Instant::now();
+    let window = Duration::from_millis(300);
+    let mut tails = 0;
+    while start.elapsed() < window {
+        let now = Instant::now();
+        match f.wakeups(now).0 {
+            Some(due) if due > now => {
+                std::thread::sleep((due - now).min(window.saturating_sub(start.elapsed())));
+            }
+            _ => {
+                f.tail();
+                tails += 1;
+            }
+        }
+        assert!(
+            tails < 100,
+            "busy loop: {tails} tails, {} attempts, {:?}",
+            with_swapchain(&mut f, id, |sc| sc.out_of_date_count),
+            f.calls().len()
+        );
+    }
+    let attempts = with_swapchain(&mut f, id, |sc| sc.out_of_date_count);
+    // 16 + 32 + 64 + 128 ms fit 300 ms: about five attempts, not hundreds.
+    assert!((3..=8).contains(&attempts), "{attempts} attempts in 300 ms");
+    with_swapchain(&mut f, id, |sc| sc.always_out_of_date = false);
+    shown_until(&mut f, 2);
+    f.assert_validation_clean();
+}

@@ -170,6 +170,12 @@ macos-run display="1" geometry="1280x800" log="info" scale="auto":
     DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib RUST_LOG="{{log}}" \
     cargo run --release --bin yserver -- :{{display}} --geometry {{geometry}} --scale {{scale}} 2>&1 | tee yserver-mac.log
 
+# macOS rootless: one Mac window per X top-level, DISPLAY=:<display>; log in yserver-mac.log.
+macos-rootless display="1" log="info" scale="auto":
+    VK_ICD_FILENAMES=/opt/homebrew/share/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json \
+    DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib RUST_LOG="{{log}}" \
+    cargo run --release --bin yserver -- :{{display}} --rootless --scale {{scale}} 2>&1 | tee yserver-mac.log
+
 # macOS: target/yserver.app; uses the Homebrew packages at run time (README.md), no signing beyond the linker's ad-hoc one.
 macos-bundle:
     #!/usr/bin/env bash

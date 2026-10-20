@@ -9,8 +9,8 @@ use yserver_core::rootless::{
 use super::{
     geometry::{GeometrySync, HostSerials, NativeTarget},
     pacing::FramePacer,
-    seat::{CloseAction, CloseTracker, FocusTracker, PointerTracker, restack_requests},
-    space::{GlobalSpace, NativeRect},
+    seat::{CloseAction, CloseTracker, FocusTracker, PointerTracker, XStacking, restack_requests},
+    space::{GlobalSpace, NativeRect, below_title_bar, content_contains},
     style::{
         ContentLimits, NativeFlags, NativeLevel, NativeStyle, NetStateSync, content_limits,
         level_for, native_style,
@@ -277,6 +277,7 @@ fn client_move_applies_and_does_not_echo() {
             extent: None
         })
     );
+    assert_eq!(sync.x(), ((300, 200), (104, 54)), "the rect to apply");
     assert!(
         sync.native_changed(id, (300, 200), (104, 54), &mut serials)
             .is_empty(),
@@ -819,4 +820,239 @@ fn pacer_answers_each_wanted_id_once() {
     assert_eq!(ready, [a, b]);
     pacer.tick();
     assert!(link.drain_frames().is_empty(), "drained");
+}
+
+/// The primary below its 24-point menu bar.
+const VISIBLE: NativeRect = NativeRect {
+    x: 0.0,
+    y: 0.0,
+    width: 1512.0,
+    height: 958.0,
+};
+const TITLE_BAR: f64 = 28.0;
+
+/// An X window at the root's top would put its title bar under the menu
+/// bar: the content moves down by menu bar + title bar, and X hears of it.
+#[test]
+fn title_bar_stays_reachable_and_x_follows() {
+    for scale in [1.0, 2.0] {
+        let space = GlobalSpace::new(&[PRIMARY], scale, 16384);
+        #[allow(clippy::cast_possible_truncation)]
+        let shift = (52.0 * scale) as i32;
+        let extent = (400, 300);
+        let content = space.to_native((0, 0), extent);
+        let placed = below_title_bar(content, TITLE_BAR, VISIBLE);
+        assert_eq!(
+            placed.y + placed.height + TITLE_BAR,
+            958.0,
+            "title bar just under the menu bar"
+        );
+        assert_eq!(
+            (placed.x, placed.width, placed.height),
+            (0.0, content.width, content.height)
+        );
+        let (origin, got) = space.to_x(placed);
+        assert_eq!((origin, got), ((0, shift), extent), "S={scale}");
+
+        let id = ToplevelId::fake(ID);
+        let mut sync = GeometrySync::mapped(&geometry(0, 0, 400, 300, 0));
+        let mut serials = HostSerials::default();
+        let sent = sync.native_changed(id, origin, got, &mut serials);
+        assert_eq!(
+            sent,
+            [HostRequest::Moved {
+                id,
+                x: 0,
+                y: shift,
+                serial: serial_of(&sent)
+            }]
+        );
+    }
+}
+
+#[test]
+fn a_window_lower_down_is_left_where_x_put_it() {
+    let space = GlobalSpace::new(&[PRIMARY], 1.0, 16384);
+    for y in [52, 100, 600] {
+        let content = space.to_native((10, y), (400, 300));
+        assert_eq!(
+            below_title_bar(content, TITLE_BAR, VISIBLE),
+            content,
+            "y={y}"
+        );
+    }
+}
+
+#[test]
+fn x_stacking_follows_mapped_and_restacked() {
+    let [a, b, c] = ids();
+    let mut x = XStacking::default();
+    x.place(a, None);
+    x.place(b, Some(a));
+    x.place(c, Some(b));
+    assert_eq!(x.bottom_to_top(), [a, b, c]);
+    x.place(c, None);
+    assert_eq!(x.bottom_to_top(), [c, a, b], "to the bottom");
+    x.place(c, Some(b));
+    assert_eq!(x.bottom_to_top(), [a, b, c], "back on top");
+    x.place(a, Some(b));
+    assert_eq!(x.bottom_to_top(), [b, a, c], "directly above b");
+    x.remove(a);
+    assert_eq!(x.bottom_to_top(), [b, c]);
+    x.place(a, Some(ToplevelId::fake(99)));
+    assert_eq!(x.bottom_to_top(), [b, c, a], "an unknown sibling: on top");
+    // What the host reports moves X to the native order.
+    let restacks = restack_requests(&[b, a, c], x.bottom_to_top());
+    for (id, above) in restacks {
+        x.place(id, above);
+    }
+    assert_eq!(x.bottom_to_top(), [c, a, b]);
+}
+
+/// macOS during a drag: the exit is deferred, drag motion keeps coming to
+/// the window that got the mouse-down (outside it), and the release sends
+/// the position first. The leave still arrives with the release.
+#[test]
+fn drag_motion_after_the_exit_keeps_the_leave() {
+    let [a] = ids();
+    let mut pointer = PointerTracker::default();
+    let origin = pointer_origin();
+    pointer.moved(a, (5.0, 5.0), 1);
+    assert_eq!(pointer.button(true, 2), None);
+    assert_eq!(pointer.exited(a, 3), None, "deferred");
+    for (time, x) in [(4, -10.0), (5, -20.0)] {
+        assert_eq!(
+            pointer.moved(a, (x, 5.0), time),
+            RootlessInput::PointerMotionLocal {
+                origin,
+                toplevel: a,
+                local: (x, 5.0),
+                time
+            },
+            "still the grab window's motion"
+        );
+    }
+    // `button_local`: motion, then the release.
+    pointer.moved(a, (-25.0, 5.0), 6);
+    assert_eq!(
+        pointer.button(false, 6),
+        Some(RootlessInput::PointerLeave { origin, time: 6 })
+    );
+    assert_eq!(pointer.inside(), None, "no longer inside");
+}
+
+#[test]
+fn re_entry_before_the_release_cancels_the_leave() {
+    let [a] = ids();
+    let mut pointer = PointerTracker::default();
+    pointer.moved(a, (5.0, 5.0), 1);
+    pointer.button(true, 2);
+    pointer.exited(a, 3);
+    pointer.moved(a, (-10.0, 5.0), 4);
+    assert_eq!(
+        pointer.entered(a, (2.0, 5.0), 5),
+        RootlessInput::PointerMotionLocal {
+            origin: pointer_origin(),
+            toplevel: a,
+            local: (2.0, 5.0),
+            time: 5
+        }
+    );
+    pointer.moved(a, (3.0, 5.0), 6);
+    assert_eq!(pointer.button(false, 6), None, "back inside");
+    assert_eq!(pointer.inside(), Some(a));
+}
+
+/// A press in A, a drag into popup P: the window under the pointer gets the
+/// motion (Enter P, never a Leave that would release the button), and the
+/// release happens in P. Back in A before the release: Enter A again.
+#[test]
+fn a_drag_crosses_into_the_window_under_the_pointer() {
+    let [a, p] = ids();
+    let origin = pointer_origin();
+    let mut pointer = PointerTracker::default();
+    pointer.moved(a, (5.0, 5.0), 1);
+    pointer.button(true, 2);
+    assert!(pointer.dragging());
+    assert_eq!(pointer.exited(a, 3), None, "deferred while held");
+    assert_eq!(
+        pointer.dragged(Some(p), (4.0, 6.0), 4),
+        Some(RootlessInput::PointerEnter {
+            origin,
+            toplevel: p,
+            local: (4.0, 6.0),
+            time: 4
+        })
+    );
+    assert_eq!(
+        pointer.dragged(Some(p), (7.0, 8.0), 5),
+        Some(RootlessInput::PointerMotionLocal {
+            origin,
+            toplevel: p,
+            local: (7.0, 8.0),
+            time: 5
+        })
+    );
+    assert_eq!(pointer.button(false, 6), None, "released inside P");
+    assert_eq!(pointer.inside(), Some(p));
+
+    // Out and back before the release.
+    pointer.button(true, 7);
+    assert!(matches!(
+        pointer.dragged(Some(a), (1.0, 1.0), 8),
+        Some(RootlessInput::PointerEnter { toplevel, .. }) if toplevel == a
+    ));
+    assert_eq!(pointer.button(false, 9), None);
+    assert_eq!(pointer.inside(), Some(a));
+
+    // Over none of ours at the release: the leave comes with it.
+    pointer.button(true, 10);
+    assert!(matches!(
+        pointer.dragged(None, (-30.0, 1.0), 11),
+        Some(RootlessInput::PointerMotionLocal { toplevel, .. }) if toplevel == a
+    ));
+    assert_eq!(
+        pointer.button(false, 12),
+        Some(RootlessInput::PointerLeave { origin, time: 12 })
+    );
+    assert_eq!(pointer.inside(), None);
+}
+
+/// A drag from X content up into the window's own title bar: the title bar
+/// is none of X's, so no Enter, the leave stays pending and comes with the
+/// release; back into the content before the release cancels it.
+#[test]
+fn a_drag_into_the_title_bar_is_outside_x() {
+    let [a] = ids();
+    // Content 400x300 at (100,100); the title bar is the 28 points above.
+    let content = rect(100.0, 100.0, 400.0, 300.0);
+    let under = |point: (f64, f64)| content_contains(content, point).then_some(a);
+    assert_eq!(under((100.0, 100.0)), Some(a), "bottom-left corner");
+    assert_eq!(under((300.0, 399.5)), Some(a));
+    assert_eq!(under((300.0, 410.0)), None, "the title bar");
+    assert_eq!(under((500.0, 200.0)), None, "right edge excluded");
+
+    let origin = pointer_origin();
+    for back in [false, true] {
+        let mut pointer = PointerTracker::default();
+        pointer.moved(a, (10.0, 10.0), 1);
+        pointer.button(true, 2);
+        pointer.exited(a, 3);
+        let in_title_bar = pointer.dragged(under((300.0, 410.0)), (200.0, -10.0), 4);
+        assert!(
+            matches!(in_title_bar, Some(RootlessInput::PointerMotionLocal { toplevel, .. }) if toplevel == a),
+            "no Enter: {in_title_bar:?}"
+        );
+        if back {
+            pointer.dragged(under((300.0, 350.0)), (200.0, 50.0), 5);
+            assert_eq!(pointer.button(false, 6), None, "back inside: no leave");
+            assert_eq!(pointer.inside(), Some(a));
+        } else {
+            assert_eq!(
+                pointer.button(false, 6),
+                Some(RootlessInput::PointerLeave { origin, time: 6 })
+            );
+            assert_eq!(pointer.inside(), None);
+        }
+    }
 }

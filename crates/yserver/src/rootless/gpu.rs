@@ -1,7 +1,10 @@
 //! A `VulkanSurface` window's per-tick work (spec §4.5, §4.5.1 GPU row):
 //! its surface once set up, the swapchain, the full-extent present.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ash::vk;
 use yserver_core::rootless::{Rect, ToplevelId};
@@ -31,7 +34,13 @@ pub(crate) struct GpuState {
     needs_frame: bool,
     /// The host could not make a surface.
     failed: bool,
+    /// After an out-of-date surface: when to try again, and the delay.
+    retry: Option<(Instant, Duration)>,
 }
+
+/// The first retry after an out-of-date surface; it doubles up to the cap.
+const FIRST_RETRY: Duration = Duration::from_millis(16);
+const MAX_RETRY: Duration = Duration::from_millis(250);
 
 /// What the tick needs of the backend.
 pub(crate) struct GpuTick<'a> {
@@ -52,12 +61,19 @@ impl GpuState {
             backing: None,
             needs_frame: true,
             failed: false,
+            retry: None,
         }
+    }
+
+    /// A host event (resize, `SetupDone`, `Ready`): try again at once.
+    pub(crate) fn host_event(&mut self) {
+        self.retry = None;
     }
 
     pub(crate) fn new_generation(&mut self, backing: DrawableId) {
         self.backing = Some(backing);
         self.needs_frame = true;
+        self.retry = None;
     }
 
     pub(crate) fn has_work(&self, store: &DrawableStore) -> bool {
@@ -70,7 +86,23 @@ impl GpuState {
     }
 
     /// The tick's and `next_wakeup`'s predicate.
-    pub(crate) fn wants_frame(&self, frames: &WindowFrames, store: &DrawableStore) -> bool {
+    pub(crate) fn wants_frame(
+        &self,
+        frames: &WindowFrames,
+        store: &DrawableStore,
+        now: Instant,
+    ) -> bool {
+        self.retry.is_none_or(|(at, _)| at <= now) && self.could_present(frames, store)
+    }
+
+    /// A frame waits only for the backoff: when to try again.
+    pub(crate) fn retry_at(&self, frames: &WindowFrames, store: &DrawableStore) -> Option<Instant> {
+        self.retry
+            .map(|(at, _)| at)
+            .filter(|_| self.could_present(frames, store))
+    }
+
+    fn could_present(&self, frames: &WindowFrames, store: &DrawableStore) -> bool {
         frames.can_submit() && !self.failed && self.backing.is_some() && self.has_work(store)
     }
 
@@ -99,7 +131,7 @@ impl GpuState {
         let (Some(surface), Some(backing)) = (self.surface, self.backing) else {
             return false;
         };
-        if !self.wants_frame(frames, t.store) {
+        if !self.wants_frame(frames, t.store, Instant::now()) {
             return false;
         }
         if self.swapchain.is_none() {
@@ -141,13 +173,23 @@ impl GpuState {
                     host.first_frame(id);
                 }
                 self.needs_frame = false;
+                self.retry = None;
                 true
             }
             Ok(Presented::NotReady) => {
                 frames.wait_for_ready();
                 false
             }
-            Ok(Presented::OutOfDate) => false,
+            // Rebuilt next time; a surface that stays out of date must not
+            // spin the loop.
+            Ok(Presented::OutOfDate) => {
+                let delay = self
+                    .retry
+                    .map_or(FIRST_RETRY, |(_, last)| (last * 2).min(MAX_RETRY));
+                log::debug!("rootless: {id:?} out of date, retrying in {delay:?}");
+                self.retry = Some((Instant::now() + delay, delay));
+                false
+            }
             Err(e) => {
                 // Not acked; the host's next `Ready` retries (§4.5.1).
                 log::warn!("rootless: present for {id:?} failed: {e:?}");

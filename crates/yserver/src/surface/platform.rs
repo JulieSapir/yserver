@@ -927,8 +927,8 @@ impl Platform for SurfacePlatform {
                 }
             })
             .flatten();
-        let cursor_frame = b
-            .any_surface_visible()
+        // Rootless shows the cursor without an output.
+        let cursor_frame = (b.any_surface_visible() || b.pstate.rootless.is_some())
             .then(|| b.cursor_anim_deadline())
             .flatten();
         let rootless = b
@@ -1088,6 +1088,14 @@ impl Platform for SurfacePlatform {
 
     fn randr_limits(b: &XBackend<Self>) -> RandrLimits {
         b.platform.randr_limits()
+    }
+
+    /// Rootless: XTEST moves the real pointer too, as on Xorg (the windowed
+    /// root keeps it where the user put it).
+    fn host_pointer_moved_by_server(b: &mut XBackend<Self>, x: i32, y: i32) {
+        if b.pstate.rootless.is_some() {
+            Self::host_pointer_warped(b, x, y);
+        }
     }
 
     fn host_pointer_warped(b: &mut XBackend<Self>, x: i32, y: i32) {

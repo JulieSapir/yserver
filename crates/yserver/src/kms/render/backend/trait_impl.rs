@@ -1937,6 +1937,12 @@ impl<P: Platform> Backend for XBackend<P> {
         Self::backend_pointer_warp_pointer_root(self, state, x, y)
     }
 
+    fn resync_input_position(&mut self) {
+        #[allow(clippy::cast_possible_truncation)]
+        let (x, y) = (self.core.cursor_x as i32, self.core.cursor_y as i32);
+        P::host_pointer_moved_by_server(self, x, y);
+    }
+
     fn windows_restructured(&mut self, state: &mut ServerState) {
         Self::backend_windows_windows_restructured(self, state)
     }

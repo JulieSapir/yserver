@@ -90,6 +90,31 @@ pub(super) fn set(mtm: MainThreadMarker, image: Option<CursorImage>) {
     }
 }
 
+/// Rootless: show `image` (`None`: no cursor) at the global `xpp` X pixels
+/// per point; at once when the pointer is `inside` one of our windows, else
+/// at its next `cursorUpdate:`.
+pub(super) fn set_global(image: Option<CursorImage>, xpp: f64, inside: bool) {
+    let cursor = CURSORS.with_borrow_mut(|cursors| {
+        let cursor = cursors.get(image.as_ref(), xpp);
+        cursors.current = Some(cursor.clone());
+        cursors.current_image = image;
+        cursor
+    });
+    if inside {
+        cursor.set();
+    }
+}
+
+/// Rootless: warp the pointer to a global Quartz point (origin the
+/// primary's top-left, y down); no "inside" guard (spec §5 Global).
+pub(super) fn warp_global((x, y): (f64, f64)) {
+    // SAFETY: plain Quartz calls; re-associating avoids the post-warp freeze.
+    unsafe {
+        CGWarpMouseCursorPosition(NSPoint::new(x, y));
+        CGAssociateMouseAndMouseCursorPosition(1);
+    }
+}
+
 /// The window's X pixels per point changed: rebuild the cursors at the new
 /// size, the one shown first.
 pub(super) fn rescale(mtm: MainThreadMarker) {

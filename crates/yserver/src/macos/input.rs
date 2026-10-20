@@ -10,15 +10,20 @@ use std::{
 };
 
 use block2::RcBlock;
-use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
+use objc2::{MainThreadMarker, Message, rc::Retained, runtime::AnyObject};
 use objc2_app_kit::{NSApplication, NSEvent, NSEventMask, NSEventPhase, NSEventType, NSView};
 
-use crate::surface::{
-    input::{
-        pointer::{self, RawPointer, RawScroll, ScrollPhase, Scroller},
-        translate::{KeyKind, RawKey, Translator, caps_locked},
+use yserver_core::{core_loop::HostInputEvent, rootless::ToplevelId};
+
+use crate::{
+    rootless::native::seat::PointerTracker,
+    surface::{
+        input::{
+            pointer::{self, RawPointer, RawScroll, ScrollPhase, Scroller, local_position},
+            translate::{KeyKind, RawKey, Translator, caps_locked},
+        },
+        link::{ShellEvent, ShellLink},
     },
-    link::{ShellEvent, ShellLink},
 };
 
 // Carbon's physical keyboard layout query (HIToolbox).
@@ -47,6 +52,10 @@ pub(super) struct ShellInput {
     fb: Cell<(u16, u16)>,
     translator: RefCell<Translator>,
     scroller: RefCell<Scroller>,
+    /// Rootless: which top-level the pointer is in, and held buttons.
+    pointer: RefCell<PointerTracker>,
+    /// Rootless: the mouse-down still held, for `_NET_WM_MOVERESIZE` moves.
+    held_down: RefCell<Option<(ToplevelId, Retained<NSEvent>)>>,
 }
 
 impl ShellInput {
@@ -61,6 +70,8 @@ impl ShellInput {
             fb: Cell::new(fb),
             translator: RefCell::new(Translator::new(iso)),
             scroller: RefCell::new(Scroller::default()),
+            pointer: RefCell::new(PointerTracker::default()),
+            held_down: RefCell::new(None),
         })
     }
 
@@ -131,11 +142,109 @@ impl ShellInput {
         let raw = raw_pointer(view, event);
         let fb = self.fb.get();
         let number = event.buttonNumber() as i64;
+        let flags = event.modifierFlags().0 as u64;
         log::debug!("macos button {number} pressed={pressed}: {raw:?}");
         let mut translator = self.translator.borrow_mut();
         self.link.send_input(|time, out| {
             out.push(pointer::motion(&raw, fb, time));
-            translator.button(number, pressed, time, out);
+            translator.button(number, pressed, flags, time, out);
+        });
+    }
+
+    /// Rootless: the pointer moved over (or dragged across) top-level `id`'s
+    /// `view`, at `scale` X pixels per point (the global scale, D2).
+    pub(super) fn motion_local(&self, id: ToplevelId, view: &NSView, event: &NSEvent, scale: f64) {
+        let local = local_position(&raw_pointer_at(view, event, scale));
+        log::trace!("macos motion {id:?}: {local:?}");
+        let mut pointer = self.pointer.borrow_mut();
+        self.link.send_input(|time, out| {
+            out.push(HostInputEvent::Rootless(pointer.moved(id, local, time)));
+        });
+    }
+
+    /// Rootless: the pointer entered `id`'s view (back into it during a
+    /// drag cancels the deferred leave).
+    pub(super) fn entered_local(&self, id: ToplevelId, view: &NSView, event: &NSEvent, scale: f64) {
+        let local = local_position(&raw_pointer_at(view, event, scale));
+        let mut pointer = self.pointer.borrow_mut();
+        self.link.send_input(|time, out| {
+            out.push(HostInputEvent::Rootless(pointer.entered(id, local, time)));
+        });
+    }
+
+    /// Rootless: a button changed over `id`; the position goes first, a
+    /// leave deferred while it was held goes last.
+    /// `under`: during a drag, the top-level under the pointer and the
+    /// position in it (see [`Self::dragged_local`]).
+    pub(super) fn button_local(
+        &self,
+        id: ToplevelId,
+        view: &NSView,
+        event: &NSEvent,
+        pressed: bool,
+        scale: f64,
+        under: Option<(Option<ToplevelId>, (f64, f64))>,
+    ) {
+        let local = local_position(&raw_pointer_at(view, event, scale));
+        *self.held_down.borrow_mut() = pressed.then(|| (id, event.retain()));
+        let number = event.buttonNumber() as i64;
+        let flags = event.modifierFlags().0 as u64;
+        log::debug!("macos button {number} pressed={pressed} {id:?}: {local:?}");
+        let mut pointer = self.pointer.borrow_mut();
+        let mut translator = self.translator.borrow_mut();
+        self.link.send_input(|time, out| {
+            let at = match under {
+                Some((under, local)) => pointer.dragged(under, local, time),
+                None => Some(pointer.moved(id, local, time)),
+            };
+            out.extend(at.map(HostInputEvent::Rootless));
+            translator.button(number, pressed, flags, time, out);
+            if let Some(leave) = pointer.button(pressed, time) {
+                out.push(HostInputEvent::Rootless(leave));
+            }
+        });
+    }
+
+    /// Rootless: drag motion at the top-level under the pointer (`under`,
+    /// `local` in it), or relative to the current one over none of ours.
+    pub(super) fn dragged_local(&self, under: Option<ToplevelId>, local: (f64, f64)) {
+        let mut pointer = self.pointer.borrow_mut();
+        self.link.send_input(|time, out| {
+            out.extend(
+                pointer
+                    .dragged(under, local, time)
+                    .map(HostInputEvent::Rootless),
+            );
+        });
+    }
+
+    /// Rootless: a button is held, and the top-level the pointer is in.
+    pub(super) fn drag_state(&self) -> (bool, Option<ToplevelId>) {
+        let pointer = self.pointer.borrow();
+        (pointer.dragging(), pointer.inside())
+    }
+
+    /// Rootless: the mouse-down on `id` whose button is still held.
+    pub(super) fn held_down(&self, id: ToplevelId) -> Option<Retained<NSEvent>> {
+        self.held_down
+            .borrow()
+            .as_ref()
+            .filter(|(on, _)| *on == id)
+            .map(|(_, event)| event.clone())
+    }
+
+    /// Rootless: the pointer is in one of our top-levels.
+    pub(super) fn pointer_inside(&self) -> bool {
+        self.pointer.borrow().inside().is_some()
+    }
+
+    /// Rootless: the pointer left `id`'s view.
+    pub(super) fn exited_local(&self, id: ToplevelId) {
+        let mut pointer = self.pointer.borrow_mut();
+        self.link.send_input(|time, out| {
+            if let Some(leave) = pointer.exited(id, time) {
+                out.push(HostInputEvent::Rootless(leave));
+            }
         });
     }
 
@@ -172,10 +281,14 @@ impl ShellInput {
 }
 
 fn raw_pointer(view: &NSView, event: &NSEvent) -> RawPointer {
-    let at = view.convertPoint_fromView(event.locationInWindow(), None);
     let scale = view
         .window()
         .map_or(1.0, |window| super::scale::xpp(&window));
+    raw_pointer_at(view, event, scale)
+}
+
+fn raw_pointer_at(view: &NSView, event: &NSEvent, scale: f64) -> RawPointer {
+    let at = view.convertPoint_fromView(event.locationInWindow(), None);
     RawPointer {
         x_pt: at.x,
         y_pt: at.y,

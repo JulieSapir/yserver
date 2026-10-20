@@ -46,6 +46,20 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   reached, `add_fb2` rejects mpv's linear buffer on both builds), with no unmatched events. Not run: dual-head, a
   physical copied display, VT switch, Intel, Asahi. Record:
   [`plans/2026-10-19-drm-commit-identity-validation.md`](superpowers/plans/2026-10-19-drm-commit-identity-validation.md).
+- **2026-10-20 rootless RL2, macOS (branch `feat/rootless-rl2`, draft PR #274, plan
+  `plans/2026-10-20-rootless-rl2-macos.md`):** the app bundle starts rootless (`--rooted`/`--rootless` win; KMS and
+  `--headless` default rooted), `just macos-rootless`; one NSWindow + CAMetalLayer swapchain per top-level
+  (`macos/rootless/`), the window-system-neutral half in `rootless/native/` (GlobalSpace, GeometrySync,
+  style/NetStateSync, seat trackers, XStacking, FramePacer; Linux-tested) and `surface::server::run_rootless` (zero
+  outputs, the platform clock for Present MSC, cursor flushed without a cursor plane, RandR configuration refused).
+  Decisions D1-D13 in the plan; follow-ups F1-F13 there. Fixes found on the way: Mesa before 26.0 calls a null
+  `release_images` from vkReleaseSwapchainImagesEXT on headless/Metal surfaces (CI's Ubuntu lavapipe 25.2.8
+  segfaulted), so an abandoned image rebuilds the swapchain instead; title bars under the menu bar made X place
+  menus too high (content now below it, reported to X); XTEST motion moves the Mac pointer
+  (`resync_input_position`); animated cursors wake the loop without an output; Option/Command-click are buttons 2/3
+  (rooted too). Eiger (M2, KosmicKrisp Mesa 27.0-devel, maintenance1 on) smoked Tasks 9-12; Task 13 (stacking,
+  transients, popups) awaits it. Known gaps: SHAPE (F4), motion outside our windows (F5), resize via
+  `_NET_WM_MOVERESIZE` (F8), root reads (RL1b).
 - **2026-10-20 rootless core RL1 (branch `feat/rootless-rl0`, plan `plans/2026-10-19-rootless-rl1.md`):**
   `yserver::rootless` (built where `surface` is: `any(not(kms), test)`), a `Presenter` in `SurfaceBackendState`
   installed only by `rootless::start`; the one seam hook `Platform::on_rootless_events` (no-op default, KMS

@@ -7,6 +7,7 @@ mod display_link;
 mod input;
 mod pasteboard;
 mod resize;
+mod rootless;
 mod run;
 mod scale;
 mod view;

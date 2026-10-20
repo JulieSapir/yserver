@@ -39,6 +39,11 @@ impl GeometrySync {
         }
     }
 
+    /// X's outer corner and native content extent, as last known.
+    pub(crate) fn x(&self) -> ((i32, i32), (u16, u16)) {
+        (self.origin, self.extent)
+    }
+
     /// `Configured` (§4.2.1 rule 4): apply exactly `client_fields`, also
     /// with newer requests in flight; `None` = leave the native window.
     /// The other fields already are what this host asked for up to `acked`.
