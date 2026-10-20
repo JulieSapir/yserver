@@ -2,6 +2,7 @@
 //! only with an explicit `--headless`) or in a shell's window.
 
 use std::{
+    ffi::CStr,
     fs, io,
     path::PathBuf,
     sync::{Arc, atomic::AtomicUsize},
@@ -28,7 +29,7 @@ use crate::{
         vk::device::{VkContext, VkContextOptions},
     },
     launch,
-    rootless::record::RecordHost,
+    rootless::{host::RootlessHost, record::RecordHost},
 };
 
 /// The screen size without `--geometry`, in X pixels.
@@ -52,6 +53,85 @@ pub(crate) struct WindowSpec {
     pub(crate) copy_scale: u32,
     /// Bridged with CLIPBOARD.
     pub(crate) pasteboard: Box<dyn Pasteboard>,
+}
+
+/// A rootless window shell's half of the server: one native window per
+/// top-level, no output.
+#[allow(dead_code, reason = "a window shell's; only macOS has one")]
+pub(crate) struct RootlessSpec {
+    /// The shell's Vulkan surface extension.
+    pub(crate) surface_extension: &'static CStr,
+    /// The root: every display at one scale.
+    pub(crate) root: (u16, u16),
+    /// Present's MSC and the hosts' pacing tick.
+    pub(crate) clock: Arc<FrameClock>,
+    pub(crate) link: Arc<ShellLink>,
+    pub(crate) ui: Arc<dyn ShellUi>,
+    pub(crate) clients: Arc<AtomicUsize>,
+}
+
+/// The zero-output backend a rootless shell runs on.
+///
+/// # Errors
+///
+/// See [`super::headless_backend`].
+#[allow(dead_code, reason = "a window shell's; only macOS has one")]
+pub(crate) fn rootless_backend(
+    vk: Arc<VkContext>,
+    spec: &RootlessSpec,
+    layout: Option<String>,
+) -> io::Result<XBackend<SurfacePlatform>> {
+    let mut backend = super::headless_backend(vk, spec.root, layout)?;
+    backend.platform.set_clock(Arc::clone(&spec.clock));
+    backend.pstate.link = Some(Arc::clone(&spec.link));
+    backend.pstate.ui = Some(Arc::clone(&spec.ui));
+    backend.pstate.client_count = Arc::clone(&spec.clients);
+    Ok(backend)
+}
+
+/// Run the rootless server for a window shell's `host`; tells the shell to
+/// quit when the core loop ends. Called on the core thread.
+///
+/// # Errors
+///
+/// Vulkan, rootless mode, the sockets or the core loop failed.
+#[allow(dead_code, reason = "a window shell's; only macOS has one")]
+pub(crate) fn run_rootless(
+    opts: launch::LaunchOptions,
+    spec: RootlessSpec,
+    host: Box<dyn RootlessHost + Send>,
+    pasteboard: Box<dyn Pasteboard>,
+) -> io::Result<()> {
+    let result = serve(
+        &opts,
+        |opts| {
+            let vk = VkContext::new_with_options(VkContextOptions {
+                wants_present: true,
+                surface_extension: Some(spec.surface_extension),
+                wants_kms_interop: false,
+            })
+            .map_err(|e| io::Error::other(format!("vulkan: {e}")))?;
+            rootless_backend(vk, &spec, opts.layout.clone())
+        },
+        |state, backend| {
+            crate::rootless::start(
+                state,
+                backend,
+                host,
+                CoordinatePolicy::Global { origin: (0, 0) },
+            )
+            .map_err(|e| io::Error::other(format!("rootless: {e}")))
+        },
+        Some(&spec.link),
+        Some(pasteboard),
+        |display| spec.ui.set_title(&format!("yserver DISPLAY=:{display}")),
+    );
+    spec.link.disconnect();
+    if let Err(e) = &result {
+        log::error!("yserver: {e}");
+    }
+    spec.ui.quit(result.is_err());
+    result
 }
 
 /// Run the headless server, or refuse without `--headless`.

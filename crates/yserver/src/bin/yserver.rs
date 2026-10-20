@@ -35,6 +35,7 @@ fn main() -> ExitCode {
     #[cfg(target_os = "macos")]
     let opts = yserver::launch::LaunchOptions {
         pick_free_display: startup.bundle.is_some(),
+        from_bundle: startup.bundle.is_some(),
         ..opts
     };
 

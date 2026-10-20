@@ -5,7 +5,7 @@ use yserver_protocol::x11::{ClientByteOrder, ResourceId, error::BAD_ACCESS};
 use super::{RecordingHost, assert_no_error, error_code};
 use crate::{
     resources::{ROOT_WINDOW, ROOTLESS_WM_CHECK_WINDOW},
-    rootless::{Layer, ResizeEdge, RootlessEvent, ToplevelId, WmRequest},
+    rootless::{HostRequest, Layer, NetWmState, ResizeEdge, RootlessEvent, ToplevelId, WmRequest},
 };
 
 const W: u32 = 0x0020_0001;
@@ -517,4 +517,70 @@ fn rooted_request_frame_extents_is_unanswered() {
     host.create_window(1, W, ROOT_WINDOW.0, (0, 0), (50, 40), 0, false);
     root_message(&mut host, 1, W, "_NET_REQUEST_FRAME_EXTENTS", [0; 5]);
     assert_eq!(frame_extents(&host, W), None);
+}
+
+/// The core computes a toggle from `_NET_WM_STATE` and never writes it for a
+/// client's request, so the host's `StateChanged` must be what the next
+/// toggle reads (plan RL2 Task 6). Mutation: drop the `set_words` in
+/// `StateChanged`.
+#[test]
+fn toggle_after_state_changed_uses_the_new_state() {
+    let mut host = RecordingHost::new();
+    host.create_window(1, W, ROOT_WINDOW.0, (0, 0), (50, 40), 0, false);
+    let id = host.map_and_reconcile(1, W);
+    let vert = host.atom("_NET_WM_STATE_MAXIMIZED_VERT");
+    let horz = host.atom("_NET_WM_STATE_MAXIMIZED_HORZ");
+    let above = host.atom("_NET_WM_STATE_ABOVE");
+    let below = host.atom("_NET_WM_STATE_BELOW");
+    let toggle = |host: &mut RecordingHost, a: u32, b: u32| {
+        root_message(host, 1, W, "_NET_WM_STATE", [2, a, b, 1, 0]);
+        host.reconcile()
+            .into_iter()
+            .filter_map(|e| match e {
+                RootlessEvent::WmRequest { id: got, request } if got == id => Some(request),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut state = NetWmState::default();
+    let report = |host: &mut RecordingHost, state: NetWmState| {
+        host.host(HostRequest::StateChanged { id, state });
+        host.reconcile();
+    };
+
+    assert_eq!(
+        toggle(&mut host, vert, horz),
+        [WmRequest::SetMaximized(true)]
+    );
+    state.maximized_vert = true;
+    state.maximized_horz = true;
+    report(&mut host, state);
+    assert_eq!(
+        toggle(&mut host, vert, horz),
+        [WmRequest::SetMaximized(false)]
+    );
+
+    assert_eq!(
+        toggle(&mut host, above, 0),
+        [WmRequest::SetLayer(Layer::Above)]
+    );
+    state.above = true;
+    report(&mut host, state);
+    assert_eq!(
+        toggle(&mut host, above, 0),
+        [WmRequest::SetLayer(Layer::Normal)]
+    );
+
+    state.above = false;
+    report(&mut host, state);
+    assert_eq!(
+        toggle(&mut host, below, 0),
+        [WmRequest::SetLayer(Layer::Below)]
+    );
+    state.below = true;
+    report(&mut host, state);
+    assert_eq!(
+        toggle(&mut host, below, 0),
+        [WmRequest::SetLayer(Layer::Normal)]
+    );
 }

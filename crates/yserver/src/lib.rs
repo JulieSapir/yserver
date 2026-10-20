@@ -297,21 +297,21 @@ pub const RESOURCE_TELEMETRY_TARGET: &str = "yserver::resources";
 /// Run the server on macOS.
 #[cfg(all(not(kms), target_os = "macos"))]
 pub fn run(opts: launch::LaunchOptions) -> io::Result<()> {
-    launch::validate_rootless(&opts).map_err(io::Error::other)?;
-    macos::run(opts)
+    let mode = launch::shell_mode(&opts, true).map_err(io::Error::other)?;
+    macos::run(opts, mode)
 }
 
 /// Run the server on a platform with neither KMS nor a window shell.
 #[cfg(all(not(kms), not(target_os = "macos")))]
 pub fn run(opts: launch::LaunchOptions) -> io::Result<()> {
-    launch::validate_rootless(&opts).map_err(io::Error::other)?;
+    launch::shell_mode(&opts, false).map_err(io::Error::other)?;
     surface::server::run_headless(opts)
 }
 
 /// Run the server on the DRM/KMS platform.
 #[cfg(kms)]
 pub fn run(opts: launch::LaunchOptions) -> io::Result<()> {
-    launch::validate_rootless(&opts).map_err(io::Error::other)?;
+    launch::shell_mode(&opts, false).map_err(io::Error::other)?;
     if opts.headless {
         // The surface platform with no surface: no DRM device, no input.
         return surface::server::run_headless(opts);

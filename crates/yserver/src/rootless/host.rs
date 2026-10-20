@@ -93,6 +93,11 @@ pub(crate) trait RootlessHost {
     /// `id` has a frame waiting for `Ready`: arm the pacing signal (D7).
     #[allow(dead_code, reason = "readiness gating (RL1 Task 5)")]
     fn frame_wanted(&mut self, _id: ToplevelId) {}
+    /// Before a swapchain (re)build at `extent` backing pixels.
+    fn surface_resizing(&mut self, _id: ToplevelId, _extent: (u32, u32)) {}
+    /// After it, whatever the outcome: commit what the driver changed on
+    /// the native surface.
+    fn surface_rebuilt(&mut self, _id: ToplevelId) {}
     /// The presenter destroyed the last swapchain and the surface of `id`:
     /// the native window may be freed now.
     fn surface_released(&mut self, _id: ToplevelId) {}

@@ -38,6 +38,13 @@ pub(crate) fn x_position(raw: &RawPointer, fb: (u16, u16)) -> (i32, i32) {
     )
 }
 
+/// View points (bottom-left, y up) → X pixels from the content's top-left,
+/// unclamped: a drag may leave the window (spec §4.4 pointer-local).
+#[cfg_attr(not(test), allow(dead_code))] // A rootless shell's (RL2 Task 10).
+pub(crate) fn local_position(raw: &RawPointer) -> (f64, f64) {
+    (raw.x_pt * raw.scale, (raw.view_h_pt - raw.y_pt) * raw.scale)
+}
+
 /// An absolute motion to `raw`'s X pixel.
 pub(crate) fn motion(raw: &RawPointer, fb: (u16, u16), time: u32) -> HostInputEvent {
     let (x, y) = x_position(raw, fb);

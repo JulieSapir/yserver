@@ -8,9 +8,13 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use yserver_core::core_loop::{CoreSender, HostInputEvent, Message};
+use yserver_core::{
+    core_loop::{CoreSender, HostInputEvent, Message},
+    rootless::HostRequest,
+};
 
 use super::input::devices;
+
 use crate::rootless::host::FrameEvent;
 
 /// What the shell reports about a surface.
@@ -135,6 +139,20 @@ impl ShellLink {
         }
     }
 
+    /// A rootless host's request to the core; dropped before the core
+    /// connected, as input is.
+    #[cfg_attr(not(test), allow(dead_code))] // A rootless shell's (RL2 Task 10).
+    pub(crate) fn request(&self, request: HostRequest) {
+        if let Some(sender) = self
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            let _ = sender.send(Message::Rootless(request));
+        }
+    }
+
     /// Ask the core loop to shut down (window closed, Quit).
     pub(crate) fn request_shutdown(&self) {
         self.shutdown_requested.store(true, Ordering::Release);
@@ -241,5 +259,42 @@ mod tests {
         link.disconnect();
         link.request_shutdown();
         assert!(received(&rx).is_empty(), "disconnected");
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use yserver_core::{
+        core_loop::{self, HostInputEvent, Message},
+        rootless::{HostRequest, ToplevelId},
+    };
+
+    use super::ShellLink;
+    use crate::surface::input::translate::key_event;
+
+    #[test]
+    fn request_reaches_the_core_in_order_with_input() {
+        let link = ShellLink::default();
+        let id = ToplevelId::fake(3);
+        link.request(HostRequest::Activated { id });
+        let (_poll, sender, rx) = core_loop::channel().expect("channel");
+        link.connect(sender);
+        let _ = rx.try_recv_all().count();
+        link.send_input(|time, out| out.push(key_event(38, true, time)));
+        link.request(HostRequest::Activated { id });
+        let messages: Vec<Message> = rx.try_recv_all().collect();
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [
+                    Message::HostInput(HostInputEvent::Key(_)),
+                    Message::Rootless(HostRequest::Activated { id: got })
+                ] if *got == id
+            ),
+            "{messages:?}"
+        );
+        link.disconnect();
+        link.request(HostRequest::Deactivated);
+        assert_eq!(rx.try_recv_all().count(), 0, "dropped when disconnected");
     }
 }

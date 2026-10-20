@@ -133,9 +133,11 @@ pub struct LaunchOptions {
     /// `--geometry WxH`: the screen size in pixels on a platform without
     /// KMS.
     pub geometry: Option<(u16, u16)>,
-    /// `--rootless` (with `--headless`): every top-level becomes a native
-    /// window of a recording host (spec RL1, plan Task 9).
+    /// `--rootless`: every top-level becomes a native window (a recording
+    /// host with `--headless`).
     pub rootless: bool,
+    /// `--rooted`: one window shows the whole root, also from the app bundle.
+    pub rooted: bool,
     /// `--rootless-record DIR`: the recording host writes its event log and
     /// every delivered frame there.
     pub rootless_record: Option<PathBuf>,
@@ -145,6 +147,17 @@ pub struct LaunchOptions {
     /// macOS app bundle). Without `:N` and `-displayfd`, the lowest free
     /// display from [`FIRST_FREE_DISPLAY`] is locked and used.
     pub pick_free_display: bool,
+    /// Not from argv: started as the macOS app bundle, which defaults to
+    /// rootless.
+    pub from_bundle: bool,
+}
+
+/// Rooted (one window is the root) or rootless (one native window per
+/// top-level).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShellMode {
+    Rooted,
+    Rootless,
 }
 
 /// How many backing pixels of a window one X pixel covers per axis.
@@ -169,20 +182,30 @@ fn parse_scale(value: &str) -> Result<ScaleOption, String> {
     }
 }
 
-/// `--rootless` runs only headless (the recording host) until a window
-/// system hosts it (RL2); `--rootless-record` only with `--rootless`.
+/// The mode for this launch (decision 1, spec §7): an explicit flag wins;
+/// else rootless iff a window shell runs from the app bundle. `window_shell`:
+/// this build has one.
 ///
 /// # Errors
 ///
 /// The combination is refused, with the reason.
-pub fn validate_rootless(o: &LaunchOptions) -> Result<(), String> {
-    if o.rootless && !o.headless {
+pub fn shell_mode(o: &LaunchOptions, window_shell: bool) -> Result<ShellMode, String> {
+    if o.rooted && o.rootless {
+        return Err("--rooted and --rootless exclude each other".into());
+    }
+    if o.rootless_record.is_some() && !(o.rootless && o.headless) {
+        return Err("--rootless-record needs --rootless --headless".into());
+    }
+    if o.rootless && !o.headless && !window_shell {
         return Err("--rootless needs --headless (KMS is never rootless)".into());
     }
-    if o.rootless_record.is_some() && !o.rootless {
-        return Err("--rootless-record needs --rootless".into());
-    }
-    Ok(())
+    Ok(
+        if o.rootless || (!o.rooted && window_shell && o.from_bundle && !o.headless) {
+            ShellMode::Rootless
+        } else {
+            ShellMode::Rooted
+        },
+    )
 }
 
 /// Parse a `WxH` screen size; both sides must be non-zero.
@@ -280,6 +303,8 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<LaunchOption
             o.headless = true;
         } else if arg == "--rootless" {
             o.rootless = true;
+        } else if arg == "--rooted" {
+            o.rooted = true;
         } else if arg == "--rootless-record" {
             o.rootless_record = Some(PathBuf::from(next_value(&mut it, "--rootless-record")?));
         } else if arg == "--geometry" {
@@ -1254,11 +1279,52 @@ mod tests {
     }
 
     #[test]
-    fn rootless_flags_parse_and_need_headless() {
+    fn shell_mode_follows_decision_1() {
+        let bundle = LaunchOptions {
+            from_bundle: true,
+            ..parse(&[]).unwrap()
+        };
+        assert_eq!(shell_mode(&bundle, true), Ok(ShellMode::Rootless));
+        assert_eq!(
+            shell_mode(&parse(&[]).unwrap(), true),
+            Ok(ShellMode::Rooted)
+        );
+        let headless = LaunchOptions {
+            from_bundle: true,
+            ..parse(&["--headless"]).unwrap()
+        };
+        assert_eq!(shell_mode(&headless, true), Ok(ShellMode::Rooted));
+        assert_eq!(
+            shell_mode(&bundle, false),
+            Ok(ShellMode::Rooted),
+            "no window shell"
+        );
+    }
+
+    #[test]
+    fn explicit_flags_win_and_conflict() {
+        let o = parse(&["--rooted"]).unwrap();
+        assert!(o.rooted);
+        let o = LaunchOptions {
+            from_bundle: true,
+            ..o
+        };
+        assert_eq!(shell_mode(&o, true), Ok(ShellMode::Rooted));
+        let o = parse(&[":1", "--rootless"]).unwrap();
+        assert_eq!(shell_mode(&o, true), Ok(ShellMode::Rootless));
+        let o = parse(&["--rooted", "--rootless"]).unwrap();
+        assert!(shell_mode(&o, true).is_err(), "both flags");
+        assert!(shell_mode(&o, false).is_err(), "both flags");
+        let o = parse(&["--rooted", "--headless"]).unwrap();
+        assert_eq!(shell_mode(&o, false), Ok(ShellMode::Rooted));
+    }
+
+    #[test]
+    fn rootless_without_a_shell_needs_headless() {
         let o = parse(&[":1"]).unwrap();
         assert!(!o.rootless);
         assert_eq!(o.rootless_record, None);
-        assert_eq!(validate_rootless(&o), Ok(()));
+        assert_eq!(shell_mode(&o, false), Ok(ShellMode::Rooted));
         let o = parse(&[
             ":1",
             "--headless",
@@ -1269,12 +1335,29 @@ mod tests {
         .unwrap();
         assert!(o.rootless);
         assert_eq!(o.rootless_record, Some(PathBuf::from("/tmp/r")));
-        assert_eq!(validate_rootless(&o), Ok(()));
+        assert_eq!(shell_mode(&o, false), Ok(ShellMode::Rootless));
         assert!(parse(&["--rootless-record"]).is_err(), "missing value");
         let o = parse(&[":1", "--rootless"]).unwrap();
-        assert!(validate_rootless(&o).is_err(), "rootless needs --headless");
+        assert!(shell_mode(&o, false).is_err(), "rootless needs --headless");
         let o = parse(&[":1", "--headless", "--rootless-record", "/tmp/r"]).unwrap();
-        assert!(validate_rootless(&o).is_err(), "a record needs --rootless");
+        assert!(shell_mode(&o, false).is_err(), "a record needs --rootless");
+    }
+
+    #[test]
+    fn record_needs_headless_rootless() {
+        let o = parse(&[":1", "--rootless", "--rootless-record", "/tmp/r"]).unwrap();
+        assert!(
+            shell_mode(&o, true).is_err(),
+            "the recording host is headless"
+        );
+        let o = LaunchOptions {
+            from_bundle: true,
+            ..parse(&[":1", "--rootless-record", "/tmp/r"]).unwrap()
+        };
+        assert!(
+            shell_mode(&o, true).is_err(),
+            "a bundle default is no --rootless"
+        );
     }
 
     #[test]

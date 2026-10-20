@@ -560,6 +560,43 @@ fn surface_present_clock_follows_ticks_and_wakes_an_armed_target_once() {
     assert_eq!(f.b.present_get_ust_msc(2), (4, 64_000));
 }
 
+/// Rootless: no output, the platform clock drives Present's MSC.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_clock_drives_msc_without_outputs() {
+    let Some(mut b) = headless_or_skip() else {
+        return;
+    };
+    let link = Arc::new(ShellLink::default());
+    let (_poll, sender, rx) = yserver_core::core_loop::channel().expect("channel");
+    link.connect(sender);
+    let clock = Arc::new(FrameClock::new(Arc::clone(&link)));
+    b.platform.set_clock(Arc::clone(&clock));
+    let wakes = |rx: &yserver_core::core_loop::CoreReceiver| {
+        rx.try_recv_all()
+            .filter(|m| matches!(m, yserver_core::core_loop::Message::PlatformEvent))
+            .count()
+    };
+    for ust in [16_000, 32_000, 48_000] {
+        clock.tick(ust);
+    }
+    assert_eq!(b.present_get_ust_msc(2), (3, 48_000));
+    assert_eq!(b.arm_idle_vblanks(2, &[5]).expect("arm"), 1);
+    clock.tick(64_000);
+    clock.tick(80_000);
+    assert_eq!(wakes(&rx), 1, "msc 5 wakes the core once");
+}
+
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn headless_without_a_clock_is_unchanged() {
+    let Some(mut b) = headless_or_skip() else {
+        return;
+    };
+    assert_eq!(b.present_get_ust_msc(2), (0, 0));
+    assert_eq!(b.arm_idle_vblanks(2, &[5]).expect("arm"), 0);
+}
+
 #[test]
 #[ignore = "needs live Vulkan ICD"]
 fn surface_display_is_idle_only_without_a_frame_in_flight() {
@@ -1090,6 +1127,117 @@ fn surface_animated_cursor_steps_versions() {
         versions.windows(2).all(|pair| pair[0] < pair[1]),
         "versions step: {versions:?}"
     );
+}
+
+/// A host that takes no frames: the rootless cursor tests need none.
+struct NoFramesHost;
+
+impl crate::rootless::host::RootlessHost for NoFramesHost {
+    fn handoff(
+        &self,
+        _id: yserver_core::rootless::ToplevelId,
+        _depth: u8,
+    ) -> crate::rootless::host::HandoffKind {
+        crate::rootless::host::HandoffKind::Cpu
+    }
+
+    fn create_surface(
+        &mut self,
+        _id: yserver_core::rootless::ToplevelId,
+        _vk: &VkContext,
+    ) -> std::io::Result<vk::SurfaceKHR> {
+        Err(std::io::Error::other("no surfaces"))
+    }
+
+    fn submit_cpu(&mut self, frame: crate::rootless::host::CpuFrame) {
+        drop(frame);
+    }
+
+    fn first_frame(&mut self, _id: yserver_core::rootless::ToplevelId) {}
+
+    fn on_events(&mut self, _events: &[yserver_core::rootless::RootlessEvent]) {}
+}
+
+/// A rootless server (no outputs) with a recording UI.
+fn rootless_or_skip() -> Option<(XBackend<SurfacePlatform>, ServerState, Arc<RecordingUi>)> {
+    let mut b = headless_or_skip()?;
+    let ui = Arc::new(RecordingUi::default());
+    b.pstate.ui = Some(Arc::clone(&ui) as Arc<dyn ShellUi>);
+    let mut state = BackendTopology::from_backend(&mut b).into_server_state();
+    yserver_core::backend::install_backend_root_bindings(&mut state, &b);
+    crate::rootless::start(
+        &mut state,
+        &mut b,
+        Box::new(NoFramesHost),
+        yserver_core::rootless::CoordinatePolicy::Global { origin: (0, 0) },
+    )
+    .expect("rootless start");
+    Some((b, state, ui))
+}
+
+/// A 16x16 bitmap cursor with hotspot `hot`.
+fn bitmap_cursor(b: &mut XBackend<SurfacePlatform>, hot: (u16, u16)) -> u32 {
+    let pixmap = b.create_pixmap(None, 1, 16, 16).expect("pixmap");
+    b.create_cursor(None, pixmap, None, (0xFFFF, 0, 0), (0, 0, 0), hot.0, hot.1)
+        .expect("create_cursor")
+        .as_raw()
+}
+
+/// Rootless has no cursor plane: the shell still gets the sprite.
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_shell_gets_the_root_cursor() {
+    let Some((mut b, _state, ui)) = rootless_or_skip() else {
+        return;
+    };
+    b.maybe_composite().expect("maybe_composite");
+    let root = b.get_active_cursor_image().expect("a root cursor");
+    assert_eq!(
+        shown(&ui.take()),
+        [(
+            u64::from(root.serial),
+            (root.hot_x, root.hot_y),
+            (u32::from(root.width), u32::from(root.height))
+        )],
+        "the root cursor, once"
+    );
+    b.maybe_composite().expect("maybe_composite");
+    assert!(ui.take().is_empty(), "an unchanged cursor is not re-sent");
+}
+
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_define_and_hide_cursor() {
+    let Some((mut b, _state, ui)) = rootless_or_skip() else {
+        return;
+    };
+    b.maybe_composite().expect("maybe_composite");
+    let [(first, _, _)] = shown(&ui.take())[..] else {
+        panic!("the root cursor");
+    };
+    let xid = create_window(&mut b);
+    b.core.prev_pointer_window = Some(xid);
+    let cursor = bitmap_cursor(&mut b, (3, 4));
+    b.define_cursor(None, xid, cursor).expect("define_cursor");
+    b.maybe_composite().expect("maybe_composite");
+    let [(version, hot, size)] = shown(&ui.take())[..] else {
+        panic!("one set_cursor for the window's cursor");
+    };
+    assert_ne!(version, first);
+    assert_eq!((hot, size), ((3, 4), (16, 16)));
+    b.set_cursor_hidden(true);
+    b.maybe_composite().expect("maybe_composite");
+    assert_eq!(ui.take(), [UiCall::Cursor(None)]);
+    b.set_cursor_hidden(false);
+    b.maybe_composite().expect("maybe_composite");
+    assert_eq!(
+        shown(&ui.take()),
+        [(version, (3, 4), (16, 16))],
+        "shown again"
+    );
+    b.maybe_composite().expect("maybe_composite");
+    b.maybe_composite().expect("maybe_composite");
+    assert!(ui.take().is_empty(), "idle tails send nothing");
 }
 
 /// A server over a backend, and one client (id 9) that selected
@@ -2172,4 +2320,51 @@ fn surface_present_failure_does_not_stall_retirement() {
     } else {
         eprintln!("validation was off");
     }
+}
+
+/// Spec §5: rootless RandR configuration fails with a real status, and no
+/// window is resized (there is none to resize).
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rootless_refuses_randr_configuration() {
+    let vk = match VkContext::new_with_options(VkContextOptions {
+        wants_present: false,
+        surface_extension: None,
+        wants_kms_interop: false,
+    }) {
+        Ok(vk) => vk,
+        Err(e) => {
+            eprintln!("skipping: no Vk: {e:?}");
+            return;
+        }
+    };
+    let root = (2560, 1600);
+    let mut b = headless_backend(vk, root, None).expect("headless backend");
+    let ui = Arc::new(RecordingUi::default());
+    b.pstate.ui = Some(Arc::clone(&ui) as Arc<dyn ShellUi>);
+    let mut f = screen_fixture(b);
+    crate::rootless::start(
+        &mut f.state,
+        &mut f.b,
+        Box::new(NoFramesHost),
+        yserver_core::rootless::CoordinatePolicy::Global { origin: (0, 0) },
+    )
+    .expect("rootless start");
+    assert_eq!(f.set_crtc_config((1024, 768), 0, 1), Ok(SET_CONFIG_FAILED));
+    assert!(
+        !ui.take()
+            .iter()
+            .any(|c| matches!(c, UiCall::ContentSize(..))),
+        "no window resize asked"
+    );
+    assert_eq!(f.b.platform.output_size, root);
+    assert!(
+        f.screen_size_error(3000, 2000).is_some(),
+        "RRSetScreenSize fails"
+    );
+    assert_eq!(f.b.platform.fb_size(), root, "the root keeps its size");
+    assert_eq!(
+        (f.state.randr.screen_width, f.state.randr.screen_height),
+        root
+    );
 }

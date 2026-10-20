@@ -301,6 +301,7 @@ fn failed_copy_submit_does_not_reuse_the_acquire_semaphore() {
     mapped(&mut f);
     shown_until(&mut f, 1);
     let id = f.id(W);
+    let before = with_swapchain(&mut f, id, |sc| sc.handle());
     if let Path::Gpu(gpu) = &mut f.presenter().windows.get_mut(&id).expect("W").path {
         gpu.swapchain.as_mut().expect("swapchain").fail_next_submit = true;
     }
@@ -313,6 +314,11 @@ fn failed_copy_submit_does_not_reuse_the_acquire_semaphore() {
         let n = progress(&mut f) + 1;
         shown_until(&mut f, n);
     }
+    assert_ne!(
+        with_swapchain(&mut f, id, |sc| sc.handle()),
+        before,
+        "an abandoned image rebuilds the swapchain, never vkReleaseSwapchainImagesEXT"
+    );
     lock(&f.log).calls.clear();
     f.assert_validation_clean();
 }
@@ -352,7 +358,7 @@ fn present_failure_retires_without_stalling() {
 /// frames present, retirement completes, validation stays clean.
 #[test]
 #[ignore = "needs live Vulkan ICD"]
-fn allocation_failure_after_acquire_releases_the_image() {
+fn allocation_failure_after_acquire_abandons_the_image() {
     for no_maintenance1 in [false, true] {
         let Some(mut f) = Fixture::gpu_or_skip(|_| {}) else {
             return;
@@ -385,4 +391,47 @@ fn allocation_failure_after_acquire_releases_the_image() {
         retired(&mut f);
         f.assert_validation_clean();
     }
+}
+
+/// The host hears of every swapchain (re)build before it and after it,
+/// at the native content extent (§4.0: outer = content + 2·bw).
+#[test]
+#[ignore = "needs live Vulkan ICD"]
+fn rebuild_hooks_bracket_every_swapchain_change() {
+    let Some(mut f) = Fixture::gpu_or_skip(|_| {}) else {
+        return;
+    };
+    mapped(&mut f);
+    shown_until(&mut f, 1);
+    let id = f.id(W);
+    let hooks = |f: &Fixture| {
+        f.calls()
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Call::Resizing(..) | Call::Rebuilt(_) | Call::FirstFrame(_)
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        hooks(&f),
+        [
+            Call::Resizing(id, (44, 34)),
+            Call::FirstFrame(id),
+            Call::Rebuilt(id)
+        ],
+        "resizing, the present, rebuilt"
+    );
+    lock(&f.log).calls.clear();
+    f.resize(W, 60, 40);
+    f.fill(W, 0x00ff_0000, (0, 0, 60, 40));
+    shown_until(&mut f, 2);
+    assert_eq!(hooks(&f), [Call::Resizing(id, (64, 44)), Call::Rebuilt(id)]);
+    lock(&f.log).calls.clear();
+    f.fill(W, 0x0000_ff00, (0, 0, 4, 4));
+    shown_until(&mut f, 3);
+    assert_eq!(hooks(&f), [], "a damage frame rebuilds nothing");
+    f.assert_validation_clean();
 }

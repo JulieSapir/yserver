@@ -3,7 +3,7 @@
 //!
 //! MSC is the clock's tick count and UST its tick time; a parked target arms
 //! the clock, whose tick wakes the core loop. There is one output, so every
-//! CRTC id resolves to surface 0.
+//! CRTC id resolves to surface 0; rootless has none and a platform clock.
 
 use std::io;
 
@@ -12,7 +12,7 @@ use yserver_core::{
     server::ServerState,
 };
 
-use super::SurfacePlatform;
+use super::{SurfacePlatform, clock::FrameClock};
 use crate::kms::render::XBackend;
 
 /// The window's fixed modes, offered when they fit the platform's largest
@@ -33,22 +33,18 @@ const CUSTOM_MODE_ID: u32 = 3;
 const FIRST_FIXED_MODE_ID: u32 = 4;
 
 impl XBackend<SurfacePlatform> {
-    /// `(msc, ust)` of surface 0's clock; `(0, 0)` headless.
+    /// `(msc, ust)` of the MSC clock; `(0, 0)` without one.
     pub(crate) fn surface_ust_msc(&self) -> (u64, u64) {
-        self.platform
-            .outputs
-            .first()
-            .map_or((0, 0), |output| output.clock().sample())
+        self.platform.msc_clock().map_or((0, 0), FrameClock::sample)
     }
 
-    /// Arm surface 0's clock for the earliest of `targets`; `Ok(1)` when
-    /// that moved the armed target, `Ok(0)` when it was already covered.
+    /// Arm the MSC clock for the earliest of `targets`; `Ok(1)` when that
+    /// moved the armed target, `Ok(0)` when it was already covered.
     pub(crate) fn arm_surface_msc(&mut self, targets: &[u64]) -> io::Result<usize> {
-        let (Some(output), Some(&target)) = (self.platform.outputs.first(), targets.iter().min())
-        else {
+        let (Some(clock), Some(&target)) = (self.platform.msc_clock(), targets.iter().min()) else {
             return Ok(0);
         };
-        Ok(usize::from(output.clock().arm_msc(target)))
+        Ok(usize::from(clock.arm_msc(target)))
     }
 
     /// No frame in flight and nothing left to compose (or nothing can show).
@@ -61,11 +57,8 @@ impl XBackend<SurfacePlatform> {
     pub(crate) fn surface_randr_outputs_and_modes(&self) -> (Vec<RandrOutput>, Vec<RandrMode>) {
         let refresh = self
             .platform
-            .outputs
-            .first()
-            .map_or(super::clock::FALLBACK_REFRESH_HZ, |output| {
-                output.clock().refresh_hz()
-            });
+            .msc_clock()
+            .map_or(super::clock::FALLBACK_REFRESH_HZ, FrameClock::refresh_hz);
         window_randr(
             self.platform.output_size,
             self.platform.output_mm,

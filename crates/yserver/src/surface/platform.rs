@@ -20,6 +20,7 @@ use yserver_core::{
 };
 
 use super::{
+    clock::FrameClock,
     input::translate::caps_lock_sync,
     link::{ShellEvent, ShellLink},
     resize::MIN_SCREEN,
@@ -64,6 +65,8 @@ pub(crate) struct SurfacePlatform {
     max_screen: u16,
     pub(crate) outputs: Vec<SurfaceOutput>,
     cursor: HostCursor,
+    /// Present's clock without outputs (rootless).
+    clock: Option<Arc<FrameClock>>,
 }
 
 /// The X cursor as the window system shows it: the scene's cursor plane.
@@ -135,7 +138,22 @@ impl SurfacePlatform {
             max_screen,
             outputs,
             cursor: HostCursor::default(),
+            clock: None,
         }
+    }
+
+    /// Present's clock while there is no output (rootless).
+    pub(crate) fn set_clock(&mut self, clock: Arc<FrameClock>) {
+        self.clock = Some(clock);
+    }
+
+    /// Present's MSC source: surface 0's clock, else the rootless clock.
+    pub(crate) fn msc_clock(&self) -> Option<&FrameClock> {
+        self.outputs
+            .first()
+            .map(SurfaceOutput::clock)
+            .or(self.clock.as_ref())
+            .map(Arc::as_ref)
     }
 
     /// The largest output the window system shows unclamped; the mode list
@@ -412,6 +430,10 @@ impl CursorPlaneSink for SurfacePlatform {
 impl XBackend<SurfacePlatform> {
     /// Tell the shell when the cursor it shows changed.
     fn flush_host_cursor(&mut self) {
+        if self.pstate.rootless.is_some() {
+            self.flush_rootless_cursor();
+            return;
+        }
         let wanted = self.platform.cursor.wanted();
         if self.platform.cursor.sent == wanted {
             return;
@@ -421,6 +443,35 @@ impl XBackend<SurfacePlatform> {
         };
         self.platform.cursor.sent = wanted;
         let image = wanted.and(self.platform.cursor.image.clone());
+        ui.set_cursor(image);
+    }
+
+    /// Rootless has no cursor plane (no output): the shell gets the sprite
+    /// itself, its bytes copied only when it changed.
+    fn flush_rootless_cursor(&mut self) {
+        let wanted = self.sprite_key();
+        if self.platform.cursor.sent == wanted {
+            return;
+        }
+        let Some(ui) = self.pstate.ui.clone() else {
+            return;
+        };
+        let image = match wanted {
+            None => None,
+            Some((version, hot)) => {
+                let Some(active) = self.get_active_cursor_image() else {
+                    return;
+                };
+                Some(CursorImage {
+                    version,
+                    width: u32::from(active.width),
+                    height: u32::from(active.height),
+                    hot,
+                    bgra: Arc::from(active.bgra_bytes.as_slice()),
+                })
+            }
+        };
+        self.platform.cursor.sent = wanted;
         ui.set_cursor(image);
     }
 
@@ -563,13 +614,18 @@ impl XBackend<SurfacePlatform> {
     /// the root. The output takes the mode and the shell is asked to size
     /// the window to it. Anything else fails the request with
     /// `RRSetConfigFailed`, as from a DDX whose `crtcSet` refuses
-    /// (rrcrtc.c:1462-1465).
+    /// (rrcrtc.c:1462-1465); so does everything when rootless (spec §5).
     fn apply_window_crtc_config(
         &mut self,
         mode: Option<yserver_core::backend::ModeSpec>,
         x: i32,
         y: i32,
     ) -> io::Result<bool> {
+        if self.pstate.rootless.is_some() {
+            return Err(io::Error::other(
+                "rootless: the displays are not configurable",
+            ));
+        }
         let Some(mode) = mode else {
             return Err(io::Error::other("the window output cannot be disabled"));
         };
@@ -1001,8 +1057,12 @@ impl Platform for SurfacePlatform {
     }
 
     /// `RRSetScreenSize` resizes the root only; the output keeps its mode
-    /// (the core refuses a size that would crop it).
+    /// (the core refuses a size that would crop it). Rootless refuses
+    /// (spec §5).
     fn set_logical_screen_size(b: &mut XBackend<Self>, w: u16, h: u16) -> io::Result<()> {
+        if b.pstate.rootless.is_some() {
+            return Err(io::Error::other("rootless: the root spans the displays"));
+        }
         let output = b.platform.output_size;
         b.resize_screen((w, h), output)
     }

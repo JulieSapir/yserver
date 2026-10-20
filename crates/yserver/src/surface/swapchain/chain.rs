@@ -245,20 +245,6 @@ impl Chain {
         }
     }
 
-    /// Give an acquired, never presented image back (maintenance1).
-    pub(crate) fn release_image(&self, index: u32) -> Result<(), vk::Result> {
-        let Some(swapchain) = self.current.as_ref() else {
-            return Ok(());
-        };
-        let m1 = ash::ext::swapchain_maintenance1::Device::new(&self.vk.instance, &self.vk.device);
-        let indices = [index];
-        let info = vk::ReleaseSwapchainImagesInfoEXT::default()
-            .swapchain(swapchain.handle)
-            .image_indices(&indices);
-        // SAFETY: `index` is acquired and not presented.
-        unsafe { m1.release_swapchain_images(&info) }
-    }
-
     /// Destroy a swapchain whose presents and copies have completed.
     pub(crate) fn destroy(&self, swapchain: Option<Swapchain>) {
         let Some(swapchain) = swapchain else {

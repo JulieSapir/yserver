@@ -118,9 +118,13 @@ impl GpuState {
             .peek_presentation_damage(backing)
             .filter(|s| !s.region.is_empty());
         let extent = t.store.get(backing).map(|d| d.storage.extent);
+        if let Some(e) = extent.filter(|&e| sc.rebuild_due(e, frames.backing_gen())) {
+            host.surface_resizing(id, (e.width, e.height));
+        }
         let result = sc.present(t.gpu, t.store, backing, frames.backing_gen());
         t.retiring.extend(sc.take_replaced());
-        match result {
+        let rebuilt = sc.take_rebuilt();
+        let shown = match result {
             Ok(Presented::Shown) => {
                 let extent = extent.unwrap_or_default();
                 let full = Rect {
@@ -150,7 +154,11 @@ impl GpuState {
                 frames.wait_for_ready();
                 false
             }
+        };
+        if rebuilt {
+            host.surface_rebuilt(id);
         }
+        shown
     }
 
     /// `Unmapped`: everything to retirement, the surface last.

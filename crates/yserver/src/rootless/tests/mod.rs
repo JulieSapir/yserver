@@ -6,6 +6,7 @@ mod frames;
 mod gpu;
 mod readiness;
 mod record;
+mod shell;
 
 use std::{
     io,
@@ -69,6 +70,9 @@ pub(super) enum Call {
     FirstFrame(ToplevelId),
     FrameWanted(ToplevelId),
     SurfaceReleased(ToplevelId),
+    /// `surface_resizing`: (id, extent).
+    Resizing(ToplevelId, (u32, u32)),
+    Rebuilt(ToplevelId),
     /// What the presenter did (its test observer).
     Presenter(Note),
 }
@@ -190,6 +194,14 @@ impl RootlessHost for RecordingHost {
     fn surface_released(&mut self, id: ToplevelId) {
         lock(&self.log).calls.push(Call::SurfaceReleased(id));
     }
+
+    fn surface_resizing(&mut self, id: ToplevelId, extent: (u32, u32)) {
+        lock(&self.log).calls.push(Call::Resizing(id, extent));
+    }
+
+    fn surface_rebuilt(&mut self, id: ToplevelId) {
+        lock(&self.log).calls.push(Call::Rebuilt(id));
+    }
 }
 
 pub(super) fn lock(log: &Mutex<HostLog>) -> MutexGuard<'_, HostLog> {
@@ -245,6 +257,11 @@ impl Fixture {
         let mut b = headless_backend(vk, (256, 192), None).expect("headless backend");
         let link = Arc::new(ShellLink::default());
         b.pstate.link = Some(Arc::clone(&link));
+        Some(Self::with_backend(b, link))
+    }
+
+    /// Over `b`, whose link is `link`; no presenter yet.
+    pub fn with_backend(mut b: XBackend<SurfacePlatform>, link: Arc<ShellLink>) -> Self {
         let mut state = BackendTopology::from_backend(&mut b).into_server_state();
         yserver_core::backend::install_backend_root_bindings(&mut state, &b);
         let peer = add_client(&mut state);
@@ -273,7 +290,7 @@ impl Fixture {
             0,
             &[GC.to_le_bytes(), ROOT_WINDOW.0.to_le_bytes(), [0; 4]].concat(),
         );
-        Some(f)
+        f
     }
 
     /// Rootless, with a `RecordingHost` set up by `configure`.
@@ -295,19 +312,18 @@ impl Fixture {
     }
 
     fn install(&mut self, configure: impl FnOnce(&mut HostLog)) {
+        self.install_with(CoordinatePolicy::Opaque, configure);
+    }
+
+    /// A `RecordingHost` under `policy`.
+    pub fn install_with(&mut self, policy: CoordinatePolicy, configure: impl FnOnce(&mut HostLog)) {
         let f = self;
         configure(&mut lock(&f.log));
         let host = RecordingHost {
             log: Arc::clone(&f.log),
             link: Arc::clone(&f.link),
         };
-        super::start(
-            &mut f.state,
-            &mut f.b,
-            Box::new(host),
-            CoordinatePolicy::Opaque,
-        )
-        .expect("rootless start");
+        super::start(&mut f.state, &mut f.b, Box::new(host), policy).expect("rootless start");
         let log = Arc::clone(&f.log);
         f.presenter().observer = Some(Box::new(move |note| {
             lock(&log).calls.push(Call::Presenter(note));

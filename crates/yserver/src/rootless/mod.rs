@@ -9,6 +9,7 @@ mod cpu;
 pub(crate) mod frames;
 mod gpu;
 pub(crate) mod host;
+pub(crate) mod native;
 pub(crate) mod record;
 pub(crate) mod window_swapchain;
 

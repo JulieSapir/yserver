@@ -20,6 +20,17 @@ impl ToplevelId {
     pub fn get(self) -> u64 {
         self.0.get()
     }
+
+    /// An id no core issued, for host tests.
+    ///
+    /// # Panics
+    ///
+    /// `raw` is 0.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fake(raw: u64) -> Self {
+        Self(NonZeroU64::new(raw).expect("a non-zero id"))
+    }
 }
 
 /// Monotonic per host, assigned to every geometry/stacking `HostRequest`.

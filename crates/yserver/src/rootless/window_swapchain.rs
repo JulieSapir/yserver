@@ -74,6 +74,8 @@ pub(crate) struct WindowSwapchain {
     /// Presents whose fence may never signal (an out-of-date present).
     uncertain: bool,
     needs_rebuild: bool,
+    /// A (re)build was attempted (`take_rebuilt`).
+    rebuilt: bool,
     /// Swapchains replaced since the presenter last collected them.
     replaced: Vec<Retiring>,
     #[cfg(test)]
@@ -124,6 +126,7 @@ impl WindowSwapchain {
             presents: Vec::new(),
             uncertain: false,
             needs_rebuild: true,
+            rebuilt: false,
             replaced: Vec::new(),
             #[cfg(test)]
             fail_next_submit: false,
@@ -172,6 +175,26 @@ impl WindowSwapchain {
             self.capture = Some(Capture::new(&self.vk, self.extent));
         }
         readable
+    }
+
+    /// Whether `present` at this backing `extent` and generation (re)builds
+    /// the swapchain first.
+    pub(crate) fn rebuild_due(&self, extent: vk::Extent2D, backing_gen: u64) -> bool {
+        self.needs_rebuild
+            || self.chain.current().is_none()
+            || backing_gen != self.backing_gen
+            || extent != self.extent
+    }
+
+    /// Whether a (re)build was attempted since the last call.
+    pub(crate) fn take_rebuilt(&mut self) -> bool {
+        std::mem::take(&mut self.rebuilt)
+    }
+
+    /// The current swapchain (tests).
+    #[cfg(test)]
+    pub(crate) fn handle(&self) -> Option<vk::SwapchainKHR> {
+        self.chain.current().map(|sc| sc.handle)
     }
 
     /// Swapchains replaced by rebuilds, for the presenter's retiring list.
@@ -252,11 +275,8 @@ impl WindowSwapchain {
         let Some(extent) = store.get(backing).map(|d| d.storage.extent) else {
             return Ok(Presented::NotReady);
         };
-        if self.needs_rebuild
-            || self.chain.current().is_none()
-            || backing_gen != self.backing_gen
-            || extent != self.extent
-        {
+        if self.rebuild_due(extent, backing_gen) {
+            self.rebuilt = true;
             self.rebuild(extent)?;
             self.backing_gen = backing_gen;
             self.extent = extent;
@@ -327,7 +347,7 @@ impl WindowSwapchain {
             Ok(ticket) => ticket,
             Err(e) => {
                 drop_fence(fence);
-                self.abandon(slot, index, None)?;
+                self.abandon(slot, None)?;
                 return Err(e);
             }
         };
@@ -359,7 +379,7 @@ impl WindowSwapchain {
         self.next_sync = (slot + 1) % self.syncs.len();
         if let Err(e) = submitted {
             drop_fence(fence);
-            self.abandon(slot, index, Some(ticket))?;
+            self.abandon(slot, Some(ticket))?;
             return Err(e);
         }
         store.touch_render_fence(backing, ticket.clone());
@@ -405,14 +425,10 @@ impl WindowSwapchain {
 
     /// An acquired image that will not be presented: consume its acquire
     /// semaphore with an empty batch (signalling `ticket`, else waiting for
-    /// the queue to idle), then give the image back (maintenance1) or
-    /// rebuild the swapchain.
-    fn abandon(
-        &mut self,
-        slot: usize,
-        index: u32,
-        ticket: Option<FenceTicket>,
-    ) -> Result<(), vk::Result> {
+    /// the queue to idle), then rebuild the swapchain. Never
+    /// `vkReleaseSwapchainImagesEXT`: Mesa before 26.0 advertises it but its
+    /// WSI (headless, macOS) calls a null `release_images`.
+    fn abandon(&mut self, slot: usize, ticket: Option<FenceTicket>) -> Result<(), vk::Result> {
         let vk = &self.vk;
         let waits = [vk::SemaphoreSubmitInfo::default()
             .semaphore(self.syncs[slot].acquire)
@@ -427,12 +443,8 @@ impl WindowSwapchain {
             Some(ticket) => self.syncs[slot].copy = Some(ticket),
             None => unsafe { vk.device.queue_wait_idle(vk.graphics_queue) }?,
         }
-        if self.maintenance1 {
-            self.chain.release_image(index)
-        } else {
-            self.needs_rebuild = true;
-            Ok(())
-        }
+        self.needs_rebuild = true;
+        Ok(())
     }
 
     /// Forget presents that finished.

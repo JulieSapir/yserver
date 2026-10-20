@@ -428,6 +428,17 @@ impl<P: Platform> XBackend<P> {
             .is_none_or(|record| record.is_fully_transparent)
     }
 
+    /// The shown sprite's `(version, hotspot)`, `None` while hidden; no
+    /// bytes copied.
+    #[cfg_attr(kms, allow(dead_code))] // The surface platform's.
+    pub(crate) fn sprite_key(&self) -> Option<(u64, (u16, u16))> {
+        if self.effective_cursor_hidden() {
+            return None;
+        }
+        let record = self.cursor_records.get(&self.effective_cursor_xid?)?;
+        Some((record.version, (record.hot_x, record.hot_y)))
+    }
+
     /// Whether anything besides a cursor XID still references host cursor
     /// `xid` — the references Xorg counts in `pCurs->refcnt`: window cursor
     /// attributes (`dix/window.c:1536`), the grab (`dix/grabs.c:243`), the
