@@ -1,5 +1,21 @@
 # RANDR CRTC model and hotplug relight
 
+> **2026-10-20, #273: P1a (Xorg-style, never tear down) replaces P1b.** A
+> physical disconnect no longer retires the route: the output keeps its
+> `platform.outputs` row, scanout pool and CRTC, issues no KMS commit, and is
+> reported Disconnected with an empty mode list while its CRTC keeps its mode
+> and position, exactly as Xorg's modesetting driver does
+> (`drmmode_update_kms_state`, drmmode_display.c:3965; `xf86ProbeOutputModes`,
+> xf86Crtc.c:1688-1691). The reconnect therefore needs no relight: the CRTC was
+> never turned off, so Awesome-style sessions that issue no RANDR restore
+> still recover. The objection below that P1a pins scanout BOs, descriptor
+> pools and `bo_generations` to an absent connector is accepted: about 44 MB
+> for a 2560x1440 output stays pinned while the monitor is unplugged, the
+> same cost Xorg pays. The P1b remember/relight/reserved-slot machinery
+> (`last_enabled`, `reserved_layout_slots`, `take_relight_requests`) is no
+> longer reached by any hotplug path. Link-status BAD re-commit (Xorg
+> :3995-4009) is not implemented yet.
+
 > **Status: P1 implemented and hardware-validated; P3 remains deferred.**
 > The later Xorg/MATE trace correctly showed that a RandR-aware desktop can
 > explicitly restore a returning output itself.  It did **not** make P1
@@ -220,7 +236,8 @@ Closes the reported bug on its own. Two candidate shapes; **P1b is proposed**.
 
 **P1a — Xorg-style, never tear down.** Keep the output in `platform.outputs`
 across a disconnect, flag it not-connected, keep its scanout pool. Closest to
-Xorg. Rejected as the primary: it pins scanout BOs, per-device descriptor pools
+Xorg. *(Adopted 2026-10-20 for #273; see the note at the top. The pinning cost
+below is accepted.)* Originally rejected as the primary: it pins scanout BOs, per-device descriptor pools
 and `bo_generations` to a connector that may never return, which is precisely
 the resource ownership #95 restructured away from, and it would have to hold
 them across an arbitrary multi-GPU topology change.

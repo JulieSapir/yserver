@@ -33,6 +33,19 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-20 monitor disconnect = Xorg modesetting (branch `fix/273-monitor-disconnect`, issue #273):** a
+  physical disconnect issues no KMS commit and runs no global quiesce. The output keeps its `platform.outputs` row,
+  scanout pool and CRTC (still scanning out); RANDR reports it Disconnected with an empty mode list and no EDID, while
+  its CRTC keeps mode, position and output, and the mode stays in the screen's mode table. Clients get
+  RRScreenChangeNotify plus RROutputChangeNotify (crtc + mode), no CrtcChangeNotify, no root resize. Reconnect
+  re-probes the modes and commits nothing (the CRTC never went off). Only a connected connector with no usable mode
+  still retires its route. DPMS on and VT resume attempt a disconnected route's commit and log a refusal at debug
+  instead of failing the others. Accepted cost: the absent output's scanout BOs (about 44 MB at 2560x1440) stay
+  pinned, as on Xorg. This supersedes the 2026-09-17 P1b remember/relight design (see its spec note): its
+  `last_enabled`/reserved-slot machinery is no longer reached by a hotplug path. Not done: link-status BAD one-CRTC
+  re-commit (Xorg drmmode_display.c:3995-4009) needs a per-CRTC modeset path, which today only exists as the global
+  quiesce (#275). Hardware validation pending.
+
 - **2026-10-20 atomic cursor state (branch `feat/cursor-sprite-state`, P2):** each KMS device selects its cursor state
   path once from static capability and plane facts. On qualifying devices, cursor image, hotspot, attach and detach
   changes are full-state atomic commits on the existing per-CRTC commit stream. A per-device pool supplies
@@ -1158,7 +1171,8 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   and never detaches a live CRTC or clears client layout policy. Thus a light
   disconnect reports `RR_Disconnected` while retaining the current CRTC/mode
   until the heavy physical boundary turns it Off and emits the scoped CRTC
-  transition. A same-mode EDID-only replacement remains intentionally
+  transition. *(Superseded 2026-10-20, #273: the heavy boundary also keeps the
+  CRTC, and a disconnected output lists no modes.)* A same-mode EDID-only replacement remains intentionally
   undetectable until that heavy boundary. Output/CRTC XIDs stay stable,
   disconnected notifications carry the real connection byte, and a programmed
   timing omitted by a replacement monitor remains in ScreenResources until it
@@ -2027,7 +2041,8 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   polls made forced `GetScreenResources` refreshes call full
   `discover_outputs`, redundantly enumerating planes, properties, modifiers,
   and hypothetical assignments. The forced refresh now uses a connector-only
-  connection/mode probe and retains last-known modes across disconnect.
+  connection/mode probe and retains last-known modes across disconnect
+  (no longer: since #273 a disconnected output lists no modes, like Xorg).
   Hardware testing showed no regression, but under GPU load the connector
   ioctl itself still produced an 89--94 ms opcode-128 stall, so this removes
   redundant work without fixing that kernel-facing latency.
