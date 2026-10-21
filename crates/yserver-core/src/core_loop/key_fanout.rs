@@ -1416,7 +1416,7 @@ fn focused_walk_target(state: &ServerState, focus: ResourceId, event: &HostKeyEv
         return focus;
     }
     for w in chain {
-        if !crate::core_loop::fanout::subscribers_by_id(state, w, mask_bit).is_empty() {
+        if !key_selectors(state, event, w, mask_bit).is_empty() {
             return w;
         }
         if w == focus {
@@ -1424,6 +1424,32 @@ fn focused_walk_target(state: &ServerState, focus: ResourceId, event: &HostKeyEv
         }
     }
     focus
+}
+
+/// Clients that selected this key event on `window` in any form: the core
+/// mask or the XI2 mask of one of the event's device forms. Xorg
+/// `DeliverDeviceEvents` stops at the first window where
+/// `EventIsDeliverable` finds any of them (dix/events.c), so a walk that
+/// looks at the core masks alone runs past XI2-only selectors.
+fn key_selectors(
+    state: &ServerState,
+    event: &HostKeyEvent,
+    window: ResourceId,
+    mask_bit: u32,
+) -> Vec<ClientId> {
+    let mut clients = crate::core_loop::fanout::subscribers_by_id(state, window, mask_bit);
+    let evtype = xi2_evtype_for(event);
+    let forms = key_xi2_forms(state, event.origin);
+    for (id, client) in &state.clients {
+        if !clients.contains(&ClientId(*id))
+            && forms
+                .iter()
+                .any(|(device_id, _)| key_xi2_form_selected(client, window, *device_id, evtype))
+        {
+            clients.push(ClientId(*id));
+        }
+    }
+    clients
 }
 
 /// Natural-delivery probe for an `owner_events` keyboard grab — the
@@ -1469,7 +1495,7 @@ fn key_grabbed_natural_target(
     };
     let mut cur = start;
     for _ in 0..256 {
-        let subs = crate::core_loop::fanout::subscribers_by_id(state, cur, mask_bit);
+        let subs = key_selectors(state, event, cur, mask_bit);
         if !subs.is_empty() {
             return subs.contains(&owner).then_some(cur);
         }
@@ -3467,6 +3493,116 @@ mod tests {
             let (mut state, mut owner, mut other) = setup(1, true);
             assert_eq!(run(&mut state, &mut owner), [ACTIVATING, ACTIVATING]);
             assert_eq!(presses(&mut other), []);
+        }
+
+        /// XI2 variants V7/V8: the owner selects `XI_KeyPress` /
+        /// `XI_KeyRelease` (XIAllMasterDevices) on root, `T`, `B` and `W2`,
+        /// no core masks, and holds an XI2 passive grab. Xorg
+        /// `DeliverDeviceEvents` stops at the first window where any form
+        /// is deliverable (`EventIsDeliverable` checks the XI2 masks), so
+        /// the XI2 selection on `B` counts for both the focus walk and the
+        /// owner_events walk.
+        fn setup_xi2(owner_events: bool) -> (ServerState, UnixStream) {
+            let mut state = ServerState::new();
+            window(&mut state, T, ROOT_WINDOW, (100, 100, 400, 300, 0));
+            window(&mut state, B, T, (0, 250, 400, 50, 0));
+            window(&mut state, W2, ROOT_WINDOW, (600, 100, 100, 100, 0));
+            state.pointer_root = OVER_B;
+            let xi2_keys = (1u64 << XI2_KEYPRESS_EVTYPE) | (1u64 << XI2_KEYRELEASE_EVTYPE);
+            let owner = install_kf(&mut state, OWNER, ROOT_WINDOW, 0, 0);
+            let masks = &mut state.clients.get_mut(&OWNER).unwrap().xi2_masks;
+            masks.clear();
+            for w in [ROOT_WINDOW, T, B, W2] {
+                masks.insert((w, XI2_ALL_MASTER_DEVICES), xi2_keys);
+            }
+            state.core_focus.raw = 1;
+            state.key_grabs.push(KeyGrab {
+                device_id: XI2_MASTER_KEYBOARD_DEVICE_ID,
+                owner: ClientId(OWNER),
+                grab_window: ROOT_WINDOW,
+                keycode: KEY_2,
+                modifiers: MOD4,
+                owner_events,
+                pointer_mode: 1,
+                keyboard_mode: 1,
+                via_xi2: true,
+                xi2_mask: u32::try_from(xi2_keys).unwrap(),
+            });
+            (state, owner)
+        }
+
+        /// (evtype, event, child, event_x, event_y) of every XI2 key event.
+        fn xi2_keys(peer: &mut UnixStream) -> Vec<(u16, u32, u32, i32, i32)> {
+            let b = read_all_available(peer);
+            let mut out = Vec::new();
+            let mut off = 0;
+            while off + 32 <= b.len() {
+                let e = &b[off..];
+                let len = u32::from_le_bytes(e[4..8].try_into().unwrap()) as usize;
+                if e[0] == 35 {
+                    let u32_at = |at: usize| u32::from_le_bytes(e[at..at + 4].try_into().unwrap());
+                    let i32_at = |at: usize| i32::from_le_bytes(e[at..at + 4].try_into().unwrap());
+                    out.push((
+                        u16::from_le_bytes([e[8], e[9]]),
+                        u32_at(24),
+                        u32_at(28),
+                        i32_at(40) >> 16,
+                        i32_at(44) >> 16,
+                    ));
+                }
+                off += 32 + len * 4;
+            }
+            out
+        }
+
+        fn press_plain(state: &mut ServerState, keycode: u8, mods: u16) {
+            let mut backend = crate::backend::recording::RecordingBackend::default();
+            let event = HostKeyEvent {
+                root_x: OVER_B.0,
+                root_y: OVER_B.1,
+                state: mods,
+                ..key_event(true, keycode)
+            };
+            let _ = key_event_fanout_to_state(state, &mut backend, event);
+        }
+
+        const SUPER: u8 = 133;
+        const XI_PRESS: u16 = XI2_KEYPRESS_EVTYPE;
+
+        /// V7 (owner_events=1): Super → `B`; activating `2` → root/`T`;
+        /// `3` under the grab → `B`.
+        #[test]
+        fn v7_xi2_owner_events_walk_uses_xi2_selections() {
+            let (mut state, mut owner) = setup_xi2(true);
+            press_plain(&mut state, SUPER, 0);
+            press_plain(&mut state, KEY_2, MOD4);
+            press_plain(&mut state, KEY_3, MOD4);
+            assert_eq!(
+                xi2_keys(&mut owner),
+                [
+                    (XI_PRESS, B.0, 0, 200, 25),
+                    (XI_PRESS, ROOT_WINDOW.0, T.0, 300, 375),
+                    (XI_PRESS, B.0, 0, 200, 25),
+                ]
+            );
+        }
+
+        /// V8 (owner_events=0): Super → `B`; activating `2` and `3`
+        /// under the grab → root/`T`.
+        #[test]
+        fn v8_xi2_no_owner_events_reports_on_grab_window() {
+            let (mut state, mut owner) = setup_xi2(false);
+            press_plain(&mut state, SUPER, 0);
+            press_plain(&mut state, KEY_2, MOD4);
+            press_plain(&mut state, KEY_3, MOD4);
+            assert_eq!(
+                xi2_keys(&mut owner),
+                [
+                    (XI_PRESS, B.0, 0, 200, 25),
+                    (XI_PRESS, ROOT_WINDOW.0, T.0, 300, 375),
+                    (XI_PRESS, ROOT_WINDOW.0, T.0, 300, 375),
+                ]
+            );
         }
     }
 }
