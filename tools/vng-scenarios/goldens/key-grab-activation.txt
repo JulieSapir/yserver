@@ -1,0 +1,91 @@
+==> probe.log <==
+keycodes: <masked>
+== V1 core PointerRoot owner_events=1 pointer-over-B
+ press Super:
+  A KeyPress(Super) event=B child=None ev=200,25 root=300,375 state=0x0 same=1
+ press 2 (activates):
+  A KeyPress(2) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ press 3 (grab active):
+  A KeyPress(3) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+ release 3:
+  A KeyRelease(3) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+ release 2 (deactivates):
+  A KeyRelease(2) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+ release Super:
+  A KeyRelease(Super) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+== V2 core PointerRoot owner_events=0 pointer-over-B
+ press Super:
+  A KeyPress(Super) event=B child=None ev=200,25 root=300,375 state=0x0 same=1
+ press 2 (activates):
+  A KeyPress(2) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ press 3 (grab active):
+  A KeyPress(3) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ release 3:
+  A KeyRelease(3) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ release 2 (deactivates):
+  A KeyRelease(2) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ release Super:
+  A KeyRelease(Super) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+== V3 core focus=T owner_events=1 pointer-over-B
+ press Super:
+  A KeyPress(Super) event=B child=None ev=200,25 root=300,375 state=0x0 same=1
+ press 2 (activates):
+  A KeyPress(2) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ press 3 (grab active):
+  A KeyPress(3) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+ release 3:
+  A KeyRelease(3) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+ release 2 (deactivates):
+  A KeyRelease(2) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+ release Super:
+  A KeyRelease(Super) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+== V4 core focus=W2 owner_events=1 pointer-over-B
+ press Super:
+  A KeyPress(Super) event=W2 child=None ev=-300,275 root=300,375 state=0x0 same=1
+ press 2 (activates):
+  A KeyPress(2) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ press 3 (grab active):
+  A KeyPress(3) event=W2 child=None ev=-300,275 root=300,375 state=0x40 same=1
+ release 3:
+  A KeyRelease(3) event=W2 child=None ev=-300,275 root=300,375 state=0x40 same=1
+ release 2 (deactivates):
+  A KeyRelease(2) event=W2 child=None ev=-300,275 root=300,375 state=0x40 same=1
+ release Super:
+  A KeyRelease(Super) event=W2 child=None ev=-300,275 root=300,375 state=0x40 same=1
+== V5 core PointerRoot owner_events=1 pointer-over-root
+ press Super:
+  A KeyPress(Super) event=root child=None ev=50,50 root=50,50 state=0x0 same=1
+ press 2 (activates):
+  A KeyPress(2) event=root child=None ev=50,50 root=50,50 state=0x40 same=1
+ press 3 (grab active):
+  A KeyPress(3) event=root child=None ev=50,50 root=50,50 state=0x40 same=1
+ release 3:
+  A KeyRelease(3) event=root child=None ev=50,50 root=50,50 state=0x40 same=1
+ release 2 (deactivates):
+  A KeyRelease(2) event=root child=None ev=50,50 root=50,50 state=0x40 same=1
+ release Super:
+  A KeyRelease(Super) event=root child=None ev=50,50 root=50,50 state=0x40 same=1
+== V6 core PointerRoot owner_events=1 pointer-over-B B-owned-by-C
+ press Super:
+  C KeyPress(Super) event=B child=None ev=200,25 root=300,375 state=0x0 same=1
+ press 2 (activates):
+  A KeyPress(2) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ press 3 (grab active):
+  A KeyPress(3) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ release 3:
+  A KeyRelease(3) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ release 2 (deactivates):
+  A KeyRelease(2) event=root child=T ev=300,375 root=300,375 state=0x40 same=1
+ release Super:
+  C KeyRelease(Super) event=B child=None ev=200,25 root=300,375 state=0x40 same=1
+== V9 core button grab on T owner_events=1, A selects root+B not T
+ press 1 (activates):
+  A ButtonPress(btn) event=T child=B ev=200,275 root=300,375 state=0x0 same=1
+ release 1:
+  A ButtonRelease(btn) event=B child=None ev=200,25 root=300,375 state=0x100 same=1
+ variant 9b: same, grab on T with owner_events=0:
+ press 1 (activates):
+  A ButtonPress(btn) event=T child=B ev=200,275 root=300,375 state=0x0 same=1
+ release 1:
+  A ButtonRelease(btn) event=T child=B ev=200,275 root=300,375 state=0x100 same=1
+done

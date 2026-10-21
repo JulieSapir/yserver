@@ -555,6 +555,7 @@ fn deliver_routed_key_with_master_status(
             grab_window,
             freeze,
             owner_events,
+            activating,
             via_xi2,
             device_id: grab_device_id,
         } => {
@@ -572,7 +573,9 @@ fn deliver_routed_key_with_master_status(
             // Xorg DeliverGrabbedEvent: with owner_events, key events
             // that would naturally land on one of the grab client's
             // windows are reported there instead of the grab window.
-            let natural = if owner_events {
+            // The activating press skips the walk: ActivatePassiveGrab
+            // sends it to the grab window (GH #277).
+            let natural = if owner_events && !activating {
                 key_grabbed_natural_target(state, &event, owner)
             } else {
                 None
@@ -1142,6 +1145,10 @@ enum KeyRoute {
         /// X11 `owner_events` — when true, try natural delivery to
         /// the grab owner first (Xorg DeliverGrabbedEvent).
         owner_events: bool,
+        /// The press that just activated a passive grab. Xorg
+        /// `ActivatePassiveGrab` reports it on the grab window with no
+        /// `owner_events` walk; only later events take the walk.
+        activating: bool,
         via_xi2: bool,
         device_id: u16,
     },
@@ -1192,6 +1199,7 @@ fn key_route(state: &mut ServerState, event: &HostKeyEvent) -> KeyRoute {
                 grab_window: g.grab_window,
                 freeze: false,
                 owner_events: g.owner_events,
+                activating: false,
                 via_xi2: g.via_xi2,
                 device_id: if is_master_grab {
                     XI2_MASTER_KEYBOARD_DEVICE_ID
@@ -1212,6 +1220,7 @@ fn key_route(state: &mut ServerState, event: &HostKeyEvent) -> KeyRoute {
             grab_window: g.grab_window,
             freeze: false,
             owner_events: g.owner_events,
+            activating: false,
             via_xi2: g.via_xi2,
             device_id: if is_master_grab {
                 XI2_MASTER_KEYBOARD_DEVICE_ID
@@ -1302,6 +1311,7 @@ fn key_route(state: &mut ServerState, event: &HostKeyEvent) -> KeyRoute {
             // keyboard_mode 0 == Synchronous → freeze for replay.
             freeze: keyboard_mode == 0,
             owner_events,
+            activating: true,
             via_xi2,
             device_id: if device_grab {
                 grabbed_device_id
@@ -3030,7 +3040,7 @@ mod tests {
         const OUTSIDE: (i16, i16) = (450, 380);
         const XI2_KEY_PRESS_BIT: u64 = 1 << 2;
 
-        fn window(
+        pub(super) fn window(
             state: &mut ServerState,
             id: ResourceId,
             parent: ResourceId,
@@ -3322,6 +3332,141 @@ mod tests {
                 (XEV.0, INNER.0, 130, 100, 22, 27)
             );
             assert_eq!(ev[31], u8::try_from(device).unwrap());
+        }
+    }
+
+    /// GH #277: where a passive key grab's ACTIVATING event is reported.
+    /// Xorg `ActivatePassiveGrab` (dix/events.c) delivers it straight to
+    /// the grab owner with `FixUpEventFromWindow(grab->window, …)` — no
+    /// `owner_events` walk; only later events go through
+    /// `DeliverGrabbedEvent`'s walk. Expected values are the Xorg run of
+    /// `tools/vng-scenarios/key-grab-activation` (probe variants V1–V6).
+    ///
+    /// Tree: `T` (100,100 400x300) on the root, its child `B` (0,250
+    /// 400x50), `W2` (600,100 100x100). The pointer at root (300,375) is
+    /// over `B`. Client 7 grabs Mod4+`KEY_2` on the root, owner_events=1.
+    mod passive_grab_activation {
+        use super::{event_window_fields::window, *};
+
+        const T: ResourceId = ResourceId(0x0020_0001);
+        const B: ResourceId = ResourceId(0x0020_0002);
+        const W2: ResourceId = ResourceId(0x0020_0003);
+        const OVER_B: (i16, i16) = (300, 375);
+        const MOD4: u16 = 0x40;
+        const KEY_2: u8 = 11;
+        const KEY_3: u8 = 12;
+        const OWNER: u32 = 7;
+        const OTHER: u32 = 8;
+
+        /// Build the probe tree with the grab installed; `B` is selected by
+        /// `OTHER` when `other_owns_b`, else by the grab owner.
+        fn setup(focus: u32, other_owns_b: bool) -> (ServerState, UnixStream, UnixStream) {
+            let mut state = ServerState::new();
+            window(&mut state, T, ROOT_WINDOW, (100, 100, 400, 300, 0));
+            window(&mut state, B, T, (0, 250, 400, 50, 0));
+            window(&mut state, W2, ROOT_WINDOW, (600, 100, 100, 100, 0));
+            state.pointer_root = OVER_B;
+            let keys = KEY_PRESS_MASK | KEY_RELEASE_MASK;
+            let owner = install_kf(&mut state, OWNER, ROOT_WINDOW, keys, 0);
+            let other = install_kf(&mut state, OTHER, B, if other_owns_b { keys } else { 0 }, 0);
+            let masks = &mut state.clients.get_mut(&OWNER).unwrap().event_masks;
+            masks.insert(T, keys);
+            masks.insert(W2, keys);
+            if !other_owns_b {
+                masks.insert(B, keys);
+            }
+            state.core_focus.raw = focus;
+            state.key_grabs.push(KeyGrab {
+                device_id: 0,
+                owner: ClientId(OWNER),
+                grab_window: ROOT_WINDOW,
+                keycode: KEY_2,
+                modifiers: MOD4,
+                owner_events: true,
+                pointer_mode: 1,
+                keyboard_mode: 1,
+                via_xi2: false,
+                xi2_mask: 0,
+            });
+            (state, owner, other)
+        }
+
+        fn press(state: &mut ServerState, keycode: u8) {
+            let mut backend = crate::backend::recording::RecordingBackend::default();
+            let event = HostKeyEvent {
+                root_x: OVER_B.0,
+                root_y: OVER_B.1,
+                state: MOD4,
+                ..key_event(true, keycode)
+            };
+            let _ = key_event_fanout_to_state(state, &mut backend, event);
+        }
+
+        /// (event, child, event_x, event_y) of every core KeyPress received.
+        fn presses(peer: &mut UnixStream) -> Vec<(u32, u32, i16, i16)> {
+            read_all_available(peer)
+                .chunks(32)
+                .filter(|e| e[0] & 0x7f == 2)
+                .map(|e| {
+                    let u32_at = |at: usize| u32::from_le_bytes(e[at..at + 4].try_into().unwrap());
+                    let i16_at = |at: usize| i16::from_le_bytes([e[at], e[at + 1]]);
+                    (u32_at(12), u32_at(16), i16_at(24), i16_at(26))
+                })
+                .collect()
+        }
+
+        /// The activating press as Xorg reports it: event = root,
+        /// child = `T`, root coordinates.
+        const ACTIVATING: (u32, u32, i16, i16) = (ROOT_WINDOW.0, T.0, 300, 375);
+
+        /// Run activate (`KEY_2`) then a second press (`KEY_3`) under the
+        /// active grab; return what the owner got for each.
+        fn run(state: &mut ServerState, owner: &mut UnixStream) -> Vec<(u32, u32, i16, i16)> {
+            press(state, KEY_2);
+            let mut got = presses(owner);
+            assert!(
+                state.active_keyboard_grab.is_some(),
+                "the press must activate the grab"
+            );
+            press(state, KEY_3);
+            got.extend(presses(owner));
+            got
+        }
+
+        /// V1: PointerRoot. Activation on the grab window; the next press
+        /// takes the owner_events walk to `B`.
+        #[test]
+        fn v1_pointer_root_activation_reports_on_grab_window() {
+            let (mut state, mut owner, _) = setup(1, false);
+            assert_eq!(run(&mut state, &mut owner), [ACTIVATING, (B.0, 0, 200, 25)]);
+        }
+
+        /// V3: focus `T`, same deliveries as V1.
+        #[test]
+        fn v3_focus_t_activation_reports_on_grab_window() {
+            let (mut state, mut owner, _) = setup(T.0, false);
+            assert_eq!(run(&mut state, &mut owner), [ACTIVATING, (B.0, 0, 200, 25)]);
+        }
+
+        /// V4: focus `W2` (sprite outside it). Activation on the root; the
+        /// next press walks from the focus and lands on `W2`.
+        #[test]
+        fn v4_focus_w2_activation_reports_on_grab_window() {
+            let (mut state, mut owner, _) = setup(W2.0, false);
+            assert_eq!(
+                run(&mut state, &mut owner),
+                [ACTIVATING, (W2.0, 0, -300, 275)]
+            );
+        }
+
+        /// V6: `B` selected only by another client. The walk's first
+        /// selecting window is not the owner's, so the next press also
+        /// falls back to the grab window; the other client gets nothing.
+        #[test]
+        fn v6_other_client_on_b_gets_nothing() {
+            let (mut state, mut owner, mut other) = setup(1, true);
+            assert_eq!(run(&mut state, &mut owner), [ACTIVATING, ACTIVATING]);
+            assert_eq!(presses(&mut other), []);
         }
     }
 }

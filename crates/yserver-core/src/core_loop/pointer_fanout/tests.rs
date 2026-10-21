@@ -3531,10 +3531,10 @@ fn passive_sync_grab_on_foreign_window_delivers_to_grab_client_and_freezes() {
 /// container (`YClientContainer::grabButtons`). The taskbar widgets
 /// are descendants of that container and — being icewm's own
 /// windows — ALSO select ButtonPress. The activating press must
-/// still be reported on the GRAB WINDOW (the container), because
-/// Xorg moves the sprite up to the grab window on activation
-/// (`ActivatePointerGrab` → `DoEnterLeaveEvents` NotifyGrab). Only
-/// then does icewm's `YClientContainer::handleButton` run and call
+/// still be reported on the GRAB WINDOW (the container): Xorg
+/// `ActivatePassiveGrab` delivers it with
+/// `FixUpEventFromWindow(grab->window)`, without the owner_events walk
+/// (GH #277). Only then does icewm's `YClientContainer::handleButton` run and call
 /// `XAllowEvents(ReplayPointer)`. Pre-fix the press leaked to the
 /// deepest widget (whose handler never thaws), wedging every panel
 /// click. The reported `child` is the container's child on the path
@@ -3635,8 +3635,8 @@ fn passive_sync_grab_reports_activating_press_on_grab_window_not_owned_descendan
         &wm_bytes[12..16],
         &container.0.to_le_bytes(),
         "activating press must be reported on the GRAB WINDOW (the \
-             container), not the owned descendant widget — Xorg moves the \
-             sprite up to the grab window on activation",
+             container), not the owned descendant widget — Xorg \
+             ActivatePassiveGrab skips the owner_events walk",
     );
     assert_eq!(
         &wm_bytes[16..20],
@@ -5938,4 +5938,5 @@ fn implicit_grab_multi_button_lifecycle() {
     );
 }
 
+mod passive_grab_activation;
 mod server_events;

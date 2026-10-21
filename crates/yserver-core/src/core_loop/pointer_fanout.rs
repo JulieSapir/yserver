@@ -1321,25 +1321,18 @@ fn pointer_event_fanout_to_state_inner(
 
     // Step 3 — passive button-grab matching for ButtonPress.
     //
-    // Delivery mirrors Xorg `DeliverGrabbedEvent` (dix/events.c:4361):
+    // Delivery mirrors Xorg `ActivatePassiveGrab` (dix/events.c:3833):
     //
-    // 1. With `owner_events=true`, run the natural propagation walk
-    //    FILTERED TO THE GRAB CLIENT — `TryClientEvents`
-    //    (dix/events.c:2069) returns -1 for any other client ("not
-    //    delivered due to grab"), which ABORTS the walk at that
-    //    window. Crucially the walk STARTS AT THE GRAB WINDOW, not the
-    //    deepest hit: `ActivatePointerGrab` (dix/events.c:1633) moves
-    //    the sprite up to the grab window (`DoEnterLeaveEvents` with
-    //    `NotifyGrab`) before the activating event is delivered, so the
-    //    press is reported on the grab window or an ANCESTOR of it —
-    //    never a descendant, even one the grab client selected. See
-    //    `grabbed_natural_target_from_grab_window`.
-    // 2. No natural delivery → report to the grab client on the
-    //    grab window, filtered by the grab's event_mask.
-    // 3. `GrabModeSync` freezes the pointer queue only when a
-    //    delivery happened (`FreezeThisEventIfNeededForSyncGrab`
-    //    runs under `if (deliveries)`), so the AllowEvents that
-    //    thaws it always has a recipient.
+    // 1. The activating press goes to the grab client on the GRAB
+    //    WINDOW — `FixUpEventFromWindow(grab->window)` then
+    //    `TryClientEvents(rClient(grab), …)` with the event's own
+    //    filter. No `owner_events` walk and no mask check: that walk
+    //    lives in `DeliverGrabbedEvent` and only applies to the events
+    //    that follow (GH #277, probe V9: event = grab window, child =
+    //    its child toward the sprite, even when the grab client
+    //    selects the press on that child or on an ancestor).
+    // 2. `GrabModeSync` freezes the pointer queue and stores the press
+    //    for a ReplayPointer.
     //
     // Pre-fix the qualification accepted any descendant of the grab
     // window — wmaker's click-to-focus sync grab on a CLIENT's
@@ -1432,42 +1425,8 @@ fn pointer_event_fanout_to_state_inner(
             );
         }
 
-        let mask_bit = pointer_mask_bit(event.kind, event.state);
-        let natural = if grab.owner_events {
-            grabbed_natural_target_from_grab_window(
-                state,
-                grab.grab_window,
-                target,
-                target_x,
-                target_y,
-                mask_bit,
-                grab.owner,
-            )
-        } else {
-            None
-        };
         let mut delivered = false;
-        if let Some((natural_window, event_x, event_y, child)) = natural {
-            let focus = state.crossing_has_focus(natural_window);
-            let extras = fanout_event_to_clients(state, &[grab.owner], |buf, seq, order| {
-                encode_pointer_event(
-                    buf,
-                    order,
-                    PointerEventKind::ButtonPress,
-                    seq,
-                    event.detail,
-                    event.time,
-                    natural_window,
-                    child,
-                    event,
-                    event_x,
-                    event_y,
-                    focus,
-                );
-            });
-            merge_dropped(&mut dropped, extras);
-            delivered = true;
-        } else if let Some(grab_target) = client_target_id(state, grab.owner) {
+        if let Some(grab_target) = client_target_id(state, grab.owner) {
             // Xorg ActivatePassiveGrab hands the activating event to the
             // grabbing client with the event's own filter as the mask
             // (dix/events.c TryClientEvents(..., GetEventFilter(device, xE),
@@ -3610,98 +3569,6 @@ fn grabbed_natural_target(
         // `to_content_coords`, border term included.
         (x, y) = window.to_parent_coords(x, y);
         child = Some(current);
-        current = window.parent;
-    }
-    None
-}
-
-/// `owner_events=true` natural-delivery walk for a passive grab's
-/// ACTIVATING event. Unlike [`grabbed_natural_target`], the walk starts
-/// at the GRAB WINDOW, not the deepest hit.
-///
-/// Xorg `ActivatePointerGrab` (dix/events.c:1633) fires
-/// `DoEnterLeaveEvents(oldWin, grab->window, NotifyGrab)` on activation,
-/// which moves the sprite UP to the grab window before the activating
-/// event is delivered. `DeliverGrabbedEvent` then runs the owner_events
-/// walk from `pSprite->win` (= the grab window), so the press is
-/// reported on the grab window (or an ancestor) — NEVER a descendant of
-/// it — with `child` = the grab window's child on the path toward the
-/// pointer (Xorg `FindChildForEvent`).
-///
-/// Starting the walk at the deepest hit instead (the pre-fix behaviour)
-/// leaks the activating press to a descendant whenever the grab client
-/// also selected the event there. icewm frames its own taskbar and puts
-/// a sync AnyModifier button grab on the client container; its taskbar
-/// widgets are children of that container and DO select ButtonPress, so
-/// the press landed on the widget instead of the container. icewm's
-/// `YClientContainer::handleButton` (the only path that calls
-/// `XAllowEvents(ReplayPointer)`) never ran, so the frozen pointer never
-/// thawed and every panel click died (icewm HW 2026-07-01).
-///
-/// `hit`/`hit_x`/`hit_y` are the deepest window under the pointer and
-/// its window-relative coords. Returns the delivery window, coords
-/// translated to it, and the `child`. Returns `None` (→ caller falls
-/// back to grab-window delivery via the grab's own event_mask) when the
-/// grab client selected nothing on the chain from the grab window up, or
-/// when the grab window is not an ancestor of the hit.
-fn grabbed_natural_target_from_grab_window(
-    state: &ServerState,
-    grab_window: ResourceId,
-    hit: ResourceId,
-    hit_x: i16,
-    hit_y: i16,
-    mask_bits: u32,
-    grab_client: ClientId,
-) -> Option<(ResourceId, i16, i16, ResourceId)> {
-    // Translate the pointer position from the deepest hit up to the
-    // grab window, recording the grab window's immediate child on the
-    // path toward the hit (Xorg `FindChildForEvent`). `child` is 0 when
-    // the pointer is directly on the grab window.
-    let mut current = hit;
-    let mut x = hit_x;
-    let mut y = hit_y;
-    let mut child = ResourceId(0);
-    // `0..256` mirrors `grabbed_natural_target`: a defensive cap so a
-    // malformed (cyclic) window tree can never hang the core loop.
-    for _ in 0..256 {
-        if current == grab_window {
-            break;
-        }
-        let window = state.resources.window(current)?;
-        // Reached the root without meeting the grab window: it is not an
-        // ancestor of the hit, so there is no natural chain to walk.
-        if window.parent == current {
-            return None;
-        }
-        // #133 step 8: the inverse of the hit-test walk's
-        // `to_content_coords`, border term included.
-        (x, y) = window.to_parent_coords(x, y);
-        child = current;
-        current = window.parent;
-    }
-    if current != grab_window {
-        return None;
-    }
-
-    // Now `current == grab_window` and (x, y) is the pointer relative to
-    // it. Run the same first-subscriber-or-abort walk as
-    // `grabbed_natural_target`, but rooted at the grab window (the moved
-    // sprite position) rather than the deepest hit.
-    for _ in 0..256 {
-        let subs = crate::core_loop::fanout::subscribers_by_id(state, current, mask_bits);
-        if !subs.is_empty() {
-            return subs
-                .contains(&grab_client)
-                .then_some((current, x, y, child));
-        }
-        let window = state.resources.window(current)?;
-        if window.parent == current {
-            return None;
-        }
-        // #133 step 8: the inverse of the hit-test walk's
-        // `to_content_coords`, border term included.
-        (x, y) = window.to_parent_coords(x, y);
-        child = current;
         current = window.parent;
     }
     None
