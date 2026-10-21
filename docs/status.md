@@ -33,6 +33,22 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-20 atomic cursor state (branch `feat/cursor-sprite-state`, P2):** each KMS device selects its cursor state
+  path once from static capability and plane facts. On qualifying devices, cursor image, hotspot, attach and detach
+  changes are full-state atomic commits on the existing per-CRTC commit stream. A per-device pool supplies
+  full-capacity ARGB sprite framebuffers; a replaced sprite is reusable only after the event for its replacing commit
+  ID, or after a successful blocking detach. Position deltas continue to travel with scene, direct, copied and unflip
+  commits. VT, DPMS and output lifecycle paths detach with a separate blocking commit and retain release ownership
+  until the detach is safe. The hotspot client capability is requested at KMS open. Devices that do not qualify retain
+  the legacy ioctls and software-cursor fallback unchanged. Each image or state change occupies that CRTC's commit
+  slot for a vblank; the expected P2 cost is up to one scene frame per animation frame, with repeated unflips possible
+  during animated cursors over held direct scanout. CI runs the ignored suite on lavapipe; capability-dependent
+  fixtures may report skips. Hardware: AMD Raphael and NVIDIA RTX 5060 Ti both qualify for the atomic path and match
+  master in `tools/cursor-bench`; DPMS, `xrandr` off/on, VT switch (NVIDIA), physical hot-unplug and shutdown leave
+  no cursor ghost and no unreleased sprite. An animated cursor over held direct scanout unflips once per animation
+  frame (no dropped client frames; P3 removes it). Not run: dual-head, a paravirtualized driver, Intel, Asahi. Record:
+  [`plans/2026-10-20-cursor-sprite-state-validation.md`](superpowers/plans/2026-10-20-cursor-sprite-state-validation.md).
+
 - **2026-10-19 DRM commit identity (branch `feat/drm-commit-identity`, plan
   `plans/2026-10-19-drm-commit-identity.md`):** every event-requesting atomic commit the server submits carries a
   commit ID as its event cookie, allocated before submission and recorded only when the kernel accepts the commit.

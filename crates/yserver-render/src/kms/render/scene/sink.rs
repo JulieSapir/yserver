@@ -190,7 +190,19 @@ pub trait OutputSink {
 #[derive(Debug)]
 pub struct CursorShowFailure {
     pub remains_visible: bool,
+    /// The requested show has not been rejected; it remains queued for a
+    /// later scene/backend pass (for example while a CRTC flip is in flight).
+    pub deferred: bool,
     pub error: Box<dyn std::error::Error + Send + Sync>,
+}
+
+/// Result of staging an image in cursor framebuffer storage. `Deferred`
+/// leaves the applied binding authoritative and schedules the newest wanted
+/// image for a later Backend pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorUploadOutcome {
+    Ready,
+    Deferred,
 }
 
 impl std::fmt::Display for CursorShowFailure {
@@ -203,7 +215,13 @@ impl std::fmt::Display for CursorShowFailure {
 pub trait CursorPlaneSink {
     fn fits(&self, output_idx: usize, width: u32, height: u32) -> bool;
     fn visible(&self, output_idx: usize) -> bool;
-    fn uploaded_version(&self, output_idx: usize) -> Option<u64>;
+    fn uploaded_image_matches(
+        &self,
+        output_idx: usize,
+        version: u64,
+        hot_x: u16,
+        hot_y: u16,
+    ) -> bool;
     /// # Errors
     ///
     /// The upload failed.
@@ -211,10 +229,12 @@ pub trait CursorPlaneSink {
         &mut self,
         output_idx: usize,
         version: u64,
+        hot_x: u16,
+        hot_y: u16,
         width: u32,
         height: u32,
         bgra_bytes: &[u8],
-    ) -> io::Result<()>;
+    ) -> io::Result<CursorUploadOutcome>;
     /// # Errors
     ///
     /// The show failed.

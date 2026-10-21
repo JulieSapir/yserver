@@ -87,7 +87,9 @@ impl KmsBackend {
             }
         } else {
             self.platform.wait_idle_bounded();
-            if let Err(error) = self.platform.dpms_set_outputs_active(false) {
+            let outputs_off = self.platform.dpms_set_outputs_active(false);
+            self.platform.invalidate_live_cursor_applied();
+            if let Err(error) = outputs_off {
                 log::error!(
                     "kms: {context}: could not disable the old output topology: {error}; exiting"
                 );
@@ -109,6 +111,7 @@ impl KmsBackend {
         }
         self.platform
             .clear_atomic_cursor_state_after_old_events_discard();
+        self.platform.invalidate_live_cursor_applied();
 
         // Direct teardown may have submitted the lazy COW copy immediately
         // before disabling scanout. Wait for that work, then retire scene and
@@ -1175,6 +1178,10 @@ impl KmsBackend {
                 );
             }
         }
+
+        // Full modesets invalidate the kernel's cursor-plane comparison even
+        // when a failed best-effort detach retained a live sprite lease.
+        self.platform.invalidate_live_cursor_applied();
 
         self.prune_armed_targets_to_live_outputs();
 

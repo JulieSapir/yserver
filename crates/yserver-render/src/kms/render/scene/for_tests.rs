@@ -35,6 +35,17 @@ use ash::vk;
 use std::sync::Arc;
 
 impl SceneCompositor {
+    /// Test-only snapshot of the version currently forcing a per-output
+    /// cursor show retry.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_tests_cursor_retry_version(&self, output_idx: usize) -> Option<u64> {
+        self.inner
+            .as_ref()
+            .and_then(|inner| inner.outputs.get(output_idx))
+            .and_then(|output| output.force_show_retry_version)
+            .map(|retry| retry.version)
+    }
+
     /// Test-only count of descriptor-pool slots still waiting for their
     /// compose fences to signal.
     #[cfg(any(test, feature = "test-support"))]

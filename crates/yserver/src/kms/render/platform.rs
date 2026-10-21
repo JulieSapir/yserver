@@ -26,10 +26,13 @@
 
 mod connectors;
 mod cursor;
+mod cursor_atomic;
+pub(crate) mod cursor_commit;
+pub(crate) mod cursor_state;
 mod devices;
 pub(crate) mod flip_events;
 mod init;
-mod power;
+pub(in crate::kms::render) mod power;
 mod qualify;
 mod scanout_bos;
 mod scene_sink;
@@ -211,6 +214,7 @@ pub(super) struct CursorHideRecovery {
 /// ioctls are device-local, so none of these fields may live at platform scope.
 pub(crate) struct KmsCursorState {
     pub(crate) plane: Option<crate::kms::cursor_plane::CursorPlane>,
+    pub(crate) crtc_states: HashMap<::drm::control::crtc::Handle, cursor_state::CursorCrtcState>,
     pending_move: Option<(i32, i32, u16, u16)>,
     /// Pointer-event timestamp paired with `pending_move` across an EBUSY
     /// retry. Atomic positions carry this timestamp directly.
@@ -225,7 +229,7 @@ pub(crate) struct KmsCursorState {
     /// Accepted cursor-only commits, keyed by CRTC. A cursor-only commit is
     /// in flight only after its atomic ioctl succeeded.
     atomic_cursor_commits_in_flight:
-        HashMap<::drm::control::crtc::Handle, crate::drm::atomic::CursorPlanePosition>,
+        HashMap<::drm::control::crtc::Handle, cursor_state::InFlightCursorCommit>,
     /// A cursor-only EBUSY proves another commit is pending on this CRTC.
     /// Keep the latest position unsent until that CRTC's next flip event.
     cursor_retry_waits_for_flip: HashSet<::drm::control::crtc::Handle>,
@@ -247,6 +251,16 @@ pub(crate) struct KmsCursorState {
     /// CRTC topology.
     pub(crate) atomic_cursor: bool,
     sprite_signature: Option<(u16, u16, u16, u16)>,
+}
+
+impl KmsCursorState {
+    pub(crate) fn state_path(&self) -> crate::kms::cursor_plane::topology::CursorStatePath {
+        self.plane
+            .as_ref()
+            .map(crate::kms::cursor_plane::CursorPlane::state_path)
+            .map(|decision| decision.path)
+            .unwrap_or(crate::kms::cursor_plane::topology::CursorStatePath::Legacy)
+    }
 }
 
 /// Aggregate result of one pointer move fanout. A fallback change means a
@@ -574,6 +588,20 @@ pub struct PlatformBackend {
 }
 
 impl PlatformBackend {
+    #[cfg(test)]
+    pub(crate) fn for_tests_gpu_contexts(&self) -> Vec<Arc<VkContext>> {
+        let mut contexts = Vec::new();
+        if let Some(vk) = self.gpu.vk.as_ref() {
+            contexts.push(Arc::clone(vk));
+        }
+        for vk in self.copy_vk_contexts.values() {
+            if !contexts.iter().any(|context| Arc::ptr_eq(context, vk)) {
+                contexts.push(Arc::clone(vk));
+            }
+        }
+        contexts
+    }
+
     pub(crate) fn set_tearing_on(&mut self, on: bool) {
         self.tearing_on = on;
         for device in &self.devices {

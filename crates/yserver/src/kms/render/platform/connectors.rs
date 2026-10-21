@@ -217,6 +217,13 @@ impl PlatformBackend {
                 .ok_or_else(|| io::Error::other(format!("no DRM device for {output_key:?}")))?
                 .device,
         );
+        let crtc = self.outputs[idx].output.crtc;
+
+        if let Err(error) = self.detach_atomic_cursor_before_disable(output_key.device_key, crtc) {
+            log::warn!(
+                "render disable_connector: atomic cursor detach for {connector} failed: {error}"
+            );
+        }
 
         // DRM disable (ALLOW_MODESET atomic commit zeroing the CRTC).
         if let Err(e) = crate::drm::modeset::disable_output(&device, &self.outputs[idx].output) {
@@ -253,6 +260,7 @@ impl PlatformBackend {
     pub(super) fn remove_connector_at(&mut self, idx: usize) {
         let output_key = self.outputs[idx].key.clone();
         let changed_device = self.outputs[idx].key.device_key;
+        let removed_crtc = self.outputs[idx].output.crtc;
         self.cancel_scanout_render_completions_for_output(&output_key);
         if let Err(error) = self.drain_scanout_pool_at(idx) {
             log::error!(
@@ -271,6 +279,8 @@ impl PlatformBackend {
             self.first_pageflip_logged.remove(idx);
         }
         self.outputs.remove(idx);
+
+        self.release_cursor_crtc_ownership_after_all_off(changed_device, removed_crtc);
 
         // Recompute the virtual framebuffer extent from surviving outputs.
         // Do NOT recompact — other outputs may be client-positioned.
@@ -1102,6 +1112,7 @@ impl PlatformBackend {
             .collect();
         for idx in rescan.dropped_old_indices.iter().copied() {
             let dropped_key = self.outputs[idx].key.clone();
+            let dropped_crtc = self.outputs[idx].output.crtc;
             rescan.dropped_layouts.push(DroppedRoute {
                 key: dropped_key.clone(),
                 x: self.outputs[idx].x,
@@ -1118,6 +1129,7 @@ impl PlatformBackend {
                 );
             }
             self.outputs.remove(idx);
+            self.release_cursor_crtc_ownership_after_all_off(dropped_key.device_key, dropped_crtc);
             if idx < self.scanout_pools.len() {
                 self.scanout_pools.remove(idx);
             }

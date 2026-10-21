@@ -4,7 +4,8 @@ use crate::kms::render::{
         RenderCompletion, SceneCompositor, SceneCompositorInner,
         cursor::{
             apply_cursor_transition_on_retire, force_cursor_retry_repaint,
-            resolve_retired_cursor_state, update_force_show_retry_version,
+            mark_cursor_transition_structure_dirty, resolve_retired_cursor_state,
+            update_force_show_retry_version,
         },
         tick::tick_skip_log_enabled,
     },
@@ -214,14 +215,22 @@ impl SceneCompositor {
             // second transaction. Record what actually happened: never claim
             // Hw after a rolled-back show and never claim Sw/Hidden while a
             // failed hide or rollback left the hardware sprite visible.
-            let cursor_result =
-                apply_cursor_transition_on_retire(inner, output_idx, sink, ack.cursor_transition);
+            let retained_mode = inner.outputs[output_idx].last_frame_cursor_mode;
+            let cursor_result = apply_cursor_transition_on_retire(
+                inner.cursor.as_ref(),
+                output_idx,
+                sink,
+                ack.cursor_transition,
+            );
             let state = inner
                 .outputs
                 .get_mut(output_idx)
                 .expect("range checked above");
-            let resolution =
-                resolve_retired_cursor_state(cursor_result, ack.cursor_mode_after_retire);
+            let resolution = resolve_retired_cursor_state(
+                cursor_result,
+                ack.cursor_mode_after_retire,
+                retained_mode,
+            );
             state.force_show_retry_version = update_force_show_retry_version(
                 state.force_show_retry_version,
                 ack.cursor_transition,
@@ -247,6 +256,10 @@ impl SceneCompositor {
             }
             if resolution.force_repaint {
                 force_cursor_retry_repaint(state);
+                mark_cursor_transition_structure_dirty(
+                    &mut self.scene_structure_dirty,
+                    cursor_result,
+                );
             }
             let actually_sw_composed =
                 matches!(ack.cursor_mode_after_retire, OutputCursorMode::Sw { .. });

@@ -319,9 +319,9 @@ impl KmsBackend {
     ///
     /// # Errors
     ///
-    /// Returns `Err` only when Vk init fails AND the caller
-    /// explicitly wanted Vk-backed tests; callers that can fall
-    /// back to headless use `for_tests` directly.
+    /// Returns `Err` when Vulkan, its command pool, or the render engine
+    /// cannot be initialized; callers that can fall back to headless use
+    /// `for_tests` directly.
     #[doc(hidden)]
     pub fn for_tests_with_vk() -> Result<Self, io::Error> {
         Self::for_tests_with_vk_dimensions(800, 600)
@@ -344,8 +344,7 @@ impl KmsBackend {
         let mut base = Self::for_tests_seed();
         base.platform.fb_w = width.max(1);
         base.platform.fb_h = height.max(1);
-        let vk = crate::kms::vk::device::VkContext::new()
-            .map_err(|e| io::Error::other(format!("render for_tests_with_vk: VkContext: {e:?}")))?;
+        let vk = crate::kms::vk::device::VkContext::new().map_err(io::Error::other)?;
         let ops_pool = crate::kms::vk::ops::OpsCommandPool::new(Arc::clone(&vk)).map_err(|e| {
             io::Error::other(format!("render for_tests_with_vk: OpsCommandPool: {e:?}"))
         })?;

@@ -19,6 +19,23 @@ use yserver_protocol::x11::xfixes;
 struct TestSink {
     gpu: GpuCore,
     commit_in_flight: HashSet<usize>,
+    cursor_available: bool,
+    cursor_visible: bool,
+    uploaded_version: Option<u64>,
+    uploaded_hotspot: Option<(u16, u16)>,
+    upload_response: TestUploadResponse,
+    upload_calls: usize,
+    show_failure: Option<(bool, bool)>,
+    show_calls: usize,
+    hide_fails: bool,
+    hide_calls: usize,
+}
+
+#[derive(Clone, Copy)]
+enum TestUploadResponse {
+    Ready,
+    Deferred,
+    Error,
 }
 
 impl TestSink {
@@ -26,6 +43,16 @@ impl TestSink {
         Self {
             gpu: GpuCore::for_tests(),
             commit_in_flight: HashSet::new(),
+            cursor_available: false,
+            cursor_visible: false,
+            uploaded_version: None,
+            uploaded_hotspot: None,
+            upload_response: TestUploadResponse::Ready,
+            upload_calls: 0,
+            show_failure: None,
+            show_calls: 0,
+            hide_fails: false,
+            hide_calls: 0,
         }
     }
 
@@ -131,26 +158,43 @@ impl OutputSink for TestSink {
 
 impl CursorPlaneSink for TestSink {
     fn fits(&self, _output_idx: usize, _width: u32, _height: u32) -> bool {
-        false
+        self.cursor_available
     }
 
     fn visible(&self, _output_idx: usize) -> bool {
-        false
+        self.cursor_visible
     }
 
-    fn uploaded_version(&self, _output_idx: usize) -> Option<u64> {
-        None
+    fn uploaded_image_matches(
+        &self,
+        _output_idx: usize,
+        version: u64,
+        _hot_x: u16,
+        _hot_y: u16,
+    ) -> bool {
+        self.uploaded_version == Some(version)
     }
 
     fn upload(
         &mut self,
         _output_idx: usize,
-        _version: u64,
+        version: u64,
+        hot_x: u16,
+        hot_y: u16,
         _width: u32,
         _height: u32,
         _bgra_bytes: &[u8],
-    ) -> io::Result<()> {
-        Err(io::Error::other("cursor plane unavailable for output"))
+    ) -> io::Result<CursorUploadOutcome> {
+        self.upload_calls += 1;
+        match self.upload_response {
+            TestUploadResponse::Ready => {
+                self.uploaded_version = Some(version);
+                self.uploaded_hotspot = Some((hot_x, hot_y));
+                Ok(CursorUploadOutcome::Ready)
+            }
+            TestUploadResponse::Deferred => Ok(CursorUploadOutcome::Deferred),
+            TestUploadResponse::Error => Err(io::Error::other("cursor upload failed")),
+        }
     }
 
     fn show(
@@ -161,20 +205,42 @@ impl CursorPlaneSink for TestSink {
         _x: i32,
         _y: i32,
     ) -> Result<(), CursorShowFailure> {
-        Err(CursorShowFailure {
-            remains_visible: false,
-            error: Box::new(io::Error::other(
-                "cursor remains unbound: cursor plane unavailable for output",
-            )),
-        })
+        self.show_calls += 1;
+        if let Some((remains_visible, deferred)) = self.show_failure {
+            return Err(CursorShowFailure {
+                remains_visible,
+                deferred,
+                error: Box::new(io::Error::other("cursor show failed")),
+            });
+        }
+        if !self.cursor_available {
+            return Err(CursorShowFailure {
+                remains_visible: false,
+                deferred: false,
+                error: Box::new(io::Error::other(
+                    "cursor remains unbound: cursor plane unavailable for output",
+                )),
+            });
+        }
+        self.cursor_visible = true;
+        Ok(())
     }
 
     fn hide(&mut self, _output_idx: usize) -> io::Result<()> {
-        Err(io::Error::other("cursor plane unavailable"))
+        self.hide_calls += 1;
+        if self.hide_fails || !self.cursor_available {
+            return Err(io::Error::other("cursor hide failed"));
+        }
+        self.cursor_visible = false;
+        Ok(())
     }
 
     fn hide_all(&mut self) -> io::Result<()> {
-        Err(io::Error::other("cursor plane unavailable"))
+        if !self.cursor_available {
+            return Err(io::Error::other("cursor plane unavailable"));
+        }
+        self.cursor_visible = false;
+        Ok(())
     }
 
     fn note_composed_retirement(&mut self, _output_idx: usize) -> bool {

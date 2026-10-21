@@ -275,22 +275,32 @@ impl AtomicCommitRequest {
         });
     }
 
+    pub(crate) fn add_cursor_property(
+        &mut self,
+        object: RawResourceHandle,
+        property: property::Handle,
+        value: u64,
+    ) {
+        self.request.add_raw_property(object, property, value);
+        self.cursor_properties.push((object, property));
+        self.record_property(AtomicPropertyUpdate {
+            object,
+            property,
+            value,
+        });
+    }
+
     pub(crate) fn add_cursor_position(&mut self, position: CursorPlanePosition) {
-        position.add_to(&mut self.request);
-        for property in [position.crtc_x, position.crtc_y] {
-            self.cursor_properties
-                .push((position.plane.into(), property));
-        }
-        self.record_property(AtomicPropertyUpdate::new(
-            position.plane,
+        self.add_cursor_property(
+            position.plane.into(),
             position.crtc_x,
             i64::from(position.x) as u64,
-        ));
-        self.record_property(AtomicPropertyUpdate::new(
-            position.plane,
+        );
+        self.add_cursor_property(
+            position.plane.into(),
             position.crtc_y,
             i64::from(position.y) as u64,
-        ));
+        );
     }
 
     fn record_property(&mut self, update: AtomicPropertyUpdate) {

@@ -1517,7 +1517,11 @@ impl KmsBackend {
         }
         // Gather first. A card-level probe error aborts the combined rescan
         // without touching the last-known topology.
-        let snapshot = match self.platform.probe_connector_snapshot() {
+        let snapshot = match self
+            .pstate
+            .vt_resume_executor
+            .probe_connector_snapshot(&self.platform)
+        {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 log::error!("kms: display rescan probe failed: {error}");
@@ -1556,6 +1560,9 @@ impl KmsBackend {
         let rescan = self
             .platform
             .apply_connector_snapshot(snapshot, &known_connected);
+        if quiesced {
+            self.platform.invalidate_live_cursor_applied();
+        }
 
         // ── 2. Reconcile the registry (connection bits, modes, EDID) ──────
         let registry_delta = self.reconcile_connector_registry(

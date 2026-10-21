@@ -35,9 +35,9 @@ use crate::kms::{
         gpu::{FencePool, GpuCore},
         resize_fault,
         scene::{
-            CursorPlaneSink, CursorShowFailure, FinishOutcome, FlipRetirement, FrameTargetError,
-            OffscreenTarget, OutputLayout, OutputRoute, OutputSink, PreparedOutputs, RecordFrame,
-            RenderCompletion, SceneCompositor, SlotToken,
+            CursorPlaneSink, CursorShowFailure, CursorUploadOutcome, FinishOutcome, FlipRetirement,
+            FrameTargetError, OffscreenTarget, OutputLayout, OutputRoute, OutputSink,
+            PreparedOutputs, RecordFrame, RenderCompletion, SceneCompositor, SlotToken,
         },
     },
     vk::{
@@ -370,27 +370,37 @@ impl CursorPlaneSink for SurfacePlatform {
         self.cursor.shown
     }
 
-    fn uploaded_version(&self, _output_idx: usize) -> Option<u64> {
-        self.cursor.image.as_ref().map(|image| image.version)
+    fn uploaded_image_matches(
+        &self,
+        _output_idx: usize,
+        version: u64,
+        _hot_x: u16,
+        _hot_y: u16,
+    ) -> bool {
+        self.cursor
+            .image
+            .as_ref()
+            .is_some_and(|image| image.version == version)
     }
 
     fn upload(
         &mut self,
         _output_idx: usize,
         version: u64,
+        hot_x: u16,
+        hot_y: u16,
         width: u32,
         height: u32,
         bgra_bytes: &[u8],
-    ) -> io::Result<()> {
-        let hot = self.cursor.image.as_ref().map_or((0, 0), |image| image.hot);
+    ) -> io::Result<CursorUploadOutcome> {
         self.cursor.image = Some(CursorImage {
             version,
             width,
             height,
-            hot,
+            hot: (hot_x, hot_y),
             bgra: Arc::from(bgra_bytes),
         });
-        Ok(())
+        Ok(CursorUploadOutcome::Ready)
     }
 
     fn show(
@@ -404,6 +414,7 @@ impl CursorPlaneSink for SurfacePlatform {
         let Some(image) = self.cursor.image.as_mut() else {
             return Err(CursorShowFailure {
                 remains_visible: self.cursor.shown,
+                deferred: false,
                 error: "no cursor image uploaded".into(),
             });
         };
@@ -1102,5 +1113,31 @@ impl Platform for SurfacePlatform {
         if let Some(ui) = b.pstate.ui.as_ref() {
             ui.warp_pointer(x, y);
         }
+    }
+}
+
+#[cfg(test)]
+mod cursor_sink_tests {
+    use super::*;
+
+    // Mutation: make uploaded-image identity compare the hotspot; the changed
+    // hotspot lookup below must stop matching this uploaded version.
+    #[test]
+    fn surface_platform_sink_keeps_version_only_identity() {
+        let mut platform = SurfacePlatform::new(GpuCore::for_tests(), (640, 480), Vec::new());
+        let no_image = CursorPlaneSink::show(&mut platform, 0, 2, 3, 0, 0)
+            .expect_err("show without an uploaded image fails");
+        assert!(!no_image.deferred);
+
+        assert_eq!(
+            CursorPlaneSink::upload(&mut platform, 0, 77, 4, 5, 16, 16, &[0; 16 * 16 * 4],)
+                .expect("surface cursor upload is stored"),
+            CursorUploadOutcome::Ready,
+        );
+        assert!(CursorPlaneSink::uploaded_image_matches(
+            &platform, 0, 77, 1, 1,
+        ));
+        CursorPlaneSink::show(&mut platform, 0, 1, 1, 20, 30)
+            .expect("uploaded surface cursor can be shown");
     }
 }

@@ -25,6 +25,10 @@
 //! haven't retired the transition yet (the multi-output double-cursor
 //! hazard).
 
+pub(crate) mod ops;
+pub(crate) mod sprites;
+pub(crate) mod topology;
+
 use std::{
     collections::{HashMap, HashSet},
     io, mem,
@@ -35,10 +39,16 @@ use std::{
 use drm::{
     Device as DrmDevice, DriverCapability,
     buffer::{Buffer, DrmFourcc},
-    control::{Device as ControlDevice, PlaneType, crtc, dumbbuffer::DumbBuffer, plane, property},
+    control::{Device as ControlDevice, crtc, dumbbuffer::DumbBuffer, plane, property},
 };
 
-use crate::drm::Device;
+use crate::drm::{CursorDeviceCaps, Device};
+use ops::{CursorBufferIo, DrmCursorBufferIo};
+use sprites::SpritePool;
+use topology::{
+    CursorPathDecision, CursorPlaneDiscovery, CursorPlaneDiscoveryIo, CursorPlaneProperties,
+    DiscoveredCursorPlane, DrmCursorPlaneDiscovery, decide_cursor_state_path,
+};
 
 /// Legacy cursor-plane hide operation. Production uses `set_cursor2`; the
 /// executor is retained on the plane so rejection rollback uses the same
@@ -125,6 +135,14 @@ impl CursorHideExecutor for DrmCursorHideExecutor {
 #[derive(Debug)]
 pub enum CursorShowError {
     Unbound(io::Error),
+    #[allow(
+        dead_code,
+        reason = "P2b Task 2 constructs deferred atomic cursor show results"
+    )]
+    Deferred {
+        remains_visible: bool,
+        reason: io::Error,
+    },
     StillVisible {
         operation_error: io::Error,
         rollback_error: Option<io::Error>,
@@ -134,13 +152,25 @@ pub enum CursorShowError {
 impl CursorShowError {
     #[must_use]
     pub fn remains_visible(&self) -> bool {
-        matches!(self, Self::StillVisible { .. })
+        match self {
+            Self::Unbound(_) => false,
+            Self::Deferred {
+                remains_visible, ..
+            } => *remains_visible,
+            Self::StillVisible { .. } => true,
+        }
+    }
+
+    #[must_use]
+    pub fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred { .. })
     }
 
     #[must_use]
     pub fn operation_error(&self) -> &io::Error {
         match self {
             Self::Unbound(error) => error,
+            Self::Deferred { reason, .. } => reason,
             Self::StillVisible {
                 operation_error, ..
             } => operation_error,
@@ -150,7 +180,7 @@ impl CursorShowError {
     #[must_use]
     pub fn rollback_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Unbound(_) => None,
+            Self::Unbound(_) | Self::Deferred { .. } => None,
             Self::StillVisible { rollback_error, .. } => rollback_error.as_ref(),
         }
     }
@@ -174,6 +204,7 @@ impl std::fmt::Display for CursorShowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unbound(error) => write!(f, "cursor remains unbound: {error}"),
+            Self::Deferred { reason, .. } => write!(f, "cursor show deferred: {reason}"),
             Self::StillVisible {
                 operation_error,
                 rollback_error,
@@ -238,6 +269,8 @@ pub const HW_CURSOR_FALLBACK_H: u32 = 64;
 /// Sw→Hw transition before another.
 pub struct CursorPlane {
     device: Rc<Device>,
+    buffer_io: Rc<dyn CursorBufferIo>,
+    sprites: SpritePool,
     hide_executor: Rc<dyn CursorHideExecutor>,
     show_executor: Rc<dyn CursorShowExecutor>,
     dumb: Option<CursorPlaneBuffer>,
@@ -266,6 +299,8 @@ pub struct CursorPlane {
     /// Atomic position properties of each CRTC's assigned plane. This is
     /// topology discovery data and must survive `retain_crtcs`.
     atomic_positions: HashMap<crtc::Handle, (plane::Handle, property::Handle, property::Handle)>,
+    properties_by_crtc: HashMap<crtc::Handle, CursorPlaneProperties>,
+    state_path: CursorPathDecision,
     /// In-memory storage for the ioctl-free test factory. Production cursor
     /// planes own an mmap through `dumb`; tests need a safe buffer to exercise
     /// lazy-init upload/version behavior without a real DRM node.
@@ -362,7 +397,14 @@ fn cursor_plane_topology(
         .iter()
         .filter_map(|(crtc, index)| {
             let plane = &planes[*index];
-            Some((*crtc, (plane.handle, plane.crtc_x?, plane.crtc_y?)))
+            Some((
+                *crtc,
+                (
+                    plane.handle,
+                    plane.properties.get("CRTC_X").copied()?,
+                    plane.properties.get("CRTC_Y").copied()?,
+                ),
+            ))
         })
         .collect();
     let assignment = assignment
@@ -370,46 +412,6 @@ fn cursor_plane_topology(
         .map(|(crtc, index)| (crtc, planes[index].handle))
         .collect();
     (Some(assignment), atomic_positions)
-}
-
-struct DiscoveredCursorPlane {
-    handle: plane::Handle,
-    crtcs: HashSet<crtc::Handle>,
-    crtc_x: Option<property::Handle>,
-    crtc_y: Option<property::Handle>,
-}
-
-fn discover_cursor_plane_crtcs(
-    device: &Device,
-) -> io::Result<(Vec<crtc::Handle>, Vec<DiscoveredCursorPlane>)> {
-    let resources = device.resource_handles()?;
-    let mut cursor_planes = Vec::new();
-    for handle in device.plane_handles()? {
-        let info = device.get_plane(handle)?;
-        let props = device.get_properties(handle)?;
-        let map = props.as_hashmap(device)?;
-        let Some(type_info) = map.get("type") else {
-            continue;
-        };
-        let raw = props
-            .iter()
-            .find(|(property, _)| **property == type_info.handle())
-            .map(|(_, value)| *value)
-            .unwrap_or(0);
-        if raw != PlaneType::Cursor as u64 {
-            continue;
-        }
-        cursor_planes.push(DiscoveredCursorPlane {
-            handle,
-            crtcs: resources
-                .filter_crtcs(info.possible_crtcs())
-                .into_iter()
-                .collect(),
-            crtc_x: map.get("CRTC_X").map(|property| property.handle()),
-            crtc_y: map.get("CRTC_Y").map(|property| property.handle()),
-        });
-    }
-    Ok((resources.crtcs().to_vec(), cursor_planes))
 }
 
 impl CursorPlane {
@@ -421,14 +423,24 @@ impl CursorPlane {
     /// Cursor-plane topology discovery, `create_dumb_buffer`, or
     /// `map_dumb_buffer` ioctl failures.
     pub fn new(device: Rc<Device>, crtcs: &[crtc::Handle]) -> io::Result<Self> {
-        let (device_crtcs, cursor_planes) = discover_cursor_plane_crtcs(&device)?;
-        if cursor_planes.is_empty() {
+        let caps = device.cursor_caps().cloned();
+        let buffer_io: Rc<dyn CursorBufferIo> = Rc::new(DrmCursorBufferIo);
+        Self::new_with_discovery(device, crtcs, buffer_io, &DrmCursorPlaneDiscovery, caps)
+    }
+
+    pub(crate) fn new_with_discovery(
+        device: Rc<Device>,
+        crtcs: &[crtc::Handle],
+        buffer_io: Rc<dyn CursorBufferIo>,
+        discovery_io: &dyn CursorPlaneDiscoveryIo,
+        caps: Option<CursorDeviceCaps>,
+    ) -> io::Result<Self> {
+        let discovery = discovery_io.discover(&device)?;
+        if discovery.planes.is_empty() {
             log::debug!(
                 "cursor: no universal cursor planes exposed; assuming legacy cursor ioctl support"
             );
         }
-        let (explicit_plane_assignment, atomic_positions) =
-            cursor_plane_topology(&device_crtcs, &cursor_planes);
         // Query the driver's preferred cursor dimensions. amdgpu commonly
         // reports 128×128 or 256×256; i915 typically 64×64. We MUST use
         // the reported size — see [`HW_CURSOR_FALLBACK_W`] for the
@@ -457,11 +469,61 @@ impl CursorPlane {
         // Zero-fill the plane buffer up front.
         unsafe { std::ptr::write_bytes(ptr.as_ptr(), 0, len) };
 
+        Ok(Self::from_discovery_and_backing(
+            device,
+            buffer_io,
+            discovery,
+            caps,
+            ptr,
+            len,
+            stride,
+            width,
+            height,
+            Some(CursorPlaneBuffer::Dumb(dumb)),
+            crtcs,
+        ))
+    }
+
+    fn from_discovery_and_backing(
+        device: Rc<Device>,
+        buffer_io: Rc<dyn CursorBufferIo>,
+        discovery: CursorPlaneDiscovery,
+        caps: Option<CursorDeviceCaps>,
+        ptr: NonNull<u8>,
+        len: usize,
+        stride: u32,
+        width: u32,
+        height: u32,
+        dumb: Option<CursorPlaneBuffer>,
+        active_crtcs: &[crtc::Handle],
+    ) -> Self {
+        let (explicit_plane_assignment, atomic_positions) =
+            cursor_plane_topology(&discovery.crtcs, &discovery.planes);
+        let assigned = explicit_plane_assignment
+            .as_ref()
+            .cloned()
+            .unwrap_or_default();
+        let properties_by_crtc = assigned
+            .iter()
+            .filter_map(|(crtc, handle)| {
+                discovery
+                    .planes
+                    .iter()
+                    .find(|candidate| candidate.handle == *handle)
+                    .and_then(DiscoveredCursorPlane::cursor_properties)
+                    .map(|properties| (*crtc, properties))
+            })
+            .collect();
+        let state_path = decide_cursor_state_path(&assigned, &discovery.planes, caps.as_ref());
+        let mut sprites = SpritePool::new(width, height);
+        sprites.set_active_crtc_count(active_crtcs.len());
         let plane = Self {
             device,
+            buffer_io,
+            sprites,
             hide_executor: Rc::new(DrmCursorHideExecutor),
             show_executor: Rc::new(DrmCursorShowExecutor),
-            dumb: Some(CursorPlaneBuffer::Dumb(dumb)),
+            dumb,
             ptr,
             len,
             stride,
@@ -471,16 +533,55 @@ impl CursorPlane {
             uploaded_version: None,
             explicit_plane_assignment,
             atomic_positions,
+            properties_by_crtc,
+            state_path,
             #[cfg(test)]
             _test_backing: None,
         };
-        if !plane.supports_crtcs(crtcs) {
+        if !plane.supports_crtcs(active_crtcs) {
             log::warn!(
                 "cursor: no distinct cursor plane is assigned to every one of the {} active CRTCs",
-                crtcs.len()
+                active_crtcs.len()
             );
         }
-        Ok(plane)
+        plane
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_from_snapshot(
+        device: Rc<Device>,
+        crtcs: &[crtc::Handle],
+        buffer_io: Rc<dyn CursorBufferIo>,
+        snapshot: topology::CursorPlaneTestSnapshot,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let (snapshot_discovery, caps, has_buffer) = snapshot.into_discovery();
+        let discovery_io = topology::RecordingCursorPlaneDiscovery::new(snapshot_discovery);
+        let discovery = discovery_io
+            .discover(&device)
+            .expect("recording cursor discovery cannot fail");
+        let mut stub = Self::for_tests_stub(Rc::clone(&device), width, height);
+        let ptr = stub.ptr;
+        let len = stub.len;
+        let stride = stub.stride;
+        let test_backing = stub._test_backing.take();
+        drop(stub);
+        let mut plane = Self::from_discovery_and_backing(
+            device,
+            buffer_io,
+            discovery,
+            caps,
+            ptr,
+            len,
+            stride,
+            width,
+            height,
+            has_buffer.then_some(CursorPlaneBuffer::Test),
+            crtcs,
+        );
+        plane._test_backing = test_backing;
+        plane
     }
 
     /// Build an ioctl-free cursor plane for platform state-machine tests.
@@ -495,8 +596,19 @@ impl CursorPlane {
             .expect("test cursor allocation overflow");
         let mut test_backing = vec![0_u8; len].into_boxed_slice();
         let ptr = NonNull::new(test_backing.as_mut_ptr()).expect("non-empty test cursor buffer");
+        let discovery = CursorPlaneDiscovery {
+            crtcs: Vec::new(),
+            planes: Vec::new(),
+        };
+        let caps = None;
+        let state_path =
+            decide_cursor_state_path(&HashMap::new(), &discovery.planes, caps.as_ref());
+        let mut sprites = SpritePool::new(width, height);
+        sprites.set_active_crtc_count(0);
         Self {
             device: Rc::clone(&device),
+            buffer_io: Rc::new(DrmCursorBufferIo),
+            sprites,
             hide_executor: Rc::new(DrmCursorHideExecutor),
             show_executor: Rc::new(DrmCursorShowExecutor),
             dumb: None,
@@ -509,6 +621,8 @@ impl CursorPlane {
             uploaded_version: None,
             explicit_plane_assignment: None,
             atomic_positions: HashMap::new(),
+            properties_by_crtc: HashMap::new(),
+            state_path,
             _test_backing: Some(test_backing),
         }
     }
@@ -556,6 +670,38 @@ impl CursorPlane {
         self.hide_executor = executor;
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_tests_set_show_executor(&mut self, executor: Rc<dyn CursorShowExecutor>) {
+        self.show_executor = executor;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_explicit_plane_assignment(
+        &self,
+    ) -> Option<&HashMap<crtc::Handle, plane::Handle>> {
+        self.explicit_plane_assignment.as_ref()
+    }
+
+    pub(crate) fn state_path(&self) -> CursorPathDecision {
+        self.state_path
+    }
+
+    pub(crate) fn properties_for(&self, crtc: crtc::Handle) -> Option<CursorPlaneProperties> {
+        self.properties_by_crtc.get(&crtc).copied()
+    }
+
+    pub(crate) fn sprites(&self) -> &SpritePool {
+        &self.sprites
+    }
+
+    pub(crate) fn sprites_mut(&mut self) -> &mut SpritePool {
+        &mut self.sprites
+    }
+
+    pub(crate) fn buffer_io(&self) -> Rc<dyn CursorBufferIo> {
+        Rc::clone(&self.buffer_io)
+    }
+
     /// Whether every requested CRTC has its own assigned cursor plane. Drivers
     /// exposing no universal cursor planes return true and are probed through
     /// legacy ioctls at bind time.
@@ -568,7 +714,6 @@ impl CursorPlane {
 
     /// Atomic plane and position properties for `crtc`, if its assigned
     /// cursor plane exposes both `CRTC_X` and `CRTC_Y`.
-    #[allow(dead_code)] // consumed by the scene commit path in Task 2
     #[must_use]
     pub(crate) fn atomic_position_properties(
         &self,
@@ -851,13 +996,33 @@ mod tests {
         ::drm::control::from_u32(raw).unwrap()
     }
 
-    fn discovered(handle: u32, crtcs: &[crtc::Handle], atomic: bool) -> DiscoveredCursorPlane {
+    fn discovered_with_properties(
+        handle: u32,
+        crtcs: &[crtc::Handle],
+        property_names: &[&str],
+    ) -> DiscoveredCursorPlane {
         DiscoveredCursorPlane {
             handle: ::drm::control::from_u32(handle).unwrap(),
             crtcs: crtcs.iter().copied().collect(),
-            crtc_x: atomic.then(|| ::drm::control::from_u32(handle * 10 + 1).unwrap()),
-            crtc_y: atomic.then(|| ::drm::control::from_u32(handle * 10 + 2).unwrap()),
+            properties: property_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    (
+                        (*name).to_owned(),
+                        ::drm::control::from_u32(handle * 10 + index as u32 + 1).unwrap(),
+                    )
+                })
+                .collect(),
         }
+    }
+
+    fn discovered(handle: u32, crtcs: &[crtc::Handle], atomic: bool) -> DiscoveredCursorPlane {
+        const FULL: [&str; 10] = [
+            "FB_ID", "CRTC_ID", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "SRC_X", "SRC_Y", "SRC_W",
+            "SRC_H",
+        ];
+        discovered_with_properties(handle, crtcs, if atomic { &FULL } else { &[] })
     }
 
     fn assigned_plane(topology: &CursorPlaneTopology, crtc: crtc::Handle) -> Option<plane::Handle> {
@@ -878,6 +1043,36 @@ mod tests {
         assert_eq!(assigned_plane(&topology, b), Some(planes[0].handle));
         assert_eq!(topology.1[&a].0, planes[1].handle);
         assert_eq!(topology.1[&b].0, planes[0].handle);
+    }
+
+    #[test]
+    // Mutation: filter out planes with incomplete properties before matching.
+    fn cursor_matching_ignores_property_completeness() {
+        use super::topology::{CursorPathReason, CursorStatePath, decide_cursor_state_path};
+
+        let a = test_crtc(11);
+        let b = test_crtc(12);
+        let incomplete_names = [
+            "CRTC_ID", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "SRC_X", "SRC_Y", "SRC_W", "SRC_H",
+        ];
+        let incomplete = discovered_with_properties(21, &[a], &incomplete_names);
+        let shared = discovered(22, &[a, b], true);
+        let planes = [shared, incomplete];
+        let topology = cursor_plane_topology(&[a, b], &planes);
+        let assignment = topology.0.as_ref().expect("cursor planes discovered");
+
+        assert_eq!(assignment.get(&a), Some(&planes[1].handle));
+        assert_eq!(assignment.get(&b), Some(&planes[0].handle));
+        let decision = decide_cursor_state_path(
+            assignment,
+            &planes,
+            Some(&crate::drm::CursorDeviceCaps::new(
+                false,
+                Some("amdgpu".to_owned()),
+            )),
+        );
+        assert_eq!(decision.path, CursorStatePath::Legacy);
+        assert_eq!(decision.reason, CursorPathReason::MissingProperty("FB_ID"));
     }
 
     #[test]
@@ -938,6 +1133,187 @@ mod tests {
         let topology = cursor_plane_topology(&[a, b, c], &planes);
 
         assert_every_crtc_has_its_own_plane(&[a, b, c], &topology);
+    }
+
+    #[test]
+    // Mutation: read `Device::cursor_caps()` for the path or allocate the
+    // initial sprite pair while constructing a plane from a snapshot.
+    fn plane_from_snapshot_stores_properties_caps_and_allocates_no_sprite() {
+        use super::topology::{CursorPlaneTestPlane, CursorPlaneTestSnapshot};
+        use crate::kms::cursor_plane::ops::{CursorBufferIo, recording::RecordingCursorBufferIo};
+
+        let crtc = test_crtc(11);
+        let device = Rc::new(crate::drm::Device::for_tests().expect("test DRM device"));
+        assert!(device.cursor_caps().is_none());
+        let (recording, ledger) = RecordingCursorBufferIo::new(1);
+        let buffer_io: Rc<dyn CursorBufferIo> = Rc::new(recording);
+        let property_names = [
+            "FB_ID",
+            "CRTC_ID",
+            "CRTC_X",
+            "CRTC_Y",
+            "CRTC_W",
+            "CRTC_H",
+            "SRC_X",
+            "SRC_Y",
+            "SRC_W",
+            "SRC_H",
+            "HOTSPOT_X",
+            "HOTSPOT_Y",
+        ];
+        let plane = CursorPlane::for_tests_from_snapshot(
+            device,
+            &[crtc],
+            buffer_io,
+            CursorPlaneTestSnapshot {
+                crtcs: vec![11],
+                planes: vec![CursorPlaneTestPlane {
+                    handle: 21,
+                    possible_crtcs: vec![11],
+                    property_names: property_names
+                        .iter()
+                        .map(|name| (*name).to_owned())
+                        .collect(),
+                }],
+                cursor_caps: Some(CursorDeviceCaps::new(false, Some("amdgpu".to_owned()))),
+                has_buffer: false,
+            },
+            64,
+            64,
+        );
+
+        let properties = plane
+            .properties_for(crtc)
+            .expect("all cursor properties stored");
+        let handles = [
+            properties.fb_id,
+            properties.crtc_id,
+            properties.crtc_x,
+            properties.crtc_y,
+            properties.crtc_w,
+            properties.crtc_h,
+            properties.src_x,
+            properties.src_y,
+            properties.src_w,
+            properties.src_h,
+            properties.hotspot_x.expect("hotspot X property"),
+            properties.hotspot_y.expect("hotspot Y property"),
+        ];
+        assert_eq!(
+            handles.into_iter().collect::<HashSet<_>>().len(),
+            handles.len()
+        );
+        assert_eq!(
+            plane.state_path().path,
+            super::topology::CursorStatePath::Atomic
+        );
+        assert!(plane.sprites().all_users_zero());
+        assert!(ledger.records().is_empty());
+        assert_eq!(ledger.end_state(), (0, 0, 0));
+    }
+
+    #[test]
+    // Mutation: discard snapshot caps or backing; Legacy show must still reach its injected executor.
+    fn snapshot_fixture_supports_missing_fb_id_and_missing_caps() {
+        use std::cell::Cell;
+
+        struct CountingShowExecutor(Cell<usize>);
+
+        impl CursorShowExecutor for CountingShowExecutor {
+            fn show(
+                &self,
+                _device: &Device,
+                _buffer: &CursorPlaneBuffer,
+                _crtc: crtc::Handle,
+                _hotspot: (i32, i32),
+                _img_x: i32,
+                _img_y: i32,
+            ) -> io::Result<()> {
+                self.0.set(self.0.get() + 1);
+                Ok(())
+            }
+
+            fn move_to(
+                &self,
+                _device: &Device,
+                _crtc: crtc::Handle,
+                _img_x: i32,
+                _img_y: i32,
+            ) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let complete_properties = [
+            "FB_ID", "CRTC_ID", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "SRC_X", "SRC_Y", "SRC_W",
+            "SRC_H",
+        ];
+        let snapshot =
+            |property_names: Vec<String>, cursor_caps| topology::CursorPlaneTestSnapshot {
+                crtcs: vec![11],
+                planes: vec![topology::CursorPlaneTestPlane {
+                    handle: 21,
+                    possible_crtcs: vec![11],
+                    property_names,
+                }],
+                cursor_caps,
+                has_buffer: true,
+            };
+        let device = Rc::new(Device::for_tests().expect("test DRM device"));
+        let crtc = test_crtc(11);
+
+        let missing_fb_id = snapshot(
+            complete_properties
+                .iter()
+                .filter(|name| **name != "FB_ID")
+                .map(|name| (*name).to_owned())
+                .collect(),
+            Some(CursorDeviceCaps::new(false, Some("amdgpu".to_owned()))),
+        );
+        let missing_fb_id_executor = Rc::new(CountingShowExecutor(Cell::new(0)));
+        let mut missing_fb_id_plane = CursorPlane::for_tests_from_snapshot(
+            Rc::clone(&device),
+            &[crtc],
+            Rc::new(DrmCursorBufferIo),
+            missing_fb_id,
+            64,
+            64,
+        );
+        missing_fb_id_plane.for_tests_set_show_executor(missing_fb_id_executor.clone());
+        assert_eq!(
+            missing_fb_id_plane.state_path().reason,
+            topology::CursorPathReason::MissingProperty("FB_ID")
+        );
+        missing_fb_id_plane
+            .show(crtc, (0, 0), 10, 10)
+            .expect("snapshot-backed legacy show reaches executor");
+        assert_eq!(missing_fb_id_executor.0.get(), 1);
+
+        let missing_caps = snapshot(
+            complete_properties
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            None,
+        );
+        let missing_caps_executor = Rc::new(CountingShowExecutor(Cell::new(0)));
+        let mut missing_caps_plane = CursorPlane::for_tests_from_snapshot(
+            device,
+            &[crtc],
+            Rc::new(DrmCursorBufferIo),
+            missing_caps,
+            64,
+            64,
+        );
+        missing_caps_plane.for_tests_set_show_executor(missing_caps_executor.clone());
+        assert_eq!(
+            missing_caps_plane.state_path().reason,
+            topology::CursorPathReason::NoDeviceCaps
+        );
+        missing_caps_plane
+            .show(crtc, (0, 0), 10, 10)
+            .expect("snapshot-backed legacy show reaches executor");
+        assert_eq!(missing_caps_executor.0.get(), 1);
     }
 
     #[test]
@@ -1088,13 +1464,13 @@ mod tests {
         let mut p = PlatformBackend::for_tests();
         assert!(!p.cursor_plane_available());
         assert!(
-            p.cursor_plane_upload_image_for_output(0, 1, 16, 16, &[0u8; 16 * 16 * 4])
+            p.cursor_plane_upload_image_for_output(0, 1, 0, 0, 16, 16, &[0u8; 16 * 16 * 4])
                 .is_err()
         );
         assert!(p.cursor_plane_show_on_crtc(0, 0, 0, 0, 0).is_err());
         assert!(p.cursor_plane_move(0, 0, 0, 0).is_err());
         assert!(p.cursor_plane_hide_on_crtc(0).is_err());
         assert!(p.cursor_plane_hide_all().is_err());
-        assert!(p.cursor_plane_uploaded_version_for_output(0).is_none());
+        assert!(!p.cursor_plane_uploaded_image_matches_for_output(0, 1, 0, 0));
     }
 }

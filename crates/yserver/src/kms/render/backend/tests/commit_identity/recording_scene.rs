@@ -379,6 +379,24 @@ impl RecordingSceneFixture {
     }
 
     pub(crate) fn drain_deferred_pool_releases(&mut self, timeout: Duration) {
+        if self
+            .events
+            .backend
+            .scene
+            .pending_pool_release_count_for_tests()
+            == 0
+            && self
+                .events
+                .backend
+                .platform
+                .for_tests_pending_scanout_render_job_ids()
+                .is_empty()
+            && !self.events.backend.store.has_pending_presentation_damage()
+            && !self.events.backend.scene.scene_structure_dirty
+            && !self.events.backend.scene.owes_repaint()
+        {
+            return;
+        }
         let deadline = Instant::now() + timeout;
         let unmatched_before: HashMap<RawFd, u64> = self
             .events
@@ -594,8 +612,21 @@ impl RecordingSceneFixture {
         for _ in 0..32 {
             Backend::before_block(&mut self.events.backend);
         }
+        if self.readiness.is_some() {
+            // Copied sink handoffs may enqueue queue work while the final
+            // Backend reclaim passes run. Fence every source/sink queue after
+            // those passes, then let Backend consume any completion notice.
+            self.events.wait_for_submitted_gpu_work();
+            Backend::on_scanout_render_completion(&mut self.events.backend, &mut self.events.state);
+            assert!(self.pending_render_job_ids().is_empty());
+            self.events.wait_for_submitted_gpu_work();
+        }
         assert_eq!(self.events.backend.store.pending_retire_count(), 0);
         assert!(self.events.backend.store.lookup(root).is_none());
+        self.events
+            .backend
+            .scene
+            .drain_all(&mut self.events.backend.platform);
         self.finish();
     }
 }
@@ -874,9 +905,5 @@ fn install_copied_route(backend: &mut KmsBackend, separate_sink: bool) -> Result
 }
 
 fn is_expected_vulkan_absence(error: &io::Error) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    message.contains("loader")
-        || message.contains("no suitable physical device")
-        || message.contains("nosuitabledevice")
-        || message.contains("error_incompatible_driver")
+    crate::kms::render::backend::tests::vulkan_absence_is_expected(error)
 }

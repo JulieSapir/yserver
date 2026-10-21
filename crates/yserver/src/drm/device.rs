@@ -4,14 +4,21 @@ use std::{
     fs::{File, OpenOptions},
     io,
     os::unix::io::{AsFd, BorrowedFd, OwnedFd},
+    sync::Arc,
 };
 
-use drm::{ClientCapability, Device as DrmDevice};
+use super::client_caps::{
+    CursorDeviceCaps, DeviceClientCapability, DeviceControl, DrmDeviceControl,
+    negotiate_cursor_caps,
+};
+use drm::Device as DrmDevice;
 
 pub struct Device {
     file: File,
     path: String,
     master_ownership: MasterOwnership,
+    device_control: Arc<dyn DeviceControl + Send + Sync>,
+    cursor_caps: Option<CursorDeviceCaps>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,17 +53,47 @@ impl Device {
             file,
             path: "/dev/null".to_string(),
             master_ownership: MasterOwnership::None,
+            device_control: Arc::new(DrmDeviceControl),
+            cursor_caps: None,
         })
+    }
+
+    /// Construct a `/dev/null` device and run the post-open KMS setup with an injected control.
+    #[doc(hidden)]
+    #[cfg(test)]
+    pub(crate) fn for_tests_with_control(
+        control: Arc<dyn DeviceControl + Send + Sync>,
+    ) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")?;
+        let mut device = Self {
+            file,
+            path: "/dev/null".to_string(),
+            master_ownership: MasterOwnership::None,
+            device_control: control.clone(),
+            cursor_caps: None,
+        };
+        device.configure_kms_device(control.as_ref())?;
+        Ok(device)
     }
 
     /// Open a render node without taking DRM master.
     ///
     /// `open` is the KMS-master constructor: it calls `acquire_master_lock`
-    /// and `enable_atomic_capabilities`, both of which a render node rejects
+    /// and configures KMS capabilities, both of which a render node rejects
     /// (`DRM_IOCTL_SET_MASTER` → `EACCES` from a render client). Render nodes
     /// still serve the `DRM_RENDER_ALLOW` ioctls, which is everything the
     /// syncobj paths need.
     pub fn open_render_node(path: &str) -> io::Result<Self> {
+        Self::open_render_node_with_control(path, Arc::new(DrmDeviceControl))
+    }
+
+    pub(crate) fn open_render_node_with_control(
+        path: &str,
+        control: Arc<dyn DeviceControl + Send + Sync>,
+    ) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -66,6 +103,8 @@ impl Device {
             file,
             path: path.to_string(),
             master_ownership: MasterOwnership::None,
+            device_control: control,
+            cursor_caps: None,
         })
     }
 
@@ -81,10 +120,20 @@ impl Device {
     /// does not repeat capability negotiation or the CRTC-event query.
     #[doc(hidden)]
     pub fn from_inherited_kms_fd(fd: OwnedFd, path: impl Into<String>) -> Self {
+        Self::from_inherited_kms_fd_with_control(fd, path, Arc::new(DrmDeviceControl))
+    }
+
+    pub(crate) fn from_inherited_kms_fd_with_control(
+        fd: OwnedFd,
+        path: impl Into<String>,
+        control: Arc<dyn DeviceControl + Send + Sync>,
+    ) -> Self {
         Self {
             file: File::from(fd),
             path: path.into(),
             master_ownership: MasterOwnership::InheritedDuplicate,
+            device_control: control,
+            cursor_caps: None,
         }
     }
 
@@ -94,10 +143,12 @@ impl Device {
             .write(true)
             .open(path)
             .map_err(|err| open_error(path, &err))?;
-        let device = Self {
+        let mut device = Self {
             file,
             path: path.to_string(),
             master_ownership: MasterOwnership::AcquiredHere,
+            device_control: Arc::new(DrmDeviceControl),
+            cursor_caps: None,
         };
         device.acquire_master_lock().map_err(|err| {
             io::Error::new(
@@ -105,15 +156,12 @@ impl Device {
                 format!("failed to acquire DRM master on {path}: {err}"),
             )
         })?;
-        device.enable_atomic_capabilities()?;
-        require_crtc_in_vblank_event(
-            &device.path,
-            device.get_driver_capability(drm::DriverCapability::CRTCInVBlankEvent),
-        )?;
+        let control = Arc::clone(&device.device_control);
+        device.configure_kms_device(control.as_ref())?;
         Ok(device)
     }
 
-    fn enable_atomic_capabilities(&self) -> io::Result<()> {
+    fn configure_kms_device(&mut self, control: &dyn DeviceControl) -> io::Result<()> {
         // Both UniversalPlanes and Atomic are *opt-ins to fd visibility*
         // — drivers that have inherently-universal-only planes (e.g.
         // Asahi's apple_drm) reject the cap-set with EOPNOTSUPP even
@@ -121,13 +169,15 @@ impl Device {
         // Warn but continue on either; an actually-non-atomic driver
         // will fail downstream at the first atomic_commit, which is
         // where we'd want the diagnostic anyway.
-        if let Err(err) = self.set_client_capability(ClientCapability::UniversalPlanes, true) {
+        if let Err(err) =
+            control.set_client_capability(self, DeviceClientCapability::UniversalPlanes)
+        {
             log::warn!(
                 "DRM_CLIENT_CAP_UNIVERSAL_PLANES rejected ({err}); driver is presumably \
                  universal-only — continuing"
             );
         }
-        if let Err(err) = self.set_client_capability(ClientCapability::Atomic, true) {
+        if let Err(err) = control.set_client_capability(self, DeviceClientCapability::Atomic) {
             log::warn!(
                 "DRM_CLIENT_CAP_ATOMIC rejected ({err}); the driver may still honour \
                  atomic_commit ioctls without the explicit opt-in (Asahi apple_drm) — \
@@ -135,7 +185,13 @@ impl Device {
                  genuinely non-atomic and yserver/KMS won't work on this kernel."
             );
         }
-        Ok(())
+        self.cursor_caps = Some(negotiate_cursor_caps(self, control));
+        require_crtc_in_vblank_event(&self.path, control.crtc_in_vblank_event(self))
+    }
+
+    /// Cursor capability and driver identity negotiated for primary KMS opens.
+    pub fn cursor_caps(&self) -> Option<&CursorDeviceCaps> {
+        self.cursor_caps.as_ref()
     }
 
     pub fn path(&self) -> &str {

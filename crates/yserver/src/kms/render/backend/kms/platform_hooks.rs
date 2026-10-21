@@ -174,7 +174,15 @@ impl Platform for PlatformBackend {
 
     fn recover_hidden_cursor_on_resume(b: &mut KmsBackend) {
         for output_idx in 0..b.platform.outputs.len() {
-            if !b.platform.cursor_plane_visible_for_output(output_idx) {
+            let output = &b.platform.outputs[output_idx];
+            let atomic_path = b
+                .platform
+                .device_for_key(output.key.device_key)
+                .is_some_and(|device| {
+                    device.cursor.state_path()
+                        == crate::kms::cursor_plane::topology::CursorStatePath::Atomic
+                });
+            if !atomic_path && !b.platform.cursor_plane_visible_for_output(output_idx) {
                 continue;
             }
             if let Err(error) = b.platform.cursor_plane_hide_on_crtc(output_idx) {

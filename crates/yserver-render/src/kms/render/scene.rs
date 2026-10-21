@@ -244,9 +244,8 @@ pub enum CursorAssignment {
 /// per-output commit succeeds. Consumed at retirement.
 #[derive(Debug, Clone, Copy)]
 enum CursorTransition {
-    /// Retire-time action: optionally upload (if `upload_version`
-    /// != `CursorPlane.uploaded_version`), then `show_on_crtc` to
-    /// bind the plane and reposition.
+    /// Retire-time action: optionally upload when the sink does not match the
+    /// image version and hotspot, then `show_on_crtc` to bind and reposition.
     ShowOnRetire {
         upload_version: u64,
         hot_x: u16,
@@ -277,6 +276,16 @@ enum OutputCursorMode {
     Hw,
     /// Cursor is off-output or unregistered on this frame.
     Hidden,
+}
+
+/// A forced full-show repaint and the outcome that requested it. Deferred
+/// shows may be superseded by a newer cursor before the retry binds; a newer
+/// successful show clears that obsolete retry. Visible legacy retries retain
+/// their generation-qualified master behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CursorShowRetry {
+    version: u64,
+    deferred: bool,
 }
 
 /// Stage 5 Phase D — query result for the pointer fast path.
@@ -398,7 +407,7 @@ struct OutputSceneState {
     /// A steady-HW sprite/hotspot rebind or a prior-binding show failed.
     /// Force the next Hw→Hw composed retirement to carry ShowOnRetire; do not
     /// claim the desired cursor metadata until that full rebind succeeds.
-    force_show_retry_version: Option<u64>,
+    force_show_retry_version: Option<CursorShowRetry>,
     /// Diagnostic: last reason `tick_one_output` skipped a tick for
     /// this output. Logged at INFO on transition (skip→different-skip,
     /// no-skip→skip, skip→no-skip). Tracks the freeze-debug
@@ -911,6 +920,9 @@ impl From<crate::kms::vk::logic_fill_pipeline::LogicFillError> for SceneError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CursorTransitionResult {
     Applied,
+    /// Sprite storage is temporarily unavailable. Preserve the current
+    /// applied mode and retry the newest wanted record on a later tick.
+    Deferred,
     /// The requested HW show did not remain bound. The retired frame omitted
     /// the SW sprite, so actual mode is Hidden until the forced repaint.
     Hidden,

@@ -8,9 +8,9 @@ use crate::kms::{
         gpu::GpuCore,
         platform::PlatformBackend,
         scene::{
-            ComposeRenderTarget, ComposeSubmit, CursorPlaneSink, CursorShowFailure, FinishOutcome,
-            FlipRetirement, FrameHandoff, FrameTargetError, OutputRoute, OutputSink, RecordFrame,
-            RenderCompletion, SlotToken,
+            ComposeRenderTarget, ComposeSubmit, CursorPlaneSink, CursorShowFailure,
+            CursorUploadOutcome, FinishOutcome, FlipRetirement, FrameHandoff, FrameTargetError,
+            OutputRoute, OutputSink, RecordFrame, RenderCompletion, SlotToken,
         },
     },
     vk::{
@@ -350,19 +350,29 @@ impl CursorPlaneSink for PlatformBackend {
         self.cursor_plane_visible_for_output(output_idx)
     }
 
-    fn uploaded_version(&self, output_idx: usize) -> Option<u64> {
-        self.cursor_plane_uploaded_version_for_output(output_idx)
+    fn uploaded_image_matches(
+        &self,
+        output_idx: usize,
+        version: u64,
+        hot_x: u16,
+        hot_y: u16,
+    ) -> bool {
+        self.cursor_plane_uploaded_image_matches_for_output(output_idx, version, hot_x, hot_y)
     }
 
     fn upload(
         &mut self,
         output_idx: usize,
         version: u64,
+        hot_x: u16,
+        hot_y: u16,
         width: u32,
         height: u32,
         bgra_bytes: &[u8],
-    ) -> io::Result<()> {
-        self.cursor_plane_upload_image_for_output(output_idx, version, width, height, bgra_bytes)
+    ) -> io::Result<CursorUploadOutcome> {
+        self.cursor_plane_upload_image_for_output(
+            output_idx, version, hot_x, hot_y, width, height, bgra_bytes,
+        )
     }
 
     fn show(
@@ -376,6 +386,7 @@ impl CursorPlaneSink for PlatformBackend {
         self.cursor_plane_show_on_crtc(output_idx, hot_x, hot_y, x, y)
             .map_err(|error| CursorShowFailure {
                 remains_visible: error.remains_visible(),
+                deferred: error.is_deferred(),
                 error: Box::new(error),
             })
     }

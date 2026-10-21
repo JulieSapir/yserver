@@ -1,7 +1,8 @@
 mod atomic_cursor;
-mod commit_identity;
+pub(super) mod commit_identity;
 mod crossings;
 mod cursor;
+mod cursor_sprites;
 mod deadlines;
 mod dri3;
 mod gc_draw;
@@ -58,6 +59,41 @@ use std::{
     io,
     rc::Rc,
 };
+
+pub(crate) fn vulkan_absence_is_expected(error: &io::Error) -> bool {
+    use crate::kms::vk::device::VkInitError;
+
+    error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<VkInitError>())
+        .is_some_and(|error| {
+            matches!(
+                error,
+                VkInitError::Loader(ash::LoadingError::LibraryLoadFailure(_))
+                    | VkInitError::Vk(ash::vk::Result::ERROR_INCOMPATIBLE_DRIVER)
+                    | VkInitError::NoSuitableDevice
+            )
+        })
+}
+
+#[test]
+// Mutation: treat every Vk-backed fixture initialization failure as Vulkan absence.
+fn p2_vk_skip_classifier_only_recognizes_absence() {
+    use crate::kms::vk::device::VkInitError;
+
+    assert!(vulkan_absence_is_expected(&io::Error::other(
+        VkInitError::NoSuitableDevice
+    )));
+    assert!(vulkan_absence_is_expected(&io::Error::other(
+        VkInitError::Vk(ash::vk::Result::ERROR_INCOMPATIBLE_DRIVER,)
+    )));
+    assert!(!vulkan_absence_is_expected(&io::Error::other(
+        VkInitError::Vk(ash::vk::Result::ERROR_OUT_OF_HOST_MEMORY,)
+    )));
+    assert!(!vulkan_absence_is_expected(&io::Error::other(
+        "render for_tests_with_vk: OpsCommandPool allocation failed",
+    )));
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum TestCursorHideResult {

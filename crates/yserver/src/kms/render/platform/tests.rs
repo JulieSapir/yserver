@@ -1318,13 +1318,23 @@ fn still_visible_show_failure_records_owning_fallback_without_stale_move() {
     assert!(rollback_wins.permanently_disabled);
     assert!(rollback_wins.transient_fallback_crtcs.is_empty());
     assert_eq!(rollback_wins.pending_move, None);
+
+    let deferred = crate::kms::cursor_plane::CursorShowError::Deferred {
+        remains_visible: true,
+        reason: io::Error::from_raw_os_error(libc::EBUSY),
+    };
+    assert!(deferred.remains_visible());
+    assert!(deferred.is_deferred());
+    assert!(!deferred.needs_full_rebind());
+    assert!(deferred.rollback_error().is_none());
+    assert_eq!(deferred.operation_error().raw_os_error(), Some(libc::EBUSY));
 }
 
 #[test]
 fn hide_failure_classification_is_bounded_and_success_does_not_clear_it() {
     let crtc = ::drm::control::from_u32(19).unwrap();
     let mut state = KmsCursorState::new();
-    let einval = Err(io::Error::from_raw_os_error(libc::EINVAL));
+    let einval: io::Result<()> = Err(io::Error::from_raw_os_error(libc::EINVAL));
     assert_eq!(
         apply_cursor_operation_result(&mut state, crtc, &einval),
         CursorFailureDisposition::Transient
@@ -1378,7 +1388,7 @@ fn hide_failure_classification_is_bounded_and_success_does_not_clear_it() {
 fn actual_upload_invalid_input_enters_one_bounded_local_fallback() {
     let crtc = ::drm::control::from_u32(21).unwrap();
     let mut state = KmsCursorState::new();
-    let upload = Err(io::Error::new(
+    let upload: io::Result<()> = Err(io::Error::new(
         io::ErrorKind::InvalidInput,
         "cursor bytes shorter than width*height*4",
     ));
@@ -1453,16 +1463,13 @@ fn primary_first_explicit_enable_initializes_and_exposes_fresh_upload_state() {
     assert_eq!(calls.get(), 1);
     assert!(!platform.devices[0].cursor.headless_deferred);
     assert!(platform.cursor_plane_available_for_output(0));
-    assert_eq!(platform.cursor_plane_uploaded_version_for_output(0), None);
+    assert!(!platform.cursor_plane_uploaded_image_matches_for_output(0, 7, 0, 0));
 
     let bytes = vec![0_u8; 16 * 16 * 4];
     platform
-        .cursor_plane_upload_image_for_output(0, 7, 16, 16, &bytes)
+        .cursor_plane_upload_image_for_output(0, 7, 0, 0, 16, 16, &bytes)
         .expect("fresh lazy plane accepts its first retire-time upload");
-    assert_eq!(
-        platform.cursor_plane_uploaded_version_for_output(0),
-        Some(7)
-    );
+    assert!(platform.cursor_plane_uploaded_image_matches_for_output(0, 7, 9, 9));
 }
 
 #[test]
@@ -1615,6 +1622,310 @@ fn deferred_init_failure_policy_is_device_local_and_retries_later_only() {
 }
 
 #[test]
+// Mutation: recompute the path or plane matching at refresh, skip the sprite
+// capacity update, or let refreshing another device mutate this one.
+fn topology_refresh_never_changes_the_path_or_the_assignment() {
+    use crate::{
+        drm::CursorDeviceCaps,
+        kms::cursor_plane::{
+            ops::{
+                CursorBufferIo,
+                recording::{CursorBufferLedger, RecordingCursorBufferIo},
+            },
+            topology::{CursorPlaneTestPlane, CursorPlaneTestSnapshot, CursorStatePath},
+        },
+    };
+    use std::rc::Rc;
+
+    fn snapshot(crtcs: &[u32], possible_crtcs: &[u32], handle: u32) -> CursorPlaneTestSnapshot {
+        CursorPlaneTestSnapshot {
+            crtcs: crtcs.to_vec(),
+            planes: vec![CursorPlaneTestPlane {
+                handle,
+                possible_crtcs: possible_crtcs.to_vec(),
+                property_names: [
+                    "FB_ID", "CRTC_ID", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "SRC_X", "SRC_Y",
+                    "SRC_W", "SRC_H",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            }],
+            cursor_caps: Some(CursorDeviceCaps::new(false, Some("amdgpu".to_owned()))),
+            has_buffer: true,
+        }
+    }
+
+    fn install(
+        platform: &mut PlatformBackend,
+        device_idx: usize,
+        snap: CursorPlaneTestSnapshot,
+    ) -> Rc<CursorBufferLedger> {
+        let (io, ledger) = RecordingCursorBufferIo::new(1);
+        let buffer_io: Rc<dyn CursorBufferIo> = Rc::new(io);
+        platform.for_tests_install_cursor_plane_from_snapshot(device_idx, snap, buffer_io, 64, 64);
+        ledger
+    }
+
+    let mut platform = PlatformBackend::for_tests();
+    let key = platform.devices[0].key;
+    let crtc_a = platform.outputs[0].output.crtc;
+    let ledger = install(&mut platform, 0, snapshot(&[1, 2], &[1, 2], 21));
+    let assignment_before = platform.devices[0]
+        .cursor
+        .plane
+        .as_ref()
+        .unwrap()
+        .for_tests_explicit_plane_assignment()
+        .cloned();
+    let properties_before = platform.devices[0]
+        .cursor
+        .plane
+        .as_ref()
+        .unwrap()
+        .properties_for(crtc_a);
+    assert_eq!(
+        platform.devices[0].cursor.state_path(),
+        CursorStatePath::Atomic
+    );
+    assert!(!platform.devices[0].cursor.topology_blocked);
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .sprites()
+            .for_tests_max_buffer_count(),
+        2,
+    );
+
+    platform
+        .outputs
+        .push(test_active_output_for(key, "second-crtc", 2));
+    platform.refresh_cursor_topology_for_devices_with(&HashSet::from([key]), |_, _, _| {
+        panic!("an installed cursor plane must not be recreated during refresh")
+    });
+    assert!(platform.devices[0].cursor.topology_blocked);
+    assert_eq!(
+        platform.devices[0].cursor.state_path(),
+        CursorStatePath::Atomic
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .for_tests_explicit_plane_assignment()
+            .cloned(),
+        assignment_before,
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .properties_for(crtc_a),
+        properties_before,
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .sprites()
+            .for_tests_max_buffer_count(),
+        3,
+    );
+
+    let other_key = drm_key(92);
+    platform.devices.push(test_kms_device(other_key));
+    platform
+        .outputs
+        .push(test_active_output_for(other_key, "other-device", 1));
+    let other_ledger = install(&mut platform, 1, snapshot(&[1], &[1], 31));
+    let blocked_assignment = platform.devices[0]
+        .cursor
+        .plane
+        .as_ref()
+        .unwrap()
+        .for_tests_explicit_plane_assignment()
+        .cloned();
+    let blocked_properties = platform.devices[0]
+        .cursor
+        .plane
+        .as_ref()
+        .unwrap()
+        .properties_for(crtc_a);
+    let blocked_capacity = platform.devices[0]
+        .cursor
+        .plane
+        .as_ref()
+        .unwrap()
+        .sprites()
+        .for_tests_max_buffer_count();
+    platform.refresh_cursor_topology_for_devices_with(&HashSet::from([other_key]), |_, _, _| {
+        panic!("the other device already has a cursor plane")
+    });
+    assert!(platform.devices[0].cursor.topology_blocked);
+    assert_eq!(
+        platform.devices[0].cursor.state_path(),
+        CursorStatePath::Atomic
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .for_tests_explicit_plane_assignment()
+            .cloned(),
+        blocked_assignment,
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .properties_for(crtc_a),
+        blocked_properties,
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .sprites()
+            .for_tests_max_buffer_count(),
+        blocked_capacity,
+    );
+
+    platform.outputs.remove(1);
+    platform.refresh_cursor_topology_for_devices_with(&HashSet::from([key]), |_, _, _| {
+        panic!("an installed cursor plane must not be recreated during refresh")
+    });
+    assert!(!platform.devices[0].cursor.topology_blocked);
+    assert_eq!(
+        platform.devices[0].cursor.state_path(),
+        CursorStatePath::Atomic
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .for_tests_explicit_plane_assignment()
+            .cloned(),
+        assignment_before,
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .properties_for(crtc_a),
+        properties_before,
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .sprites()
+            .for_tests_max_buffer_count(),
+        2,
+    );
+    assert!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .sprites()
+            .all_users_zero()
+    );
+    assert!(!platform.devices[1].cursor.topology_blocked);
+
+    let assigned_properties = properties_before.expect("the assigned CRTC keeps its properties");
+    let seeded_position = platform.for_tests_seed_atomic_cursor_position(
+        0,
+        assigned_properties.plane,
+        assigned_properties.crtc_x,
+        assigned_properties.crtc_y,
+        100,
+        100,
+        0,
+        0,
+    );
+    assert_eq!(
+        platform.for_tests_atomic_cursor_pending_position(key, crtc_a),
+        Some(seeded_position),
+    );
+    platform.refresh_cursor_topology_for_devices_with(&HashSet::from([other_key]), |_, _, _| {
+        panic!("the other device already has a cursor plane")
+    });
+    assert_eq!(
+        platform.for_tests_atomic_cursor_pending_position(key, crtc_a),
+        Some(seeded_position),
+        "refreshing another device preserves this device's pending cursor position",
+    );
+    assert_eq!(
+        platform.devices[0].cursor.state_path(),
+        CursorStatePath::Atomic
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .for_tests_explicit_plane_assignment()
+            .cloned(),
+        assignment_before,
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .properties_for(crtc_a),
+        properties_before,
+    );
+    assert_eq!(
+        platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .sprites()
+            .for_tests_max_buffer_count(),
+        2,
+    );
+
+    platform.refresh_cursor_topology_for_devices_with(&HashSet::from([key]), |_, _, _| {
+        panic!("an installed cursor plane must not be recreated during refresh")
+    });
+    assert_eq!(
+        platform.for_tests_atomic_cursor_pending_position(key, crtc_a),
+        None,
+        "refreshing the owning topology clears its stale pending position",
+    );
+    assert!(ledger.records().is_empty());
+    assert!(other_ledger.records().is_empty());
+    assert_eq!(ledger.end_state(), (0, 0, 0));
+    assert_eq!(other_ledger.end_state(), (0, 0, 0));
+}
+
+#[test]
 fn initialized_cursor_plane_persists_but_reuploads_across_last_disable_and_reenable() {
     let mut platform = PlatformBackend::for_tests();
     let key = platform.devices[0].key;
@@ -1624,7 +1935,7 @@ fn initialized_cursor_plane_persists_but_reuploads_across_last_disable_and_reena
         install_test_cursor_plane,
     ));
     platform
-        .cursor_plane_upload_image_for_output(0, 9, 16, 16, &[0_u8; 16 * 16 * 4])
+        .cursor_plane_upload_image_for_output(0, 9, 0, 0, 16, 16, &[0_u8; 16 * 16 * 4])
         .unwrap();
     assert_eq!(
         platform.devices[0]
@@ -1666,14 +1977,11 @@ fn initialized_cursor_plane_persists_but_reuploads_across_last_disable_and_reena
         .push(test_active_output_for(key, "reenabled", 1));
     platform.refresh_cursor_topology_for_devices(&HashSet::from([key]));
     assert!(platform.cursor_plane_available_for_output(0));
-    assert_eq!(platform.cursor_plane_uploaded_version_for_output(0), None);
+    assert!(!platform.cursor_plane_uploaded_image_matches_for_output(0, 10, 0, 0));
     platform
-        .cursor_plane_upload_image_for_output(0, 10, 16, 16, &[0_u8; 16 * 16 * 4])
+        .cursor_plane_upload_image_for_output(0, 10, 0, 0, 16, 16, &[0_u8; 16 * 16 * 4])
         .expect("first retirement after re-enable refreshes retained storage");
-    assert_eq!(
-        platform.cursor_plane_uploaded_version_for_output(0),
-        Some(10)
-    );
+    assert!(platform.cursor_plane_uploaded_image_matches_for_output(0, 10, 4, 5));
 }
 
 #[test]

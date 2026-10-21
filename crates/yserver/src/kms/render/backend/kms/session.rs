@@ -490,7 +490,9 @@ impl KmsBackend {
         // 4b. Take the complete old CRTC set off-screen before discarding any
         //     scene acknowledgement or BO phase. Otherwise a surviving CRTC
         //     can still reference a buffer userspace has just made reusable.
-        if let Err(error) = self.platform.dpms_set_outputs_active(false) {
+        let outputs_off = self.platform.dpms_set_outputs_active(false);
+        self.platform.invalidate_live_cursor_applied();
+        if let Err(error) = outputs_off {
             log::error!(
                 "kms: VT suspend could not disable the complete old topology: {error}; exiting"
             );
@@ -672,6 +674,7 @@ impl KmsBackend {
             self.kms_outputs_active = false;
             return false;
         }
+        self.platform.invalidate_live_cursor_applied();
         self.reapply_gamma_for_live_outputs();
 
         // 2b. DPMS: every output was just re-lit, so reconcile the backend
@@ -978,6 +981,7 @@ impl KmsBackend {
             // kms_outputs_active=false and re-attempts (idempotent on
             // the outputs that already came up).
             let res = self.platform.dpms_set_outputs_active(true);
+            self.platform.invalidate_live_cursor_applied();
             self.reapply_gamma_for_live_outputs();
             let (hot_x, hot_y) = self
                 .effective_cursor_xid
@@ -1015,7 +1019,9 @@ impl KmsBackend {
             log::info!("kms: dpms sleep — wait_idle_bounded");
             self.platform.wait_idle_bounded();
             log::info!("kms: dpms sleep — disable_output per output");
-            if let Err(error) = self.platform.dpms_set_outputs_active(false) {
+            let outputs_off = self.platform.dpms_set_outputs_active(false);
+            self.platform.invalidate_live_cursor_applied();
+            if let Err(error) = outputs_off {
                 // The helper attempted every CRTC, so this may be a partial
                 // all-off. Without a transactional rollback the only safe
                 // policy is to keep allocations/direct pins and fail-stop.

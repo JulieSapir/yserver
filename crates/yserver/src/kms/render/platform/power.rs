@@ -123,22 +123,34 @@ impl PlatformBackend {
         }
 
         let mut first_err: Option<io::Error> = None;
-        for (i, layout) in self.outputs.iter().enumerate() {
+        let output_indices: Vec<_> = (0..self.outputs.len()).collect();
+        for i in output_indices {
+            let output_key = self.outputs[i].key.clone();
+            let crtc = self.outputs[i].output.crtc;
             let Some(device) = self
-                .device_for_output(&layout.key)
+                .device_for_output(&output_key)
                 .map(|device| Rc::clone(&device.device))
             else {
                 log::warn!(
                     "render disable_output: no DRM device {} for {}",
-                    layout.key.device_key,
-                    layout.output.connector_name,
+                    output_key.device_key,
+                    self.outputs[i].output.connector_name,
                 );
                 continue;
             };
-            if let Err(e) = drm::modeset::disable_output(&device, &layout.output) {
+            if let Err(error) =
+                self.detach_atomic_cursor_before_disable(output_key.device_key, crtc)
+            {
+                log::warn!(
+                    "render disable_output: atomic cursor detach failed for {}: {error}",
+                    self.outputs[i].output.connector_name,
+                );
+            }
+            let executor = Rc::clone(&self.output_power_executor);
+            if let Err(e) = executor.disable(&device, &self.outputs[i].output) {
                 log::warn!(
                     "render disable_output: failed for {} (output {i}): {e}",
-                    layout.output.connector_name,
+                    self.outputs[i].output.connector_name,
                 );
                 // Disarm the matching scanout pool so its Drop
                 // doesn't try to destroy framebuffers KMS may
@@ -149,6 +161,8 @@ impl PlatformBackend {
                 if first_err.is_none() {
                     first_err = Some(e);
                 }
+            } else {
+                self.settle_disabled_cursor_crtc(output_key.device_key, crtc);
             }
         }
         match first_err {
@@ -252,16 +266,19 @@ impl PlatformBackend {
                 }
             }
         } else {
-            for layout in &self.outputs {
+            let output_indices: Vec<_> = (0..self.outputs.len()).collect();
+            for index in output_indices {
+                let output_key = self.outputs[index].key.clone();
+                let crtc = self.outputs[index].output.crtc;
                 let Some(device) = self
-                    .device_for_output(&layout.key)
+                    .device_for_output(&output_key)
                     .map(|device| Rc::clone(&device.device))
                 else {
                     let error = io::Error::new(
                         io::ErrorKind::NotFound,
                         format!(
                             "dpms_set_outputs_active(false): no DRM device {} for {}",
-                            layout.key.device_key, layout.output.connector_name,
+                            output_key.device_key, self.outputs[index].output.connector_name,
                         ),
                     );
                     log::error!("{error}");
@@ -270,10 +287,21 @@ impl PlatformBackend {
                     }
                     continue;
                 };
-                if let Err(e) = self.output_power_executor.disable(&device, &layout.output) {
+                if let Err(error) =
+                    self.detach_atomic_cursor_before_disable(output_key.device_key, crtc)
+                {
+                    log::warn!(
+                        "dpms_set_outputs_active(false): atomic cursor detach for {} failed: {error}",
+                        self.outputs[index].output.connector_name,
+                    );
+                }
+                if let Err(e) = self
+                    .output_power_executor
+                    .disable(&device, &self.outputs[index].output)
+                {
                     log::error!(
                         "dpms_set_outputs_active(false): disable_output for {} failed: {e}",
-                        layout.output.connector_name,
+                        self.outputs[index].output.connector_name,
                     );
                     if first_err.is_none() {
                         first_err = Some(e);

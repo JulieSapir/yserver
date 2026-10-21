@@ -170,37 +170,55 @@ impl AtomicEventFixture {
 
     /// Wait, bounded, for the GPU work the test started to complete, standing
     /// in for the kernel waiting on a flip's IN_FENCE_FD before it signals
-    /// the flip event. An empty queue submission carrying a fence is ordered
-    /// after earlier work on the queue; poll it through the normal Backend
-    /// reclaim entry. Any Vulkan error or a missed deadline fails the test.
+    /// the flip event. Empty queue submissions carrying fences are ordered
+    /// after earlier work on every source and copied-sink queue. Advance the
+    /// Backend reclaim entry before submitting those fences, then poll without
+    /// submitting later work behind them. Any Vulkan error or a missed
+    /// deadline fails the test.
     pub(crate) fn wait_for_submitted_gpu_work(&mut self) {
-        let Some(vk) = self.backend.platform.gpu.vk.clone() else {
+        let contexts = self.backend.platform.for_tests_gpu_contexts();
+        if contexts.is_empty() {
             return;
-        };
-        let ticket = self
-            .backend
-            .platform
-            .gpu
-            .acquire_fence_ticket()
-            .expect("acquire a fence for the GPU completion wait");
-        // SAFETY: an empty submission with a pool fence on the graphics queue.
-        unsafe {
-            vk.device
-                .queue_submit2(vk.graphics_queue, &[], ticket.fence())
-                .expect("submit the GPU completion fence");
         }
+
+        Backend::before_block(&mut self.backend);
+        let mut waits = Vec::with_capacity(contexts.len());
+        for vk in contexts {
+            // SAFETY: the empty queue submission is ordered after earlier
+            // work on this context's graphics queue and signals its fresh fence.
+            let fence = unsafe {
+                vk.device
+                    .create_fence(&ash::vk::FenceCreateInfo::default(), None)
+                    .expect("create a fence for the GPU completion wait")
+            };
+            if let Err(error) = unsafe { vk.device.queue_submit2(vk.graphics_queue, &[], fence) } {
+                unsafe { vk.device.destroy_fence(fence, None) };
+                panic!("submit the GPU completion fence: {error:?}");
+            }
+            waits.push((vk, fence));
+        }
+
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
-            match ticket.poll_signaled_result(&vk) {
-                Ok(true) => return,
-                Ok(false) => {}
-                Err(error) => panic!("GPU completion fence status failed: {error:?}"),
+            let mut all_signaled = true;
+            for (vk, fence) in &waits {
+                match unsafe { vk.device.get_fence_status(*fence) } {
+                    Ok(true) => {}
+                    Ok(false) => all_signaled = false,
+                    Err(error) => panic!("GPU completion fence status failed: {error:?}"),
+                }
+            }
+            if all_signaled {
+                break;
             }
             assert!(
                 std::time::Instant::now() < deadline,
                 "submitted GPU work did not complete before the deadline"
             );
-            Backend::before_block(&mut self.backend);
+            std::thread::yield_now();
+        }
+        for (vk, fence) in waits {
+            unsafe { vk.device.destroy_fence(fence, None) };
         }
     }
 

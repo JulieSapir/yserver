@@ -3,10 +3,119 @@ use super::{
     PendingPageFlip, RawAtomicModeReq, event_identity_required, pending_page_flip_index,
 };
 use drm::control::{AtomicCommitFlags, RawResourceHandle, from_u32, property};
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::{HashSet, VecDeque},
+    rc::Rc,
+    time::Instant,
+};
 
 fn raw<H: drm::control::ResourceHandle>(value: u32) -> H {
     from_u32(value).expect("nonzero raw DRM handle")
+}
+
+#[test]
+// Mutations: add full-state fields through add_raw_property, or tag only CRTC_X/CRTC_Y for attribution.
+fn cursor_request_tags_every_full_state_property_for_attribution() {
+    use crate::{
+        drm::{Device, atomic::tests_support::RecordingAtomicCommitExecutor},
+        kms::{
+            cursor_plane::{
+                ops::{CursorBufferIo, recording::RecordingCursorBufferIo},
+                sprites::{SpritePool, SpriteStage},
+                topology::CursorPlaneProperties,
+            },
+            render::platform::{
+                cursor_commit::{prepare_cursor_commit, request_for_cursor_commit},
+                cursor_state::CursorBinding,
+            },
+        },
+    };
+
+    let property = |value| raw::<property::Handle>(value);
+    let properties = CursorPlaneProperties {
+        plane: raw::<drm::control::plane::Handle>(21),
+        fb_id: property(101),
+        crtc_id: property(102),
+        crtc_x: property(103),
+        crtc_y: property(104),
+        crtc_w: property(105),
+        crtc_h: property(106),
+        src_x: property(107),
+        src_y: property(108),
+        src_w: property(109),
+        src_h: property(110),
+        hotspot_x: Some(property(111)),
+        hotspot_y: Some(property(112)),
+    };
+    let crtc = raw::<drm::control::crtc::Handle>(11);
+    let device = Rc::new(Device::for_tests().expect("synthetic DRM device"));
+    let (buffer_io, _) = RecordingCursorBufferIo::new(1);
+    let buffer_io: Rc<dyn CursorBufferIo> = Rc::new(buffer_io);
+    let mut pool = SpritePool::new(64, 32);
+    assert_eq!(
+        pool.prepare(device.clone(), buffer_io, 1, 2, 1, 3, 2, &[0; 24])
+            .expect("sprite setup"),
+        SpriteStage::Ready
+    );
+    let binding = CursorBinding {
+        properties,
+        lease: pool.candidate_lease().expect("staged lease"),
+        framebuffer: 91,
+        x: 10,
+        y: 20,
+        hot_x: 2,
+        hot_y: 1,
+    };
+    let prepared = prepare_cursor_commit(properties, crtc, None, false, Some(binding), 64, 32);
+    let attach: HashSet<_> = prepared
+        .updates
+        .iter()
+        .map(|update| (update.object, update.property))
+        .collect();
+    let attach_count = prepared.updates.len();
+    let recorder = Rc::new(RecordingAtomicCommitExecutor::default());
+    recorder.script_result(Err(std::io::Error::from_raw_os_error(libc::EINVAL)));
+    recorder.script_result(Err(std::io::Error::from_raw_os_error(libc::EINVAL)));
+    recorder.script_result(Ok(()));
+    let sink = AtomicCommitSink::new(recorder.clone());
+    let mut scene = AtomicCommitRequest::new();
+    scene.add_raw_property(
+        raw::<drm::control::connector::Handle>(31).into(),
+        property(201),
+        7,
+    );
+    let mut full_request = request_for_cursor_commit(&prepared);
+    for update in scene.properties {
+        full_request.add_raw_property(update.object, update.property, update.value);
+    }
+    assert!(
+        sink.submit(
+            &device,
+            AtomicCommitFlags::empty(),
+            AtomicCommitKind::SceneWithCursor,
+            full_request,
+            &[],
+        )
+        .is_err()
+    );
+    assert!(sink.take_last_cursor_rejection());
+
+    let records = recorder.records();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[1].kind, AtomicCommitKind::SceneWithCursor);
+    assert!(records[1].flags.contains(AtomicCommitFlags::TEST_ONLY));
+    assert!(
+        records[2]
+            .properties
+            .iter()
+            .all(|update| !attach.contains(&(update.object, update.property))),
+        "the stripped TEST_ONLY request contains no full-state cursor property"
+    );
+    assert_eq!(
+        records[2].properties.len() + attach_count,
+        records[0].properties.len(),
+        "stripped record removes every attach property"
+    );
 }
 
 #[test]
