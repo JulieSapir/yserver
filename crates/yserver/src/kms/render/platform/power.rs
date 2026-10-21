@@ -14,6 +14,10 @@ pub(in crate::kms::render) trait OutputPowerExecutor {
         output: &crate::platform::drm::Output,
         framebuffer: ::drm::control::framebuffer::Handle,
     ) -> io::Result<()>;
+
+    /// Turn every CRTC, connector and plane on `device` off in one commit,
+    /// whatever another DRM master left behind.
+    fn disable_device(&self, device: &drm::Device) -> io::Result<()>;
 }
 
 pub(super) struct DrmOutputPowerExecutor;
@@ -33,7 +37,15 @@ impl OutputPowerExecutor for DrmOutputPowerExecutor {
         output: &crate::platform::drm::Output,
         framebuffer: ::drm::control::framebuffer::Handle,
     ) -> io::Result<()> {
-        drm::modeset::commit_modeset(device, output, framebuffer)
+        let result = drm::modeset::commit_modeset(device, output, framebuffer);
+        if result.is_err() {
+            drm::modeset::log_kms_state(device, &output.connector_name);
+        }
+        result
+    }
+
+    fn disable_device(&self, device: &drm::Device) -> io::Result<()> {
+        drm::modeset::disable_all_outputs_on_device(device)
     }
 }
 
@@ -56,6 +68,10 @@ impl OutputPowerExecutor for AcceptingOutputPowerExecutor {
         _output: &crate::platform::drm::Output,
         _framebuffer: ::drm::control::framebuffer::Handle,
     ) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn disable_device(&self, _device: &drm::Device) -> io::Result<()> {
         Ok(())
     }
 }
@@ -122,10 +138,19 @@ impl PlatformBackend {
             pool.drain();
         }
 
+        // Clear each whole device first: after a VT switch another master
+        // may have moved our connectors, and a per-output disable then
+        // orphans a foreign CRTC (EINVAL). Per-output disables remain the
+        // fallback for a device whose whole-device commit is refused.
+        let cleared = self.disable_all_devices("shutdown");
+
         let mut first_err: Option<io::Error> = None;
         let output_indices: Vec<_> = (0..self.outputs.len()).collect();
         for i in output_indices {
             let output_key = self.outputs[i].key.clone();
+            if cleared.contains(&output_key.device_key) {
+                continue;
+            }
             let crtc = self.outputs[i].output.crtc;
             let Some(device) = self
                 .device_for_output(&output_key)
@@ -169,6 +194,29 @@ impl PlatformBackend {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    /// Turn every CRTC, connector and plane off on each opened DRM device,
+    /// one atomic commit per device, whatever state another DRM master left
+    /// behind. Returns the devices that are now known to be all-off; a
+    /// refused device is logged and left to the per-output paths.
+    pub(crate) fn disable_all_devices(
+        &self,
+        context: &str,
+    ) -> std::collections::HashSet<crate::platform::drm::DrmDeviceKey> {
+        let mut cleared = std::collections::HashSet::new();
+        for device in &self.devices {
+            match self.output_power_executor.disable_device(&device.device) {
+                Ok(()) => {
+                    cleared.insert(device.key);
+                }
+                Err(error) => log::warn!(
+                    "kms: {context}: device-wide disable of {} failed: {error}",
+                    device.key
+                ),
+            }
+        }
+        cleared
     }
 
     /// Drive every output to a binary KMS power state. Used by

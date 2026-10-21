@@ -294,7 +294,8 @@ fn output_index_for_crtc(backend: &KmsBackend, crtc: ::drm::control::crtc::Handl
 
 #[derive(Clone)]
 struct DisableObservation {
-    crtc: ::drm::control::crtc::Handle,
+    /// `None` for a device-wide all-off commit.
+    crtc: Option<::drm::control::crtc::Handle>,
     records: Vec<AtomicCommitRecord>,
 }
 
@@ -308,11 +309,24 @@ impl OutputPowerExecutor for RecordingOutputPowerExecutor {
     fn disable(&self, device: &crate::drm::Device, output: &Output) -> io::Result<()> {
         let fd = device.as_fd().as_raw_fd();
         self.disabled.borrow_mut().push(DisableObservation {
-            crtc: output.crtc,
+            crtc: Some(output.crtc),
             records: self
                 .recorder_by_fd
                 .get(&fd)
                 .expect("recording atomic executor for output device")
+                .records(),
+        });
+        Ok(())
+    }
+
+    fn disable_device(&self, device: &crate::drm::Device) -> io::Result<()> {
+        let fd = device.as_fd().as_raw_fd();
+        self.disabled.borrow_mut().push(DisableObservation {
+            crtc: None,
+            records: self
+                .recorder_by_fd
+                .get(&fd)
+                .expect("recording atomic executor for device")
                 .records(),
         });
         Ok(())
@@ -1187,7 +1201,7 @@ fn p2_shutdown_settles_an_unretired_hide_and_observes_successful_disable() {
     assert_eq!(detaches[1].result, ScriptedResult::Ok);
     assert!(
         disabled.borrow().iter().any(|observation| {
-            observation.crtc == hardware.crtc
+            observation.crtc == Some(hardware.crtc)
                 && observation.records.iter().any(|record| {
                     record.kind == AtomicCommitKind::CursorOnly
                         && record.flags.is_empty()

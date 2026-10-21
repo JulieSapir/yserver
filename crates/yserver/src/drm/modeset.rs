@@ -1156,6 +1156,93 @@ pub fn disable_output(device: &Device, output: &Output) -> io::Result<()> {
         })
 }
 
+/// Turn every CRTC, connector and plane of `device` off in one
+/// `ALLOW_MODESET` commit, whatever state another DRM master left behind.
+///
+/// Per-output commits assume the kernel still holds our own routes. After a
+/// VT switch another master (Xorg on its own VT) may have moved our
+/// connector to a different CRTC; moving it back, or disabling only our
+/// CRTC, then leaves that foreign CRTC active with no connector and the
+/// kernel rejects the commit (EINVAL). Xorg's EnterVT starts by disabling
+/// every CRTC it does not use (`drmmode_set_desired_modes`,
+/// hw/xfree86/drivers/modesetting/drmmode_display.c:3765-3770) and sets the
+/// used ones from scratch; clearing the whole device first gives the
+/// per-output commits that clean state.
+pub fn disable_all_outputs_on_device(device: &Device) -> io::Result<()> {
+    let resources = device.resource_handles()?;
+    let mut req = AtomicModeReq::new();
+    for plane in device.plane_handles()? {
+        let props = PropMap::for_object(device, plane)?;
+        req.add_raw_property(plane.into(), props.id("FB_ID")?, 0);
+        req.add_raw_property(plane.into(), props.id("CRTC_ID")?, 0);
+    }
+    for &crtc in resources.crtcs() {
+        let props = PropMap::for_object(device, crtc)?;
+        req.add_raw_property(crtc.into(), props.id("ACTIVE")?, 0);
+        req.add_raw_property(crtc.into(), props.id("MODE_ID")?, 0);
+    }
+    for &connector in resources.connectors() {
+        let props = PropMap::for_object(device, connector)?;
+        req.add_raw_property(connector.into(), props.id("CRTC_ID")?, 0);
+    }
+    device
+        .atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)
+        .map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("device-wide disable atomic commit rejected: {err}"),
+            )
+        })
+}
+
+/// Log what the kernel currently holds on `device` (every CRTC, connector
+/// and plane binding) after `connector`'s modeset was refused, so a rejected
+/// commit over another master's leftovers can be explained from the log.
+pub fn log_kms_state(device: &Device, connector: &str) {
+    let Ok(resources) = device.resource_handles() else {
+        return;
+    };
+    for &crtc in resources.crtcs() {
+        if let Ok(info) = device.get_crtc(crtc) {
+            log::warn!(
+                "kms state after {connector} refusal: crtc {} mode={:?} fb={:?}",
+                u32::from(crtc),
+                info.mode().map(|mode| mode.size()),
+                info.framebuffer().map(u32::from),
+            );
+        }
+    }
+    for &handle in resources.connectors() {
+        if let Ok(info) = device.get_connector(handle, false) {
+            let crtc = info
+                .current_encoder()
+                .and_then(|encoder| device.get_encoder(encoder).ok())
+                .and_then(|encoder| encoder.crtc())
+                .map(u32::from);
+            log::warn!(
+                "kms state after {connector} refusal: connector {} state={:?} crtc={crtc:?}",
+                xorg_output_name(info.interface(), info.interface_id()),
+                info.state(),
+            );
+        }
+    }
+    if let Ok(planes) = device.plane_handles() {
+        for plane in planes {
+            if let Ok(info) = device.get_plane(plane) {
+                if info.crtc().is_none() && info.framebuffer().is_none() {
+                    continue;
+                }
+                log::warn!(
+                    "kms state after {connector} refusal: plane {} crtc={:?} fb={:?}",
+                    u32::from(plane),
+                    info.crtc().map(u32::from),
+                    info.framebuffer().map(u32::from),
+                );
+            }
+        }
+    }
+}
+
 pub fn commit_modeset(
     device: &Device,
     output: &Output,

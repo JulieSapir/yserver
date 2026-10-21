@@ -600,6 +600,15 @@ impl KmsBackend {
         // connected connector without a usable mode retires one.
         let active_removed = self.platform.snapshot_retires_any_active_output(&snapshot);
 
+        // Start from a clean device. While another VT held DRM master its
+        // server may have moved our connectors to other CRTCs; committing
+        // our routes over that state orphans a foreign CRTC and the kernel
+        // rejects the commit. Xorg's EnterVT disables every CRTC it does not
+        // use before setting its own (`drmmode_set_desired_modes`,
+        // drmmode_display.c:3765-3770). A refused device-wide disable is
+        // logged; the per-output commits below still run.
+        let _ = self.platform.disable_all_devices("VT resume");
+
         // A retained direct framebuffer must be released against the old
         // routes even when the connector set is unchanged. Any active removal
         // likewise requires all old CRTCs to be disabled before pools drop.
@@ -651,18 +660,12 @@ impl KmsBackend {
         //     re-light the DPMS-on path uses; it's a no-op-cost full
         //     modeset on outputs that are already active.
         //     `dpms_set_outputs_active` attempts every output and returns the
-        //     first failure after trying the rest. Any failure is fatal here:
-        //     a normal FB-only flip cannot reconstruct MODE_ID/ACTIVE for a
-        //     CRTC whose full resume modeset failed.
+        //     first failure after trying the rest. A failure is logged, not
+        //     fatal: Xorg's EnterVT sets each CRTC with errors ignored
+        //     (`drmmode_set_desired_modes(.., ign_err = TRUE)`, driver.c:2095)
+        //     and keeps the outputs that did light.
         if let Err(e) = self.platform.dpms_set_outputs_active(true) {
-            // A normal FB-only flip cannot reconstruct MODE_ID/ACTIVE after a
-            // failed VT-resume modeset. Claiming Active would strand the dark
-            // CRTC permanently, so fail-stop even when the connector snapshot
-            // itself was unchanged.
-            log::error!("kms: resume: composed re-light failed: {e}; exiting");
-            self.request_exit();
-            self.kms_outputs_active = false;
-            return false;
+            log::error!("kms: resume: an output could not be relit: {e}; continuing");
         }
         self.platform.invalidate_live_cursor_applied();
         self.reapply_gamma_for_live_outputs();

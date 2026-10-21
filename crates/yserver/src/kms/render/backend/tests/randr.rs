@@ -2780,6 +2780,10 @@ impl crate::kms::render::platform::OutputPowerExecutor for RecordingOutputPower 
         }
         Ok(())
     }
+    fn disable_device(&self, _device: &crate::drm::Device) -> std::io::Result<()> {
+        self.commits.borrow_mut().push("reset".to_owned());
+        Ok(())
+    }
 }
 
 /// A RANDR-selecting client on the root window; returns the peer socket.
@@ -3194,4 +3198,218 @@ fn dpms_on_and_vt_resume_light_the_others_with_a_disconnected_configured_output(
     );
     assert!(backend.kms_outputs_active);
     assert_eq!(backend.platform.outputs.len(), 2);
+}
+
+// ── VT resume over foreign KMS state (hardware report on #273) ──────────
+//
+// Another master (Xorg + Cinnamon on its own VT) may leave our connector
+// bound to a different CRTC. Committing it back onto our CRTC then leaves
+// that CRTC active with no connector, which atomic KMS rejects with EINVAL
+// (drm_atomic_helper_check_modeset's enable/connector consistency check).
+// Xorg's EnterVT disables every CRTC it does not use first and tolerates a
+// failing CRTC (drmmode_set_desired_modes, drmmode_display.c:3751-3813,
+// called with ign_err from driver.c:2095).
+
+/// A minimal model of the kernel's atomic consistency rule: every active
+/// CRTC drives at least one connector, and every bound connector's CRTC is
+/// active. A commit that would break it is rejected with EINVAL.
+#[derive(Default)]
+struct SimulatedKms {
+    /// connector → CRTC (raw handles).
+    bound: std::cell::RefCell<std::collections::HashMap<u32, u32>>,
+    active: std::cell::RefCell<std::collections::HashSet<u32>>,
+    log: std::cell::RefCell<Vec<String>>,
+    refuse_enable: std::cell::RefCell<std::collections::HashSet<String>>,
+}
+
+impl SimulatedKms {
+    fn consistent(
+        bound: &std::collections::HashMap<u32, u32>,
+        active: &std::collections::HashSet<u32>,
+    ) -> bool {
+        active.iter().all(|crtc| bound.values().any(|c| c == crtc))
+            && bound.values().all(|crtc| active.contains(crtc))
+    }
+
+    fn try_commit(
+        &self,
+        bound: std::collections::HashMap<u32, u32>,
+        active: std::collections::HashSet<u32>,
+    ) -> std::io::Result<()> {
+        if !Self::consistent(&bound, &active) {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        *self.bound.borrow_mut() = bound;
+        *self.active.borrow_mut() = active;
+        Ok(())
+    }
+
+    fn is_consistent(&self) -> bool {
+        Self::consistent(&self.bound.borrow(), &self.active.borrow())
+    }
+}
+
+fn raw_handle<H: Into<u32>>(handle: H) -> u32 {
+    handle.into()
+}
+
+impl crate::kms::render::platform::OutputPowerExecutor for SimulatedKms {
+    fn disable(
+        &self,
+        _device: &crate::drm::Device,
+        output: &crate::platform::drm::Output,
+    ) -> std::io::Result<()> {
+        self.log
+            .borrow_mut()
+            .push(format!("off {}", output.connector_name));
+        let mut bound = self.bound.borrow().clone();
+        let mut active = self.active.borrow().clone();
+        bound.remove(&raw_handle(output.connector));
+        active.remove(&raw_handle(output.crtc));
+        self.try_commit(bound, active)
+    }
+
+    fn enable(
+        &self,
+        _device: &crate::drm::Device,
+        output: &crate::platform::drm::Output,
+        _framebuffer: ::drm::control::framebuffer::Handle,
+    ) -> std::io::Result<()> {
+        self.log
+            .borrow_mut()
+            .push(format!("on {}", output.connector_name));
+        if self.refuse_enable.borrow().contains(&output.connector_name) {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        let mut bound = self.bound.borrow().clone();
+        let mut active = self.active.borrow().clone();
+        bound.insert(raw_handle(output.connector), raw_handle(output.crtc));
+        active.insert(raw_handle(output.crtc));
+        self.try_commit(bound, active)
+    }
+
+    fn disable_device(&self, _device: &crate::drm::Device) -> std::io::Result<()> {
+        self.log.borrow_mut().push("reset".to_owned());
+        self.bound.borrow_mut().clear();
+        self.active.borrow_mut().clear();
+        Ok(())
+    }
+}
+
+/// Two live outputs on one device, the KMS model installed and agreeing
+/// with our routes, both connectors connected.
+fn simulated_kms_dual_head() -> Option<(KmsBackend, ServerState, std::rc::Rc<SimulatedKms>)> {
+    let mut backend =
+        super::commit_identity::recording_scene::build_recording_scene_backend(2, false, false)
+            .unwrap_or_else(|error| panic!("recording scene fixture unavailable: {error}"))?;
+    let snapshots = backend
+        .platform
+        .outputs
+        .iter()
+        .map(|output| relight_test_snapshot(&output.key, vec![output.output.picked.clone()]))
+        .collect();
+    backend.for_tests_set_vt_resume_executor(std::rc::Rc::new(ScriptedConnectorProbe(
+        std::cell::RefCell::new(snapshots),
+    )));
+    let kms = std::rc::Rc::new(SimulatedKms::default());
+    for output in &backend.platform.outputs {
+        kms.bound.borrow_mut().insert(
+            raw_handle(output.output.connector),
+            raw_handle(output.output.crtc),
+        );
+        kms.active
+            .borrow_mut()
+            .insert(raw_handle(output.output.crtc));
+    }
+    backend
+        .platform
+        .for_tests_set_output_power_executor(kms.clone());
+    let mut state = ServerState::new();
+    backend.rebuild_randr_state(&mut state, None, true);
+    Some((backend, state, kms))
+}
+
+#[test]
+#[ignore = "needs live Vulkan ICD (lavapipe)"]
+fn vt_resume_clears_foreign_kms_state_and_reaches_active() {
+    use yserver_core::{backend::Backend, core_loop::input_inventory::InputInventory};
+
+    let Some((mut backend, mut state, kms)) = simulated_kms_dual_head() else {
+        return;
+    };
+    let first = backend.platform.outputs[0].output.connector_name.clone();
+    let first_connector = raw_handle(backend.platform.outputs[0].output.connector);
+    let first_crtc = raw_handle(backend.platform.outputs[0].output.crtc);
+    let second_crtc = raw_handle(backend.platform.outputs[1].output.crtc);
+
+    Backend::finish_vt_release(&mut backend, &mut state, &InputInventory::default());
+    // The other master drove our first connector from our second CRTC and
+    // left one more CRTC active with no connector.
+    *kms.bound.borrow_mut() = std::collections::HashMap::from([(first_connector, second_crtc)]);
+    *kms.active.borrow_mut() = std::collections::HashSet::from([second_crtc, 0xdead]);
+    kms.log.borrow_mut().clear();
+
+    Backend::on_vt_acquire(&mut backend, &mut state);
+
+    assert_eq!(
+        backend.pstate.vt_state,
+        crate::vt::state::VtState::Active,
+        "commits: {:?}",
+        kms.log.borrow()
+    );
+    let log = kms.log.borrow().clone();
+    assert_eq!(log.first().map(String::as_str), Some("reset"), "{log:?}");
+    assert!(log.contains(&format!("on {first}")), "{log:?}");
+    assert!(kms.is_consistent());
+    assert_eq!(kms.bound.borrow().get(&first_connector), Some(&first_crtc));
+    assert!(!kms.active.borrow().contains(&0xdead));
+    assert!(backend.kms_outputs_active);
+}
+
+#[test]
+#[ignore = "needs live Vulkan ICD (lavapipe)"]
+fn vt_resume_survives_a_failing_output_commit() {
+    use yserver_core::{backend::Backend, core_loop::input_inventory::InputInventory};
+
+    let Some((mut backend, mut state, kms)) = simulated_kms_dual_head() else {
+        return;
+    };
+    let first = backend.platform.outputs[0].output.connector_name.clone();
+    let second = backend.platform.outputs[1].output.connector_name.clone();
+    kms.refuse_enable.borrow_mut().insert(second.clone());
+
+    Backend::finish_vt_release(&mut backend, &mut state, &InputInventory::default());
+    kms.log.borrow_mut().clear();
+    Backend::on_vt_acquire(&mut backend, &mut state);
+
+    assert_eq!(
+        backend.pstate.vt_state,
+        crate::vt::state::VtState::Active,
+        "one output's refused commit must not abort the resume: {:?}",
+        kms.log.borrow()
+    );
+    let log = kms.log.borrow().clone();
+    assert!(log.contains(&format!("on {first}")), "{log:?}");
+    assert!(log.contains(&format!("on {second}")), "{log:?}");
+    assert_eq!(backend.platform.outputs.len(), 2);
+}
+
+#[test]
+fn shutdown_disable_clears_foreign_kms_state() {
+    let mut backend = KmsBackend::for_tests();
+    let connector = raw_handle(backend.platform.outputs[0].output.connector);
+    let kms = std::rc::Rc::new(SimulatedKms::default());
+    // Our connector is driven from a CRTC that is not ours.
+    *kms.bound.borrow_mut() = std::collections::HashMap::from([(connector, 0xbeef)]);
+    *kms.active.borrow_mut() = std::collections::HashSet::from([0xbeef]);
+    backend
+        .platform
+        .for_tests_set_output_power_executor(kms.clone());
+
+    backend
+        .platform
+        .disable_output()
+        .expect("shutdown disables the whole device, whatever its state");
+    assert_eq!(*kms.log.borrow(), vec!["reset".to_owned()]);
+    assert!(kms.active.borrow().is_empty());
 }
