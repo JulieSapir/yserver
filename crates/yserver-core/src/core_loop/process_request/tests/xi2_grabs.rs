@@ -3516,3 +3516,101 @@ fn mate_combo_implicit_grab_attributed_to_app_leaf_xi2() {
         &reply[..reply.len().min(12)]
     );
 }
+
+/// Xorg `ProcXIPassiveGrabDevice` / `ProcXIPassiveUngrabDevice`
+/// (Xi/xipassivegrab.c) take `XIAllDevices` and `XIAllMasterDevices`
+/// without a device lookup. GH #277 probe V7/V8: a keycode grab on
+/// XIAllMasterDevices, owner_events=1, then the matching ungrab — Xorg
+/// raises no error, the grab activates on the master keyboard, keeps the
+/// requested owner_events, and is gone after the ungrab.
+#[test]
+fn xi_passive_key_grab_on_all_master_devices_grabs_and_ungrabs() {
+    use crate::{core_loop::key_fanout::key_event_fanout_to_state, host_x11::HostKeyEvent};
+
+    const GRAB_CLIENT: u32 = 1;
+    const ALL_MASTER: u16 = 1;
+    const KEYCODE: u32 = 38;
+    const XI_KEY_PRESS_MASK: u32 = 1 << 2;
+
+    let mut state = ServerState::new();
+    let mut peer = install_client(&mut state, GRAB_CLIENT);
+    let mut backend = RecordingBackend::new();
+
+    let mut grab = Vec::with_capacity(36);
+    grab.extend_from_slice(&0u32.to_le_bytes()); // current time
+    grab.extend_from_slice(&ROOT_WINDOW.0.to_le_bytes());
+    grab.extend_from_slice(&0u32.to_le_bytes()); // no cursor
+    grab.extend_from_slice(&KEYCODE.to_le_bytes());
+    grab.extend_from_slice(&ALL_MASTER.to_le_bytes());
+    grab.extend_from_slice(&1u16.to_le_bytes()); // one modifier tuple
+    grab.extend_from_slice(&1u16.to_le_bytes()); // one mask word
+    grab.extend_from_slice(&[1, 1, 1, 1, 0, 0]); // Keycode, async, async, owner_events
+    grab.extend_from_slice(&XI_KEY_PRESS_MASK.to_le_bytes());
+    grab.extend_from_slice(&0u32.to_le_bytes()); // no modifiers
+    process_xi_dynamic_request(
+        &mut state,
+        &mut backend,
+        ClientId(GRAB_CLIENT),
+        SequenceNumber(1),
+        54,
+        &grab,
+    );
+    let reply = read_all_available(&mut peer);
+    assert_eq!(
+        reply.first(),
+        Some(&1),
+        "XIPassiveGrabDevice reply, not an error"
+    );
+
+    let press = |pressed| HostKeyEvent {
+        origin: crate::core_loop::InputOrigin::NestedHost,
+        pressed,
+        keycode: KEYCODE as u8,
+        time: 1,
+        root_x: 10,
+        root_y: 20,
+        event_x: 10,
+        event_y: 20,
+        state: 0,
+    };
+    let _ = key_event_fanout_to_state(&mut state, &mut backend, press(true));
+    let grabbed = state
+        .active_keyboard_grab
+        .map(|g| (g.owner, g.owner_events));
+    assert_eq!(grabbed, Some((ClientId(GRAB_CLIENT), true)));
+    assert!(
+        !read_all_available(&mut peer).is_empty(),
+        "owner got the press"
+    );
+    let _ = key_event_fanout_to_state(&mut state, &mut backend, press(false));
+    assert!(state.active_keyboard_grab.is_none());
+    let _ = read_all_available(&mut peer);
+
+    let mut ungrab = Vec::with_capacity(20);
+    ungrab.extend_from_slice(&ROOT_WINDOW.0.to_le_bytes());
+    ungrab.extend_from_slice(&KEYCODE.to_le_bytes());
+    ungrab.extend_from_slice(&ALL_MASTER.to_le_bytes());
+    ungrab.extend_from_slice(&1u16.to_le_bytes()); // one modifier tuple
+    ungrab.extend_from_slice(&[1, 0, 0, 0]); // Keycode, pad
+    ungrab.extend_from_slice(&0u32.to_le_bytes()); // no modifiers
+    process_xi_dynamic_request(
+        &mut state,
+        &mut backend,
+        ClientId(GRAB_CLIENT),
+        SequenceNumber(2),
+        55,
+        &ungrab,
+    );
+    assert_eq!(read_all_available(&mut peer), [], "no BadDevice");
+
+    let _ = key_event_fanout_to_state(&mut state, &mut backend, press(true));
+    assert!(
+        state.active_keyboard_grab.is_none(),
+        "the ungrabbed key no longer activates a grab"
+    );
+    assert_eq!(
+        read_all_available(&mut peer),
+        [],
+        "the press is not grabbed"
+    );
+}

@@ -613,6 +613,25 @@ pub(super) fn handle_xi_allow_events(
     return Ok(RequestOutcome::Handled);
 }
 
+/// `XIAllDevices` (0) or `XIAllMasterDevices` (1): Xorg
+/// `ProcXIPassiveGrabDevice` / `ProcXIPassiveUngrabDevice`
+/// (Xi/xipassivegrab.c) take these without a device lookup.
+fn is_xi2_device_wildcard(deviceid: u16) -> bool {
+    deviceid <= 1
+}
+
+/// The device a passive grab is stored under. `XIAllMasterDevices` becomes
+/// the master of the grab's class, which the grab matching already treats
+/// as "any device attached to it"; `XIAllDevices` stays 0, matched the same
+/// way. Grab and ungrab map alike, so an ungrab finds its grab.
+fn passive_grab_device(deviceid: u16, grab_type: u8) -> u16 {
+    match (deviceid, grab_type) {
+        (1, 0) => crate::xinput::DEVICEID_MASTER_POINTER,
+        (1, 1) => crate::xinput::DEVICEID_MASTER_KEYBOARD,
+        _ => deviceid,
+    }
+}
+
 pub(super) fn handle_xi_passive_grab_device(
     state: &mut ServerState,
     client_id: ClientId,
@@ -659,7 +678,7 @@ pub(super) fn handle_xi_passive_grab_device(
         } else {
             (0, 0, 0, 0, 0, 0xff, 1, 1, false)
         };
-        if matches!(grab_type, 0 | 1) {
+        if matches!(grab_type, 0 | 1) && !is_xi2_device_wildcard(deviceid) {
             let role = state.xi_devices.role(deviceid);
             let compatible = match grab_type {
                 0 => matches!(
@@ -690,6 +709,7 @@ pub(super) fn handle_xi_passive_grab_device(
                 );
             }
         }
+        let deviceid = passive_grab_device(deviceid, grab_type);
         // Modifiers tail starts after the header (28) and the mask
         // (mask_len * 4 bytes).
         let mods_start = 28 + mask_len * 4;
@@ -727,6 +747,7 @@ pub(super) fn handle_xi_passive_grab_device(
                 for modifiers in &modifier_masks {
                     state.button_grabs.retain(|g| {
                         !(g.owner == client_id
+                            && g.via_xi2
                             && g.device_id == deviceid
                             && g.grab_window.0 == grab_window
                             && g.button == button
@@ -753,6 +774,7 @@ pub(super) fn handle_xi_passive_grab_device(
                 for modifiers in &modifier_masks {
                     state.key_grabs.retain(|g| {
                         !(g.owner == client_id
+                            && g.via_xi2
                             && g.device_id == deviceid
                             && g.grab_window.0 == grab_window
                             && g.keycode == keycode
@@ -764,7 +786,7 @@ pub(super) fn handle_xi_passive_grab_device(
                         grab_window: ResourceId(grab_window),
                         keycode,
                         modifiers: *modifiers,
-                        owner_events: false,
+                        owner_events,
                         pointer_mode: paired_device_mode,
                         keyboard_mode: grab_mode,
                         via_xi2: true,
@@ -819,7 +841,7 @@ pub(super) fn handle_xi_passive_ungrab_device(
     } else {
         (0, 0, 0, 0, 0xff)
     };
-    if matches!(grab_type, 0 | 1) {
+    if matches!(grab_type, 0 | 1) && !is_xi2_device_wildcard(device_id) {
         let role = state.xi_devices.role(device_id);
         let compatible = match grab_type {
             0 => matches!(
@@ -850,6 +872,7 @@ pub(super) fn handle_xi_passive_ungrab_device(
             );
         }
     }
+    let device_id = passive_grab_device(device_id, grab_type);
     let mods_start = 16;
     let mut modifier_masks: Vec<u16> = Vec::with_capacity(num_modifiers.max(1).into());
     if num_modifiers == 0 {
@@ -874,6 +897,7 @@ pub(super) fn handle_xi_passive_ungrab_device(
             let button = u8::try_from(detail).unwrap_or(0);
             state.button_grabs.retain(|g| {
                 !(g.owner == client_id
+                    && g.via_xi2
                     && g.device_id == device_id
                     && g.grab_window.0 == grab_window
                     && (g.button == button || button == 0)
@@ -886,6 +910,7 @@ pub(super) fn handle_xi_passive_ungrab_device(
             let keycode = u8::try_from(detail).unwrap_or(0);
             state.key_grabs.retain(|g| {
                 !(g.owner == client_id
+                    && g.via_xi2
                     && g.device_id == device_id
                     && g.grab_window.0 == grab_window
                     && (g.keycode == keycode || keycode == 0)

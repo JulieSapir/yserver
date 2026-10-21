@@ -169,13 +169,19 @@ static void variant(const char *name, enum grabkind gk, int owner_events, int fo
     } else {
         uint32_t mask = XCB_INPUT_XI_EVENT_MASK_KEY_PRESS | XCB_INPUT_XI_EVENT_MASK_KEY_RELEASE;
         uint32_t mods = XCB_MOD_MASK_4;
+        xcb_generic_error_t *err = NULL;
         free(xcb_input_xi_passive_grab_device_reply(
             a,
             xcb_input_xi_passive_grab_device(a, XCB_CURRENT_TIME, s->root, XCB_CURSOR_NONE, kc_2,
                                              XCB_INPUT_DEVICE_ALL_MASTER, 1, 1,
                                              XCB_INPUT_GRAB_TYPE_KEYCODE, XCB_INPUT_GRAB_MODE_22_ASYNC,
                                              XCB_INPUT_GRAB_MODE_22_ASYNC, owner_events, &mask, &mods),
-            NULL));
+            &err));
+        if (err) {
+            printf("  A error %u (major %u minor %u)\n", err->error_code, err->major_code,
+                   err->minor_code);
+            free(err);
+        }
     }
     sync_server(a);
     warp(px, py);
@@ -249,6 +255,8 @@ int main(void)
     variant("V5 core PointerRoot owner_events=1 pointer-over-root", CORE_KEY, 1, 0, 50, 50, 0);
     variant("V6 core PointerRoot owner_events=1 pointer-over-B B-owned-by-C", CORE_KEY, 1, 0, 300,
             375, 1);
+    variant("V7 XI2 PointerRoot owner_events=1 pointer-over-B", XI2_KEY, 1, 0, 300, 375, 0);
+    variant("V8 XI2 PointerRoot owner_events=0 pointer-over-B", XI2_KEY, 0, 0, 300, 375, 0);
 
     /* Button variant: GrabButton on T owner_events=1; A selects ButtonPress
      * on root and B but NOT on T. Pointer over B. */
