@@ -44,7 +44,9 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
   pinned, as on Xorg. This supersedes the 2026-09-17 P1b remember/relight design (see its spec note): its
   `last_enabled`/reserved-slot machinery was then removed as dead code. Not done: link-status BAD one-CRTC
   re-commit (Xorg drmmode_display.c:3995-4009) needs a per-CRTC modeset path, which today only exists as the global
-  quiesce (#275). Hardware validation pending.
+  quiesce (#275). With atomic cursor state (#276): a disconnect keeps the cursor owned by the kept CRTC, and the
+  shutdown device-wide clear settles every CRTC of a cleared device (it skips their per-output detach). Hardware
+  validation pending.
 
 - **2026-10-20 atomic cursor state (branch `feat/cursor-sprite-state`, P2):** each KMS device selects its cursor state
   path once from static capability and plane facts. On qualifying devices, cursor image, hotspot, attach and detach

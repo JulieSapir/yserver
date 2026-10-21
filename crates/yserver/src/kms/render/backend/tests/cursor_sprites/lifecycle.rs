@@ -1029,7 +1029,9 @@ fn p2_randr_remove_after_all_off_releases_only_removed_crtc_ownership() {
 #[test]
 #[ignore = "needs live Vulkan ICD (lavapipe)"]
 // Mutation: omit removed-CRTC cleanup in the physical snapshot removal loop
-// (A keeps a user), or release the live B CRTC with it.
+// (A keeps a user), or release the live B CRTC with it. A physical disconnect
+// keeps its route (#273); the remaining removal path is a connected connector
+// that advertises no usable mode.
 fn p2_hotplug_rescan_releases_only_removed_crtc_ownership() {
     let Some(mut fixture) = fixture(2) else {
         return;
@@ -1038,10 +1040,14 @@ fn p2_hotplug_rescan_releases_only_removed_crtc_ownership() {
     let [binding_a, binding_b] = establish_two_overlapping_cursors(&mut fixture, &mut delivered);
     let crtc_a = fixture.scene.events.backend.platform.outputs[0].output.crtc;
     let crtc_b = fixture.scene.events.backend.platform.outputs[1].output.crtc;
-    let snapshot_b = current_snapshots(&fixture.scene.events.backend)
-        .into_iter()
-        .find(|snapshot| snapshot.key == fixture.scene.events.backend.platform.outputs[1].key)
-        .expect("physical snapshot retains B");
+    let mut snapshots = current_snapshots(&fixture.scene.events.backend);
+    let key_a = fixture.scene.events.backend.platform.outputs[0].key.clone();
+    snapshots
+        .iter_mut()
+        .find(|snapshot| snapshot.key == key_a)
+        .expect("physical snapshot still lists A")
+        .modes
+        .clear();
     failed_detaches(&fixture, 4);
     fixture
         .scene
@@ -1049,7 +1055,7 @@ fn p2_hotplug_rescan_releases_only_removed_crtc_ownership() {
         .backend
         .platform
         .for_tests_accept_output_power_commits();
-    install_logical_topology(&mut fixture.scene.events.backend, vec![snapshot_b]);
+    install_logical_topology(&mut fixture.scene.events.backend, snapshots);
     fixture.scene.events.backend.pstate.hotplug_rescan_deadline =
         Some(Instant::now() - Duration::from_millis(1));
 
@@ -1091,8 +1097,104 @@ fn p2_hotplug_rescan_releases_only_removed_crtc_ownership() {
 
 #[test]
 #[ignore = "needs live Vulkan ICD (lavapipe)"]
+// Mutation: retire a physically disconnected route again (A's CRTC loses its
+// cursor state and user), or detach its cursor on the rescan. Shutdown then
+// releases both CRTCs through the device-wide clear.
+fn p2_physical_disconnect_keeps_the_cursor_owned_by_the_kept_crtc() {
+    let Some(mut fixture) = fixture(2) else {
+        return;
+    };
+    let mut delivered = HashSet::new();
+    let [binding_a, binding_b] = establish_two_overlapping_cursors(&mut fixture, &mut delivered);
+    let crtc_a = fixture.scene.events.backend.platform.outputs[0].output.crtc;
+    let key_b = fixture.scene.events.backend.platform.outputs[1].key.clone();
+    let snapshot_b = current_snapshots(&fixture.scene.events.backend)
+        .into_iter()
+        .find(|snapshot| snapshot.key == key_b)
+        .expect("physical snapshot retains B");
+    fixture
+        .scene
+        .events
+        .backend
+        .platform
+        .for_tests_accept_output_power_commits();
+    install_logical_topology(&mut fixture.scene.events.backend, vec![snapshot_b]);
+    let fd = device_fd(&fixture.scene.events.backend, 0);
+    let before = record_count(&fixture, fd);
+    fixture.scene.events.backend.pstate.hotplug_rescan_deadline =
+        Some(Instant::now() - Duration::from_millis(1));
+
+    Backend::poll_deferred_input(
+        &mut fixture.scene.events.backend,
+        &mut fixture.scene.events.state,
+    );
+
+    let backend = &fixture.scene.events.backend;
+    assert_eq!(
+        backend.platform.outputs.len(),
+        2,
+        "the disconnect keeps A's route"
+    );
+    let a_index = output_index_for_crtc(backend, crtc_a);
+    assert!(!backend.platform.outputs[a_index].connector_connected);
+    assert_eq!(
+        record_count(&fixture, fd),
+        before,
+        "a physical disconnect commits nothing, not even a cursor detach"
+    );
+    assert_eq!(applied_cursor_binding(backend, a_index), Some(binding_a));
+    assert_eq!(
+        applied_cursor_binding(backend, 1 - a_index),
+        Some(binding_b)
+    );
+    assert_eq!(
+        sprite_users(backend, a_index, binding_a.lease),
+        Some(2),
+        "the kept CRTC and B both still own the shared sprite"
+    );
+
+    failed_detaches(&fixture, 2);
+    let disabled = install_recording_power_executor(&mut fixture);
+    fixture
+        .scene
+        .events
+        .backend
+        .disable_output()
+        .expect("shutdown through the recording output-power executor");
+    assert_eq!(
+        eventless_detach_records(&fixture, 0)
+            .iter()
+            .filter(|record| record.result != ScriptedResult::Ok)
+            .count(),
+        2,
+        "both scene-drain detaches failed, leaving the device-wide clear as release owner"
+    );
+    assert!(
+        disabled
+            .borrow()
+            .iter()
+            .all(|observation| observation.crtc.is_none()),
+        "the device-wide clear replaces the per-output disables"
+    );
+    assert!(
+        fixture.scene.events.backend.platform.devices[0]
+            .cursor
+            .plane
+            .as_ref()
+            .unwrap()
+            .sprites()
+            .all_users_zero(),
+        "shutdown releases the disconnected CRTC's cursor too"
+    );
+    let _ = delivered;
+    finish_after_output_disable(fixture);
+}
+
+#[test]
+#[ignore = "needs live Vulkan ICD (lavapipe)"]
 // Mutation: select only the applied binding and miss an unretired hide's prior
-// plane, or bypass the injected output-power executor during shutdown.
+// plane, bypass the injected output-power executor during shutdown, or skip
+// settling the CRTCs of a device the device-wide clear turned off.
 fn p2_shutdown_settles_an_unretired_hide_and_observes_successful_disable() {
     let Some(mut fixture) = fixture(1) else {
         return;
@@ -1194,25 +1296,29 @@ fn p2_shutdown_settles_an_unretired_hide_and_observes_successful_disable() {
     let detaches = eventless_detach_records(&fixture, 0);
     assert_eq!(
         detaches.len(),
-        2,
-        "scene-drain failure then platform detach"
+        1,
+        "only the scene-drain detach; the device-wide clear removes the plane"
     );
     assert_ne!(detaches[0].result, ScriptedResult::Ok);
-    assert_eq!(detaches[1].result, ScriptedResult::Ok);
-    assert!(
-        disabled.borrow().iter().any(|observation| {
-            observation.crtc == Some(hardware.crtc)
-                && observation.records.iter().any(|record| {
-                    record.kind == AtomicCommitKind::CursorOnly
-                        && record.flags.is_empty()
-                        && record.events.is_empty()
-                        && record_property(record, original.properties.fb_id) == Some(0)
-                        && record_property(record, original.properties.crtc_id) == Some(0)
-                        && record.result == ScriptedResult::Ok
-                })
-        }),
-        "successful shutdown disable observes the preceding blocking detach"
+    let observation = disabled.borrow();
+    assert_eq!(
+        observation.len(),
+        1,
+        "one device-wide clear and no per-output disable"
     );
+    assert_eq!(
+        observation[0].crtc, None,
+        "the device-wide clear is the release owner"
+    );
+    assert!(
+        observation[0]
+            .records
+            .iter()
+            .any(|record| record.kind == AtomicCommitKind::CursorOnly
+                && record.result != ScriptedResult::Ok),
+        "the device-wide clear follows the failed scene-drain detach"
+    );
+    drop(observation);
     assert!(
         !fixture
             .scene

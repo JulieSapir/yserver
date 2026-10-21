@@ -1,5 +1,5 @@
 use crate::{drm, kms::render::platform::PlatformBackend};
-use std::{io, rc::Rc};
+use std::{collections::HashSet, io, rc::Rc};
 
 pub(in crate::kms::render) trait OutputPowerExecutor {
     fn disable(
@@ -143,6 +143,7 @@ impl PlatformBackend {
         // orphans a foreign CRTC (EINVAL). Per-output disables remain the
         // fallback for a device whose whole-device commit is refused.
         let cleared = self.disable_all_devices("shutdown");
+        self.settle_cursor_crtcs_after_device_clear(&cleared);
 
         let mut first_err: Option<io::Error> = None;
         let output_indices: Vec<_> = (0..self.outputs.len()).collect();
@@ -203,8 +204,8 @@ impl PlatformBackend {
     pub(crate) fn disable_all_devices(
         &self,
         context: &str,
-    ) -> std::collections::HashSet<crate::platform::drm::DrmDeviceKey> {
-        let mut cleared = std::collections::HashSet::new();
+    ) -> HashSet<crate::platform::drm::DrmDeviceKey> {
+        let mut cleared = HashSet::new();
         for device in &self.devices {
             match self.output_power_executor.disable_device(&device.device) {
                 Ok(()) => {
@@ -217,6 +218,35 @@ impl PlatformBackend {
             }
         }
         cleared
+    }
+
+    /// Release the cursor sprites of every CRTC on the `cleared` devices.
+    /// Their blocking all-off commit removed every plane, so no detach is
+    /// needed; shutdown skips those devices' per-output disables, which
+    /// would otherwise be the release owner.
+    fn settle_cursor_crtcs_after_device_clear(
+        &mut self,
+        cleared: &HashSet<crate::platform::drm::DrmDeviceKey>,
+    ) {
+        let mut crtcs: HashSet<_> = self
+            .outputs
+            .iter()
+            .filter(|layout| cleared.contains(&layout.key.device_key))
+            .map(|layout| (layout.key.device_key, layout.output.crtc))
+            .collect();
+        for device in self.devices.iter().filter(|d| cleared.contains(&d.key)) {
+            let cursor = &device.cursor;
+            crtcs.extend(
+                cursor
+                    .crtc_states
+                    .keys()
+                    .chain(cursor.atomic_cursor_commits_in_flight.keys())
+                    .map(|crtc| (device.key, *crtc)),
+            );
+        }
+        for (device_key, crtc) in crtcs {
+            self.settle_disabled_cursor_crtc(device_key, crtc);
+        }
     }
 
     /// Drive every output to a binary KMS power state. Used by

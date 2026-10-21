@@ -52,7 +52,8 @@ Observed with the user:
 - Physical hot-unplug (HDMI cable pulled and replugged 3 times on each card): each disconnect drops the active
   scanout through the physical rescan path, each reconnect re-enables 1920x1080@60, cursor commits resume at the
   pre-unplug rate immediately, the cursor was seen moving and animating after each reconnect; shutdown clean with
-  no pool-drop warnings; 0 errors, 0 Xid.
+  no pool-drop warnings; 0 errors, 0 Xid. Measured before #273: a disconnect now keeps its route, CRTC and cursor,
+  so this case no longer exercises the rescan removal path.
 
 ## Known cost
 
