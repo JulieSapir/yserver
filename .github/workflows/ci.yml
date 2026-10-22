@@ -122,22 +122,38 @@ jobs:
           ./target/debug/yserver --version | grep -q feedfacefeed \
             || { echo "stale stamp — rerun-if-env-changed missing:"; \
                  ./target/debug/yserver --version; exit 1; }
-      - name: Run software-Vulkan render tests (lavapipe)
-        # GPU-less runner: Mesa's lavapipe is the only Vulkan ICD, so
-        # the `#[ignore = "needs live Vulkan ICD"]` render tests run on
-        # it. They self-skip if no Vulkan device is present. KMS/scanout
-        # tests aren't in this set (no /dev/dri on the runner). All targets,
-        # not only the lib: render_acceptance and the other integration tests.
-        #
-        # On the xdmcp leg, with --features xdmcp, for the same reason as the
-        # step above: rendering is orthogonal to TCP and XDMCP, but these are
-        # the heaviest code CI actually executes and they ran on the full
-        # build before the default set was emptied. The leg has already
-        # compiled that lib, so this costs nothing extra.
-        if: matrix.name == 'xdmcp'
-        env:
-          YSERVER_ALLOW_SOFTWARE_VULKAN: "1"
-        run: cargo test --workspace --locked --features xdmcp --no-fail-fast -- --ignored
+  lavapipe:
+    # The `#[ignore = "needs live Vulkan ICD"]` render tests on Mesa's
+    # lavapipe, in an Arch container: the KMS scanout tests (commit identity,
+    # unflip, tearing, cursor sprites) need SYNC_FD export and DRM format
+    # modifiers, which Ubuntu's lavapipe lacks; without them they report `ok`
+    # while skipping. lavapipe offers modifiers only with /dev/udmabuf, which
+    # must be loaded on the host, hence docker run rather than `container:`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open /dev/udmabuf
+        run: |
+          if [ ! -e /dev/udmabuf ]; then
+            sudo modprobe udmabuf \
+              || { sudo apt-get update && sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe udmabuf; }
+          fi
+          ls -la /dev/udmabuf
+      - name: Run software-Vulkan render tests (lavapipe, Arch)
+        run: |
+          docker run --rm --device /dev/udmabuf -v "$PWD:/src" -w /src archlinux:latest bash -euc '
+            pacman -Syu --noconfirm --needed base-devel rustup libxshmfence libxkbcommon libinput \
+              shaderc systemd-libs fontconfig pkgconf mesa vulkan-swrast vulkan-tools \
+              xorg-fonts-misc xorg-fonts-75dpi xorg-fonts-100dpi >/dev/null
+            rustup default stable >/dev/null
+            vulkaninfo 2>/dev/null > /tmp/vulkaninfo.txt || true
+            grep -m1 deviceName /tmp/vulkaninfo.txt || true
+            # Fail here instead of letting those tests pass vacuously.
+            for ext in VK_KHR_external_semaphore_fd VK_EXT_image_drm_format_modifier; do
+              grep -q "$ext" /tmp/vulkaninfo.txt || { echo "lavapipe lacks $ext"; exit 1; }
+            done
+            YSERVER_ALLOW_SOFTWARE_VULKAN=1 cargo test --workspace --locked --features xdmcp --no-fail-fast -- --ignored
+          '
   freebsd:
     runs-on: ubuntu-latest
     steps:
