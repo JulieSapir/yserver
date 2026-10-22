@@ -33,6 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install packages needed for build
+        timeout-minutes: 5
         run: sudo apt-get update && sudo apt-get install -y build-essential just gcc libxshmfence-dev libxkbcommon-dev libinput-dev glslc libudev-dev libgbm-dev libfontconfig-dev xfonts-base xfonts-100dpi xfonts-75dpi mesa-vulkan-drivers vulkan-tools scdoc man-db shellcheck dash
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v2
@@ -133,6 +134,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Open /dev/udmabuf
+        timeout-minutes: 5
         run: |
           if [ ! -e /dev/udmabuf ]; then
             sudo modprobe udmabuf \

@@ -34,6 +34,7 @@ jobs:
           ls -la /dev/kvm /dev/udmabuf || true
           lsmod | grep -E 'kvm|udmabuf' || true
       - name: Open /dev/kvm and /dev/udmabuf
+        timeout-minutes: 5
         run: |
           if [ ! -e /dev/udmabuf ]; then
             sudo modprobe udmabuf \
@@ -47,6 +48,8 @@ jobs:
           sudo udevadm trigger --name-match=udmabuf
           ls -la /dev/kvm /dev/udmabuf
       - name: Install packages
+        # A stalled Ubuntu mirror otherwise eats the whole 60-minute job.
+        timeout-minutes: 5
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential gcc libxshmfence-dev libxkbcommon-dev libinput-dev glslc libudev-dev libgbm-dev libfontconfig-dev xfonts-base xfonts-100dpi xfonts-75dpi \
@@ -57,6 +60,7 @@ jobs:
           # virtme-ng with virtiofsd: memfd guest RAM, needed for blob=on.
           sudo apt-get install -y virtme-ng virtiofsd
       - name: Guest kernel
+        timeout-minutes: 5
         # A generic kernel carries virtio-gpu/drm; the runner's own azure one may not.
         # Unpacked, not installed: vng boots vmlinuz directly, so no postinst/initramfs.
         run: |
