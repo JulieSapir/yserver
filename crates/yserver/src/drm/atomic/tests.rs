@@ -14,6 +14,22 @@ fn raw<H: drm::control::ResourceHandle>(value: u32) -> H {
 }
 
 #[test]
+// Mutation: log cursor-only EBUSY at warn; this boundary assertion must fail.
+fn ebusy_log_level_is_debug_only_for_cursor_commits() {
+    assert_eq!(
+        AtomicCommitKind::CursorOnly.ebusy_log_level(),
+        log::Level::Debug
+    );
+    for kind in [
+        AtomicCommitKind::SceneWithCursor,
+        AtomicCommitKind::Scene,
+        AtomicCommitKind::Async,
+    ] {
+        assert_eq!(kind.ebusy_log_level(), log::Level::Warn, "{kind:?}");
+    }
+}
+
+#[test]
 // Mutations: add full-state fields through add_raw_property, or tag only CRTC_X/CRTC_Y for attribution.
 fn cursor_request_tags_every_full_state_property_for_attribution() {
     use crate::{

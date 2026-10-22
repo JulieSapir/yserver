@@ -769,6 +769,16 @@ pub(crate) fn enter_held_direct(
             crtc,
             commit_id: id,
         });
+        for other_output_idx in 1..fixture.scene.events.backend.platform.outputs.len() {
+            if has_unretired_accepted_event(&fixture.scene.events, delivered, other_output_idx) {
+                retire_pending_output(
+                    &mut fixture.scene.events,
+                    delivered,
+                    other_output_idx,
+                    frame + u32::try_from(other_output_idx).expect("output index fits u32"),
+                );
+            }
+        }
         scene_mode = fixture.scene.events.backend.scene.cursor_mode();
         if scene_mode == crate::kms::render::scene::CursorPlaneMode::Hw {
             break;
@@ -827,24 +837,22 @@ pub(crate) fn enter_held_direct(
         })
         .expect("accepted direct frame record");
     let id = accepted_event_id(&direct_record).expect("direct frame has an accepted ID");
-    assert_eq!(direct_record.events.len(), 1);
-    fixture.scene.events.queue_commit_completion(
-        device_fd,
-        direct_record.events[0].crtc,
-        id,
-        1,
-        Duration::from_millis(10),
+    assert_eq!(
+        direct_record.events.len(),
+        fixture.scene.events.backend.platform.outputs.len()
     );
-    Backend::on_page_flip_ready(
-        &mut fixture.scene.events.backend,
-        &mut fixture.scene.events.state,
-        device_fd,
-    );
-    delivered.insert(CompletionKey {
-        device_fd,
-        crtc: direct_record.events[0].crtc,
-        commit_id: id,
-    });
+    for output_idx in 0..fixture.scene.events.backend.platform.outputs.len() {
+        assert_eq!(
+            retire_pending_output(
+                &mut fixture.scene.events,
+                delivered,
+                output_idx,
+                1 + u32::try_from(output_idx).expect("output index fits u32"),
+            ),
+            id,
+            "Backend retires the grouped direct frame on output {output_idx}"
+        );
+    }
     assert!(fixture.scene.events.backend.pstate.scanout_m2.active());
     Ok(direct)
 }

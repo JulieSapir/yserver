@@ -40,7 +40,10 @@ fn damage_root(backend: &mut KmsBackend) {
         .expect("damage root through Backend");
 }
 
-fn install_logical_topology(backend: &mut KmsBackend, snapshots: Vec<ConnectorSnapshot>) {
+pub(super) fn install_logical_topology(
+    backend: &mut KmsBackend,
+    snapshots: Vec<ConnectorSnapshot>,
+) {
     backend.for_tests_set_vt_resume_executor(Rc::new(StaticTopology { snapshots }));
 }
 

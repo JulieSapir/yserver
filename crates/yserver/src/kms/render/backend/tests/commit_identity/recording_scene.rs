@@ -328,10 +328,12 @@ impl RecordingSceneFixture {
             !backend.scene.has_pending_page_flips(),
             "recording scene has pending page-flip acknowledgements"
         );
-        assert!(
-            !backend.store.has_pending_presentation_damage(),
-            "live drawable presentation damage remains after normal completion"
-        );
+        if !backend.platform.outputs.is_empty() {
+            assert!(
+                !backend.store.has_pending_presentation_damage(),
+                "live drawable presentation damage remains after normal completion"
+            );
+        }
         for row in self.copy_ownership_observation() {
             assert!(
                 !(row.contains("phase=Free") && row.contains("ForeignPendingKms")),
@@ -583,7 +585,26 @@ impl RecordingSceneFixture {
     }
 
     pub(crate) fn finish_after_normal_drain(mut self) {
-        self.drain_deferred_pool_releases(Duration::from_secs(5));
+        if self.events.backend.platform.outputs.is_empty() {
+            // A topology-removal test has no CRTC left to accept the damaged
+            // frame used by the normal pool-release drain. Fence and deliver
+            // any remaining render work directly; output removal must already
+            // have retired the scanout pools and their deferred releases.
+            self.events.wait_for_submitted_gpu_work();
+            Backend::on_scanout_render_completion(&mut self.events.backend, &mut self.events.state);
+            self.events.wait_for_submitted_gpu_work();
+            assert!(self.pending_render_job_ids().is_empty());
+            assert_eq!(
+                self.events
+                    .backend
+                    .scene
+                    .pending_pool_release_count_for_tests(),
+                0,
+                "output removal leaves no deferred scene pool releases"
+            );
+        } else {
+            self.drain_deferred_pool_releases(Duration::from_secs(5));
+        }
         self.assert_quiescent();
         let root = self.events.backend.core.window_id;
         // The tearing entry selects a sprite cursor on the root. Release it

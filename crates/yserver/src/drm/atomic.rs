@@ -182,6 +182,13 @@ impl AtomicCommitKind {
         }
     }
 
+    const fn ebusy_log_level(self) -> log::Level {
+        match self {
+            Self::CursorOnly => log::Level::Debug,
+            Self::SceneWithCursor | Self::Scene | Self::Async => log::Level::Warn,
+        }
+    }
+
     const fn index(self) -> usize {
         match self {
             Self::CursorOnly => 0,
@@ -590,8 +597,9 @@ impl AtomicCommitSink {
             .as_ref()
             .is_err_and(|error| error.raw_os_error() == Some(libc::EBUSY))
         {
-            log::warn!(
+            log::log!(
                 target: "yserver::kms::render::backend::kms",
+                kind.ebusy_log_level(),
                 "atomic commit returned EBUSY; the CRTC already has a pending commit",
             );
         }
