@@ -204,12 +204,13 @@ impl PlatformBackend {
         }
 
         // DRM disable (ALLOW_MODESET atomic commit zeroing the CRTC).
-        if let Err(e) = crate::drm::modeset::disable_output(&device, &self.outputs[idx].output) {
+        let executor = Rc::clone(&self.output_power_executor);
+        if let Err(e) = executor.disable(&device, &self.outputs[idx].output) {
             log::error!("render disable_connector: disable_output({connector}) failed: {e}");
             return Err(e);
         }
 
-        self.remove_connector_at(idx);
+        self.remove_connector_at_scoped(idx, true);
 
         log::info!(
             "render disable_connector: {connector} disabled; fb now {}×{}",
@@ -236,6 +237,13 @@ impl PlatformBackend {
     }
 
     pub(super) fn remove_connector_at(&mut self, idx: usize) {
+        self.remove_connector_at_scoped(idx, false);
+    }
+
+    /// Remove output `idx`. With `per_crtc`, only the removed CRTC's cursor
+    /// state is dropped; the device's surviving CRTCs keep theirs (cursor
+    /// state is CRTC-keyed, so the index shift does not move it).
+    fn remove_connector_at_scoped(&mut self, idx: usize, per_crtc: bool) {
         let output_key = self.outputs[idx].key.clone();
         let changed_device = self.outputs[idx].key.device_key;
         let removed_crtc = self.outputs[idx].output.crtc;
@@ -256,6 +264,9 @@ impl PlatformBackend {
         if idx < self.first_pageflip_logged.len() {
             self.first_pageflip_logged.remove(idx);
         }
+        if idx < self.scene_flip_timings.len() {
+            self.scene_flip_timings.remove(idx);
+        }
         self.outputs.remove(idx);
 
         self.release_cursor_crtc_ownership_after_all_off(changed_device, removed_crtc);
@@ -271,7 +282,11 @@ impl PlatformBackend {
         self.fb_w = fb_w;
         self.fb_h = fb_h;
         self.prune_present_clocks_to_live_outputs();
-        self.refresh_cursor_topology_for_devices(&HashSet::from([changed_device]));
+        self.refresh_cursor_topology_scoped_with(
+            &HashSet::from([changed_device]),
+            per_crtc.then_some(removed_crtc),
+            initialize_cursor_plane_for_device,
+        );
     }
 
     fn resolve_connector_enable(
@@ -417,6 +432,30 @@ impl PlatformBackend {
             mode_spec,
             x,
             y,
+            initialize_cursor_plane_for_device,
+        )
+    }
+
+    /// [`Self::enable_connector`] for a per-CRTC RANDR change: installs
+    /// `prepared_pool` instead of allocating when the output needs a new
+    /// pool, and drops cursor state for this CRTC only.
+    pub(crate) fn enable_connector_with_pool(
+        &mut self,
+        output_key: &OutputKey,
+        output: crate::platform::drm::Output,
+        mode_spec: yserver_core::backend::ModeSpec,
+        x: i32,
+        y: i32,
+        prepared_pool: Option<(ScanoutRoute, OutputScanout)>,
+    ) -> io::Result<()> {
+        self.enable_connector_inner(
+            output_key,
+            output,
+            mode_spec,
+            x,
+            y,
+            prepared_pool,
+            true,
             initialize_cursor_plane_for_device,
         )
     }
@@ -597,6 +636,7 @@ impl PlatformBackend {
             x,
             y,
             Some((scanout_route, pool)),
+            false,
             initialize_cursor_plane_for_device,
         )
     }
@@ -613,7 +653,16 @@ impl PlatformBackend {
     where
         F: FnMut(&mut KmsDevice, &[::drm::control::crtc::Handle], &str),
     {
-        self.enable_connector_inner(output_key, output, mode_spec, x, y, None, cursor_factory)
+        self.enable_connector_inner(
+            output_key,
+            output,
+            mode_spec,
+            x,
+            y,
+            None,
+            false,
+            cursor_factory,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -625,6 +674,7 @@ impl PlatformBackend {
         x: i32,
         y: i32,
         prepared_pool: Option<(ScanoutRoute, OutputScanout)>,
+        per_crtc: bool,
         mut cursor_factory: F,
     ) -> io::Result<()>
     where
@@ -821,7 +871,8 @@ impl PlatformBackend {
 
         // Commit the modeset.  On failure, pool is freed (dropped below).
         if new_pool_committed_framebuffer.is_none()
-            && let Err(e) = crate::drm::modeset::commit_modeset(&device, &output, fb_for_commit)
+            && let Err(e) =
+                Rc::clone(&self.output_power_executor).enable(&device, &output, fb_for_commit)
         {
             log::error!(
                 "render enable_connector: commit_modeset for {connector} ({}×{}@{}) at ({x},{y}) failed: {e}",
@@ -877,6 +928,11 @@ impl PlatformBackend {
             self.outputs[idx].width = w;
             self.outputs[idx].height = h;
             if let Some(pool) = new_pool {
+                // Dropping the old BOs frees images that GPU work outside the
+                // scene's fences (scanout reads) may still use.
+                if self.scanout_pools[idx].is_some() {
+                    self.wait_idle_bounded();
+                }
                 self.scanout_pools[idx] = pool;
                 self.bo_generations[idx] = self.scanout_pools[idx]
                     .as_ref()
@@ -927,7 +983,12 @@ impl PlatformBackend {
         // genuinely deferred device is intentionally skipped here so a
         // failure in the new lazy attempt cannot be retried twice at the same
         // boundary.
-        self.refresh_cursor_topology_for_devices_with(&changed_devices, &mut cursor_factory);
+        let installed_crtc = self.outputs[installed_idx].output.crtc;
+        self.refresh_cursor_topology_scoped_with(
+            &changed_devices,
+            per_crtc.then_some(installed_crtc),
+            &mut cursor_factory,
+        );
         self.initialize_headless_cursor_for_device_with(
             output_key.device_key,
             "first successful explicit RANDR enable",
@@ -983,6 +1044,46 @@ impl PlatformBackend {
             layout.x = next_x;
             layout.y = 0;
             next_x = next_x.saturating_add(i32::from(layout.width));
+        }
+    }
+
+    /// Wait up to `timeout` for DRM events on `device_key`, without reading
+    /// them. Returns the fd to hand to the normal page-flip handler once
+    /// events are readable.
+    pub(crate) fn wait_drm_events_ready(
+        &self,
+        device_key: crate::platform::drm::DrmDeviceKey,
+        timeout: std::time::Duration,
+    ) -> io::Result<Option<std::os::fd::RawFd>> {
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+        let device = self.device_for_key(device_key).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no DRM device {device_key} to wait on"),
+            )
+        })?;
+        let ready = device
+            .page_flip_event_source
+            .wait_ready(&device.device, timeout)?;
+        Ok(ready.then(|| device.device.as_fd().as_raw_fd()))
+    }
+
+    /// Whether output `idx` still owes a page-flip event: a scene flip held
+    /// by its scanout pool or an accepted cursor-only commit on its CRTC.
+    pub(crate) fn output_owes_kms_event(&self, idx: usize) -> bool {
+        self.scanout_pools
+            .get(idx)
+            .and_then(Option::as_ref)
+            .is_some_and(|pool| pool.display_pool().has_pending_pageflip())
+            || self.cursor_atomic_event_pending_for_output(idx)
+    }
+
+    /// Distrust every buffer-age record of output `idx` after a modeset, as
+    /// [`Self::reset_scanout_bos_for_suspend`] does for all outputs.
+    pub(crate) fn invalidate_bo_generations_at(&mut self, idx: usize) {
+        for generation in self.bo_generations.get_mut(idx).into_iter().flatten() {
+            generation.last_present_generation = None;
+            generation.content_invalidated = true;
         }
     }
 

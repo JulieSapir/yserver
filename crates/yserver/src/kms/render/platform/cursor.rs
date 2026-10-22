@@ -224,6 +224,24 @@ impl PlatformBackend {
         device.cursor.crtc_states.entry(crtc).or_default().valid = false;
     }
 
+    /// Drop the cursor positions cached and queued for one CRTC, and force
+    /// its next cursor commit, after that CRTC moved in the root window.
+    pub(crate) fn forget_cursor_position_for_crtc(
+        &mut self,
+        device_key: crate::platform::drm::DrmDeviceKey,
+        crtc: ::drm::control::crtc::Handle,
+    ) {
+        let Some(device) = self
+            .devices
+            .iter_mut()
+            .find(|device| device.key == device_key)
+        else {
+            return;
+        };
+        device.cursor.clear_atomic_position(crtc);
+        device.cursor.crtc_states.entry(crtc).or_default().valid = false;
+    }
+
     pub(crate) fn invalidate_live_cursor_applied(&mut self) {
         let live_crtcs: Vec<_> = self
             .outputs
@@ -1765,6 +1783,21 @@ impl PlatformBackend {
     pub(super) fn refresh_cursor_topology_for_devices_with<F>(
         &mut self,
         changed_devices: &HashSet<crate::platform::drm::DrmDeviceKey>,
+        factory: F,
+    ) where
+        F: FnMut(&mut KmsDevice, &[::drm::control::crtc::Handle], &str),
+    {
+        self.refresh_cursor_topology_scoped_with(changed_devices, None, factory);
+    }
+
+    /// [`Self::refresh_cursor_topology_for_devices_with`]; with `only_crtc`
+    /// set, per-CRTC cursor state is dropped for that CRTC alone, so the
+    /// device's other live CRTCs keep their queued moves. A per-CRTC RANDR
+    /// change uses this; a global quiesce drops every CRTC's state.
+    pub(super) fn refresh_cursor_topology_scoped_with<F>(
+        &mut self,
+        changed_devices: &HashSet<crate::platform::drm::DrmDeviceKey>,
+        only_crtc: Option<::drm::control::crtc::Handle>,
         mut factory: F,
     ) where
         F: FnMut(&mut KmsDevice, &[::drm::control::crtc::Handle], &str),
@@ -1780,23 +1813,39 @@ impl PlatformBackend {
             if !changed_devices.contains(&device.key) {
                 continue;
             }
-            device.cursor.pending_move = None;
-            device.cursor.pending_move_timestamp = None;
-            device.cursor.atomic_positions.clear();
-            device.cursor.atomic_pending_moves.clear();
-            if device.cursor.state_path()
-                != crate::kms::cursor_plane::topology::CursorStatePath::Atomic
-            {
-                device.cursor.atomic_cursor_commits_in_flight.clear();
+            let atomic = device.cursor.state_path()
+                == crate::kms::cursor_plane::topology::CursorStatePath::Atomic;
+            if let Some(crtc) = only_crtc {
+                device.cursor.clear_atomic_position(crtc);
+                if !atomic
+                    || device
+                        .cursor
+                        .atomic_cursor_commits_in_flight
+                        .get(&crtc)
+                        .is_some_and(|commit| commit.commit_id.is_none())
+                {
+                    device.cursor.atomic_cursor_commits_in_flight.remove(&crtc);
+                }
+                device.cursor.cursor_retry_waits_for_flip.remove(&crtc);
+                device.cursor.cursor_hide_recovery.remove(&crtc);
+                device.cursor.transient_fallback_crtcs.remove(&crtc);
             } else {
-                device
-                    .cursor
-                    .atomic_cursor_commits_in_flight
-                    .retain(|_, commit| commit.commit_id.is_some());
+                device.cursor.pending_move = None;
+                device.cursor.pending_move_timestamp = None;
+                device.cursor.atomic_positions.clear();
+                device.cursor.atomic_pending_moves.clear();
+                if atomic {
+                    device
+                        .cursor
+                        .atomic_cursor_commits_in_flight
+                        .retain(|_, commit| commit.commit_id.is_some());
+                } else {
+                    device.cursor.atomic_cursor_commits_in_flight.clear();
+                }
+                device.cursor.cursor_retry_waits_for_flip.clear();
+                device.cursor.cursor_hide_recovery.clear();
+                device.cursor.transient_fallback_crtcs.clear();
             }
-            device.cursor.cursor_retry_waits_for_flip.clear();
-            device.cursor.cursor_hide_recovery.clear();
-            device.cursor.transient_fallback_crtcs.clear();
             let crtcs = crtcs_by_device.remove(&device.key).unwrap_or_default();
             if device.cursor.should_retry_initialization(!crtcs.is_empty()) {
                 factory(device, &crtcs, "lifecycle retry");
