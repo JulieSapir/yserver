@@ -1322,6 +1322,9 @@ impl PlatformBackend {
         x: i32,
         y: i32,
     ) -> Result<(), crate::kms::cursor_plane::CursorShowError> {
+        if self.latest_root_pointer.is_none() {
+            self.note_root_pointer_position(x, y);
+        }
         if self
             .cursor_output_route(output_idx)
             .ok()

@@ -604,6 +604,8 @@ impl<P: Platform> XBackend<P> {
         if new_x != self.core.cursor_x || new_y != self.core.cursor_y {
             self.core.cursor_x = new_x;
             self.core.cursor_y = new_y;
+            #[allow(clippy::cast_possible_truncation)]
+            P::note_root_pointer_position(self, new_x as i32, new_y as i32);
             // Stage 5 Phase D — pointer fast path. When the plane
             // is fully bound on every output AND no transition is
             // pending, route motion through `cursor_plane_move`.

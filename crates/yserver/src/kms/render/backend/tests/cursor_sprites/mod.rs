@@ -1,6 +1,7 @@
 mod legacy;
 mod lifecycle;
 mod motion;
+mod retire_show_latest;
 mod scene_attach;
 mod support;
 

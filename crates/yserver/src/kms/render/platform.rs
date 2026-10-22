@@ -471,6 +471,9 @@ pub struct PlatformBackend {
     pub(crate) outputs: Vec<ActiveOutput>,
     pub(crate) fb_w: u16,
     pub(crate) fb_h: u16,
+    /// Latest root-space pointer position observed by Backend input dispatch.
+    /// None preserves compose-captured coordinates until a position is known.
+    pub(crate) latest_root_pointer: Option<(i32, i32)>,
     /// Non-identity current CRTC transforms (RANDR `SetCrtcTransform`),
     /// client-owned like the logical screen size, so keyed by output and
     /// kept across the `outputs` rebuilds of a topology change.
@@ -597,6 +600,10 @@ pub struct PlatformBackend {
 }
 
 impl PlatformBackend {
+    pub(crate) fn note_root_pointer_position(&mut self, x: i32, y: i32) {
+        self.latest_root_pointer = Some((x, y));
+    }
+
     #[cfg(test)]
     pub(crate) fn for_tests_gpu_contexts(&self) -> Vec<Arc<VkContext>> {
         let mut contexts = Vec::new();

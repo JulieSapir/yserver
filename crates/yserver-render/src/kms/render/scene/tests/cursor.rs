@@ -49,7 +49,9 @@ fn derive_sw_to_hw_queues_show_on_retire() {
 #[test]
 fn deferred_transition_keeps_the_retained_mode_and_forces_a_show_retry() {
     let mut sink = TestSink::new();
-    let cursor = test_cursor_entry(Some(vec![0; 16 * 16 * 4]));
+    let mut cursor = test_cursor_entry(Some(vec![0; 16 * 16 * 4]));
+    cursor.hot_x = 2;
+    cursor.hot_y = 3;
     sink.cursor_available = true;
     sink.cursor_visible = true;
     sink.upload_response = TestUploadResponse::Deferred;

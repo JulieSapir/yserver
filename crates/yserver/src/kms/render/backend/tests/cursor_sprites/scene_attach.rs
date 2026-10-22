@@ -1,24 +1,304 @@
-use super::support::{
-    AtomicPathFixture, LegacyPathFixture, PathKind, accept_cursor_detach, accepted_live_records,
-    applied_cursor_binding, compose_until_cursor_commit, compose_until_cursor_commit_where,
-    create_argb_cursor, define_root_cursor, drain_unretired_output_events, enter_held_direct,
-    establish_hardware_cursor, has_unretired_accepted_event, record_count, record_property,
-    retire_cursor_record, retire_pending_output, sprite_bytes, sprite_users,
+use super::{
+    super::commit_identity::recording_scene::P1SceneRoute,
+    support::{
+        AtomicPathFixture, LegacyPathFixture, PathKind, accept_cursor_detach,
+        accepted_live_records, applied_cursor_binding, compose_until_cursor_commit,
+        compose_until_cursor_commit_where, create_argb_cursor, damage_root, define_root_cursor,
+        deliver_render_completion, drain_unretired_output_events, enter_held_direct,
+        establish_hardware_cursor, has_unretired_accepted_event, record_count, record_property,
+        retire_cursor_record, retire_pending_output, sprite_bytes, sprite_users,
+    },
 };
 use crate::{
     drm::atomic::{AtomicCommitKind, tests_support::ScriptedResult},
     kms::cursor_plane::ops::recording::CursorBufferOperation,
 };
-use std::{collections::HashSet, rc::Rc};
+use std::{collections::HashSet, rc::Rc, time::Instant};
 use yserver_core::backend::Backend;
 
-fn damage_root(fixture: &mut AtomicPathFixture) {
-    let backend = &mut fixture.scene.events.backend;
-    let root = backend.core.window_id;
-    let width = backend.platform.fb_w;
-    let height = backend.platform.fb_h;
-    Backend::clear_area(backend, None, root, 0, None, 0, 0, width, height, (0, 0))
-        .expect("damage root through Backend");
+#[test]
+#[ignore = "needs live Vulkan ICD (lavapipe)"]
+// Mutation: forward ShowOnRetire's captured (x, y) to show; CRTC_X/CRTC_Y must use P1 in both schedules.
+fn retire_show_after_motion_uses_current_pointer() {
+    for (route, move_before_acceptance) in [
+        (P1SceneRoute::CopiedSameDevice, true),
+        (P1SceneRoute::Shared, false),
+    ] {
+        let Some(mut fixture) = AtomicPathFixture::with_scene_route(PathKind::Physical, 1, route)
+            .expect("cursor-retirement scene fixture construction")
+        else {
+            return;
+        };
+        let mut delivered = HashSet::new();
+        if move_before_acceptance {
+            // Drain the fixture's initial frame so the tested copied frame has
+            // a real source-render completion boundary before KMS acceptance.
+            damage_root(&mut fixture);
+            Backend::maybe_composite(&mut fixture.scene.events.backend)
+                .expect("submit the copied fixture's initial scene frame");
+            for job_id in fixture.scene.pending_render_job_ids() {
+                deliver_render_completion(&mut fixture, job_id);
+            }
+            drain_unretired_output_events(&mut fixture, &mut delivered, 0);
+            assert!(
+                !fixture.scene.events.backend.scene.has_pending_page_flip(0),
+                "copied fixture is ready for the tested frame"
+            );
+        }
+        let cursor = create_argb_cursor(
+            &mut fixture.scene.events.backend,
+            (4, 4),
+            [0x12, 0x34, 0x56, 0xff],
+            (1, 2),
+        );
+        define_root_cursor(&mut fixture.scene.events.backend, cursor);
+        Backend::warp_pointer_root(
+            &mut fixture.scene.events.backend,
+            &mut fixture.scene.events.state,
+            120,
+            80,
+        );
+        damage_root(&mut fixture);
+
+        let output_idx = 0;
+        if move_before_acceptance {
+            assert!(matches!(
+                fixture.scene.events.backend.platform.scanout_pools[output_idx].as_ref(),
+                Some(crate::kms::vk::scanout::OutputScanout::Copied(_))
+            ));
+        }
+        let device_fd = fixture.scene.kms_fd(output_idx);
+        let properties =
+            super::support::cursor_properties_for_output(&fixture.scene.events.backend, output_idx);
+        let record_start = record_count(&fixture, device_fd);
+
+        if move_before_acceptance {
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            let mut pending_job = None;
+            for _ in 0..16 {
+                Backend::before_block(&mut fixture.scene.events.backend);
+                damage_root(&mut fixture);
+                Backend::maybe_composite(&mut fixture.scene.events.backend)
+                    .expect("compose copied ShowOnRetire at P0 through Backend");
+                pending_job = fixture.scene.pending_render_job_ids().last().copied();
+                if pending_job.is_some() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "copied composition did not register a source render"
+                );
+            }
+            let job_id = pending_job
+                .unwrap_or_else(|| {
+                    panic!(
+                        "copied composition registers a source render within 16 Backend ticks; dirty={}, ready={}, pending_flip={}, cursor_mode={:?}, records={:?}",
+                        fixture.scene.events.backend.scene.scene_structure_dirty,
+                        fixture.scene.events.backend.scene.output_ready_for_submit(
+                            output_idx,
+                            &fixture.scene.events.backend.platform,
+                        ),
+                        fixture.scene.events.backend.scene.has_pending_page_flip(output_idx),
+                        fixture.scene.events.backend.scene.cursor_mode(),
+                        fixture.scene.events.recorders[&device_fd]
+                            .records()
+                            .iter()
+                            .map(|record| (record.kind, record.result, record.flags))
+                            .collect::<Vec<_>>(),
+                    )
+                });
+            assert!(
+                !accepted_live_records(&fixture.scene.events.recorders[&device_fd])
+                    .iter()
+                    .skip(record_start)
+                    .any(|record| record.kind == AtomicCommitKind::Scene),
+                "copied frame is not accepted before pointer motion"
+            );
+            Backend::warp_pointer_root(
+                &mut fixture.scene.events.backend,
+                &mut fixture.scene.events.state,
+                180,
+                130,
+            );
+            deliver_render_completion(&mut fixture, job_id);
+        } else {
+            Backend::maybe_composite(&mut fixture.scene.events.backend)
+                .expect("compose shared ShowOnRetire at P0 through Backend");
+            assert!(
+                accepted_live_records(&fixture.scene.events.recorders[&device_fd])
+                    .iter()
+                    .skip(record_start)
+                    .any(|record| record.kind == AtomicCommitKind::Scene),
+                "the shared frame is accepted before pointer motion"
+            );
+            Backend::warp_pointer_root(
+                &mut fixture.scene.events.backend,
+                &mut fixture.scene.events.state,
+                180,
+                130,
+            );
+        }
+
+        let scene_id =
+            retire_pending_output(&mut fixture.scene.events, &mut delivered, output_idx, 1);
+        assert_ne!(scene_id, 0, "retirement uses the accepted scene event ID");
+        let attach = accepted_live_records(&fixture.scene.events.recorders[&device_fd])
+            .into_iter()
+            .skip(record_start)
+            .find(|record| {
+                record.kind == AtomicCommitKind::CursorOnly
+                    && record_property(record, properties.fb_id).is_some_and(|fb| fb != 0)
+            })
+            .expect("retirement submits the hardware cursor attach");
+        assert_eq!(record_property(&attach, properties.crtc_x), Some(179));
+        assert_eq!(record_property(&attach, properties.crtc_y), Some(128));
+        assert_ne!(record_property(&attach, properties.crtc_x), Some(119));
+        assert_ne!(record_property(&attach, properties.crtc_y), Some(78));
+        assert_eq!(
+            retire_pending_output(&mut fixture.scene.events, &mut delivered, output_idx, 2),
+            attach.user_data,
+            "cursor attach retires by its accepted ID"
+        );
+
+        Backend::set_cursor_hidden(&mut fixture.scene.events.backend, true);
+        damage_root(&mut fixture);
+        Backend::maybe_composite(&mut fixture.scene.events.backend)
+            .expect("compose cursor detach through Backend");
+        for job_id in fixture.scene.pending_render_job_ids() {
+            deliver_render_completion(&mut fixture, job_id);
+        }
+        super::support::finish_atomic_fixture(fixture, &mut delivered);
+    }
+}
+
+#[test]
+#[ignore = "needs live Vulkan ICD (lavapipe)"]
+// Mutation: drop the captured-position fallback when no root pointer was recorded; CRTC_X/CRTC_Y must preserve the compose position.
+fn retire_show_without_known_pointer_keeps_captured_position() {
+    let Some(mut fixture) =
+        AtomicPathFixture::new(PathKind::Physical).expect("cursor-retirement fixture construction")
+    else {
+        return;
+    };
+    let mut delivered = HashSet::new();
+    let cursor = create_argb_cursor(
+        &mut fixture.scene.events.backend,
+        (4, 4),
+        [0x12, 0x34, 0x56, 0xff],
+        (1, 2),
+    );
+    define_root_cursor(&mut fixture.scene.events.backend, cursor);
+    let captured_root = (
+        fixture.scene.events.backend.core.cursor_x as i32,
+        fixture.scene.events.backend.core.cursor_y as i32,
+    );
+    damage_root(&mut fixture);
+    Backend::maybe_composite(&mut fixture.scene.events.backend)
+        .expect("compose ShowOnRetire without a pointer dispatch");
+
+    let output_idx = 0;
+    let device_fd = fixture.scene.kms_fd(output_idx);
+    let properties =
+        super::support::cursor_properties_for_output(&fixture.scene.events.backend, output_idx);
+    let scene_id = retire_pending_output(&mut fixture.scene.events, &mut delivered, output_idx, 1);
+    assert_ne!(scene_id, 0, "retirement uses the accepted scene event ID");
+    let attach = accepted_live_records(&fixture.scene.events.recorders[&device_fd])
+        .into_iter()
+        .find(|record| {
+            record.kind == AtomicCommitKind::CursorOnly
+                && record_property(record, properties.fb_id).is_some_and(|fb| fb != 0)
+        })
+        .expect("retirement submits the hardware cursor attach");
+    assert_eq!(
+        record_property(&attach, properties.crtc_x),
+        Some(u64::try_from(captured_root.0 - 1).expect("captured x is nonnegative")),
+    );
+    assert_eq!(
+        record_property(&attach, properties.crtc_y),
+        Some(u64::try_from(captured_root.1 - 2).expect("captured y is nonnegative")),
+    );
+    assert_eq!(
+        retire_pending_output(&mut fixture.scene.events, &mut delivered, output_idx, 2),
+        attach.user_data,
+        "cursor attach retires by its accepted ID"
+    );
+
+    Backend::set_cursor_hidden(&mut fixture.scene.events.backend, true);
+    damage_root(&mut fixture);
+    Backend::maybe_composite(&mut fixture.scene.events.backend)
+        .expect("compose cursor detach through Backend");
+    super::support::finish_atomic_fixture(fixture, &mut delivered);
+}
+
+#[test]
+#[ignore = "needs live Vulkan ICD (lavapipe)"]
+// Mutation: omit output 1's nonzero origin when translating the latest root pointer to CRTC_X/CRTC_Y.
+fn retire_show_uses_output_local_pointer_coordinates() {
+    let Some(mut fixture) = AtomicPathFixture::with_output_count(PathKind::Physical, 2)
+        .expect("two-output cursor-retirement fixture construction")
+    else {
+        return;
+    };
+    let mut delivered = HashSet::new();
+    let cursor = create_argb_cursor(
+        &mut fixture.scene.events.backend,
+        (4, 4),
+        [0x12, 0x34, 0x56, 0xff],
+        (1, 2),
+    );
+    define_root_cursor(&mut fixture.scene.events.backend, cursor);
+    Backend::warp_pointer_root(
+        &mut fixture.scene.events.backend,
+        &mut fixture.scene.events.state,
+        920,
+        100,
+    );
+    damage_root(&mut fixture);
+    Backend::maybe_composite(&mut fixture.scene.events.backend)
+        .expect("compose output 1 ShowOnRetire at P0 through Backend");
+    Backend::warp_pointer_root(
+        &mut fixture.scene.events.backend,
+        &mut fixture.scene.events.state,
+        980,
+        140,
+    );
+
+    let output_idx = 1;
+    let layout = &fixture.scene.events.backend.platform.outputs[output_idx];
+    let (layout_origin, crtc) = ((layout.x, layout.y), layout.output.crtc);
+    assert_eq!(layout_origin, (800, 0));
+    let device_fd = fixture.scene.kms_fd(output_idx);
+    let properties =
+        super::support::cursor_properties_for_output(&fixture.scene.events.backend, output_idx);
+    let scene_id = retire_pending_output(&mut fixture.scene.events, &mut delivered, output_idx, 1);
+    assert_ne!(scene_id, 0, "retirement uses the accepted scene event ID");
+    let attach = accepted_live_records(&fixture.scene.events.recorders[&device_fd])
+        .into_iter()
+        .find(|record| {
+            record.kind == AtomicCommitKind::CursorOnly
+                && record_property(record, properties.fb_id).is_some_and(|fb| fb != 0)
+                && record_property(record, properties.crtc_id) == Some(u64::from(u32::from(crtc)))
+        })
+        .expect("output 1 retirement submits its hardware cursor attach");
+    assert_eq!(record_property(&attach, properties.crtc_x), Some(179));
+    assert_eq!(record_property(&attach, properties.crtc_y), Some(138));
+    assert_ne!(record_property(&attach, properties.crtc_x), Some(979));
+    assert_eq!(
+        retire_pending_output(&mut fixture.scene.events, &mut delivered, output_idx, 2),
+        attach.user_data,
+        "output 1 cursor attach retires by its accepted ID"
+    );
+    assert_ne!(
+        retire_pending_output(&mut fixture.scene.events, &mut delivered, 0, 3),
+        0,
+        "output 0 scene frame also retires by its accepted ID"
+    );
+
+    Backend::set_cursor_hidden(&mut fixture.scene.events.backend, true);
+    damage_root(&mut fixture);
+    Backend::maybe_composite(&mut fixture.scene.events.backend)
+        .expect("compose output cursor detach through Backend");
+    super::support::finish_atomic_fixture(fixture, &mut delivered);
 }
 
 #[test]

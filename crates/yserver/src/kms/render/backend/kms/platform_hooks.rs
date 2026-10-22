@@ -30,6 +30,10 @@ impl Platform for PlatformBackend {
         self.scene_output_layouts()
     }
 
+    fn note_root_pointer_position(b: &mut KmsBackend, x: i32, y: i32) {
+        b.platform.note_root_pointer_position(x, y);
+    }
+
     fn note_drawable_retired(st: &mut KmsBackendState, id: DrawableId) {
         st.scanout_m1.remove(id);
     }

@@ -403,6 +403,7 @@ impl CursorPlaneSink for PlatformBackend {
         x: i32,
         y: i32,
     ) -> Result<(), CursorShowFailure> {
+        let (x, y) = self.latest_root_pointer.unwrap_or((x, y));
         self.cursor_plane_show_on_crtc(output_idx, hot_x, hot_y, x, y)
             .map_err(|error| CursorShowFailure {
                 remains_visible: error.remains_visible(),

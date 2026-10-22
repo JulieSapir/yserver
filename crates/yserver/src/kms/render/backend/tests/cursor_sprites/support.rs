@@ -29,7 +29,7 @@ use std::{
 use yserver_core::backend::{AnyHandle, Backend, CursorHandle};
 
 use super::super::commit_identity::{
-    recording_scene::{DirectPresentSetup, RecordingSceneFixture},
+    recording_scene::{DirectPresentSetup, P1SceneRoute, RecordingSceneFixture},
     support::{AtomicEventFixture, accepted_event_id},
 };
 
@@ -104,6 +104,15 @@ pub(crate) fn create_bitmap_cursor(backend: &mut KmsBackend, visible: bool) -> C
 pub(crate) fn define_root_cursor(backend: &mut KmsBackend, cursor: CursorHandle) {
     Backend::define_cursor(backend, None, backend.core.window_id, cursor.as_raw())
         .expect("define root cursor");
+}
+
+pub(crate) fn damage_root(fixture: &mut AtomicPathFixture) {
+    let backend = &mut fixture.scene.events.backend;
+    let root = backend.core.window_id;
+    let width = backend.platform.fb_w;
+    let height = backend.platform.fb_h;
+    Backend::clear_area(backend, None, root, 0, None, 0, 0, width, height, (0, 0))
+        .expect("damage root through Backend");
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,9 +194,24 @@ impl AtomicPathFixture {
         kind: PathKind,
         output_count: usize,
     ) -> Result<Option<Self>, String> {
-        let Some(mut scene) = RecordingSceneFixture::new(output_count)? else {
+        Self::with_scene_route(kind, output_count, P1SceneRoute::Shared)
+    }
+
+    pub(crate) fn with_scene_route(
+        kind: PathKind,
+        output_count: usize,
+        route: P1SceneRoute,
+    ) -> Result<Option<Self>, String> {
+        let Some(mut scene) = RecordingSceneFixture::with_route(output_count, route)? else {
             return Ok(None);
         };
+        if route != P1SceneRoute::Shared {
+            scene
+                .readiness
+                .as_ref()
+                .expect("copied fixture has a render-completion observer")
+                .hold_ready_jobs();
+        }
         let (io, ledger) = RecordingCursorBufferIo::new(256);
         let buffer_io: Rc<dyn CursorBufferIo> = Rc::new(io);
         let legacy = Rc::new(RecordingLegacyCursor::default());
@@ -214,6 +238,9 @@ impl AtomicPathFixture {
                 .filter(|output| output.key.device_key == key)
                 .map(|output| output.output.crtc)
                 .collect();
+            if crtcs.is_empty() {
+                continue;
+            }
             let snapshot = CursorPlaneTestSnapshot {
                 crtcs: crtcs.iter().map(|crtc| u32::from(*crtc)).collect(),
                 planes: crtcs
@@ -419,6 +446,25 @@ pub(crate) fn establish_hardware_cursor(
         }
     }
     panic!("hardware cursor not established");
+}
+
+pub(crate) fn deliver_render_completion(fixture: &mut AtomicPathFixture, job_id: u64) {
+    fixture.scene.events.wait_for_submitted_gpu_work();
+    fixture
+        .scene
+        .readiness
+        .as_ref()
+        .expect("copied fixture has a render-completion observer")
+        .release_ready_job(job_id);
+    Backend::on_scanout_render_completion(
+        &mut fixture.scene.events.backend,
+        &mut fixture.scene.events.state,
+    );
+    fixture.scene.events.wait_for_submitted_gpu_work();
+    assert!(
+        !fixture.scene.pending_render_job_ids().contains(&job_id),
+        "released render completion was delivered through Backend"
+    );
 }
 
 pub(crate) fn finish_atomic_fixture(

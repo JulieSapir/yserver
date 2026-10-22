@@ -589,21 +589,21 @@ pub(super) fn apply_cursor_transition_on_retire(
         return CursorTransitionResult::Applied;
     };
     match t {
-        CursorTransition::ShowOnRetire {
-            upload_version,
-            hot_x,
-            hot_y,
-            x,
-            y,
-        } => {
+        CursorTransition::ShowOnRetire { x, y, .. } => {
             let prior_visible = sink.cursor_plane().visible(output_idx);
-            // Stage the complete image identity, including its hotspot.
-            // A hotspot-only update may keep the same image version, so the
-            // backend owns the deduplication decision. Bytes come from the
-            // scene's current `CursorEntry` (cloned-Arc, no copy)
-            // when its version matches the transition's. A mismatch never
-            // binds stale pixels: the old binding must be hidden successfully
-            // or remain authoritative with a version-qualified Show retry.
+            // A frame can retire after a cursor animation has registered a
+            // newer entry. Bind the newest live image and hotspot rather than
+            // hiding the plane because the compose-time version went stale.
+            let Some((entry, bytes)) = cursor_entry
+                .and_then(|entry| entry.bgra_bytes.as_ref().map(|bytes| (entry, bytes)))
+            else {
+                return resolve_failed_cursor_upload(output_idx, prior_visible, || {
+                    sink.cursor_plane_mut().hide(output_idx)
+                });
+            };
+            let upload_version = entry.record_version;
+            let hot_x = entry.hot_x as u16;
+            let hot_y = entry.hot_y as u16;
             let upload_ready = if sink.cursor_plane().uploaded_image_matches(
                 output_idx,
                 upload_version,
@@ -611,10 +611,7 @@ pub(super) fn apply_cursor_transition_on_retire(
                 hot_y,
             ) {
                 true
-            } else if let Some(entry) = cursor_entry
-                && entry.record_version == upload_version
-                && let Some(bytes) = entry.bgra_bytes.as_ref()
-            {
+            } else {
                 match sink.cursor_plane_mut().upload(
                     output_idx,
                     upload_version,
@@ -622,7 +619,7 @@ pub(super) fn apply_cursor_transition_on_retire(
                     hot_y,
                     entry.extent.width,
                     entry.extent.height,
-                    bytes.as_ref(),
+                    bytes,
                 ) {
                     Ok(crate::kms::render::scene::CursorUploadOutcome::Ready) => true,
                     Ok(crate::kms::render::scene::CursorUploadOutcome::Deferred) => {
@@ -635,12 +632,6 @@ pub(super) fn apply_cursor_transition_on_retire(
                         false
                     }
                 }
-            } else {
-                log::debug!(
-                    "render cursor: retire-time upload (v{upload_version}) — \
-                     no matching entry bytes; binding with current buffer"
-                );
-                false
             };
             if !upload_ready {
                 // A steady-HW rebind can fail its per-device upload while an
