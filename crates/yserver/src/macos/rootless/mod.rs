@@ -11,15 +11,18 @@ use std::{
     collections::{HashMap, HashSet},
     io,
     rc::Rc,
-    sync::{Arc, Mutex, atomic::AtomicUsize},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize},
+    },
     thread,
 };
 
 use ash::vk;
 use dispatch2::DispatchQueue;
-use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSApplication, NSMenuItem, NSScreen};
-use objc2_foundation::{NSSize, NSString, ns_string};
+use objc2::{ClassType, MainThreadMarker};
+use objc2_app_kit::{NSScreen, NSView};
+use objc2_foundation::{NSObjectProtocol, NSSize};
 use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use yserver_core::rootless::{RootlessEvent, ToplevelId};
 
@@ -39,6 +42,7 @@ use crate::{
         },
     },
     surface::{
+        clipboard::HostClipboard,
         clock::FrameClock,
         link::ShellLink,
         server::{self, RootlessSpec},
@@ -172,30 +176,10 @@ struct RootlessUi {
 }
 
 impl ShellUi for RootlessUi {
-    /// A disabled first item of the app menu says the display.
-    fn set_title(&self, title: &str) {
-        let title = title.to_owned();
+    fn set_display(&self, display: u16) {
         DispatchQueue::main().exec_async(move || {
             let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
-            let Some(menu) = NSApplication::sharedApplication(mtm)
-                .mainMenu()
-                .and_then(|bar| bar.itemAtIndex(0))
-                .and_then(|item| item.submenu())
-            else {
-                return;
-            };
-            // SAFETY: an item without an action.
-            let item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    &NSString::from_str(&title),
-                    None,
-                    ns_string!(""),
-                )
-            };
-            item.setEnabled(false);
-            menu.insertItem_atIndex(&item, 0);
-            menu.insertItem_atIndex(&NSMenuItem::separatorItem(mtm), 1);
+            super::display::announce(mtm, display);
         });
     }
 
@@ -214,6 +198,11 @@ impl ShellUi for RootlessUi {
     fn set_content_size(&self, width: u16, height: u16, _token: u64) {
         log::debug!("macos: rootless ignores a window size {width}x{height}");
     }
+}
+
+/// Whether `view` is a top-level's view.
+pub(super) fn is_toplevel_view(content: &NSView) -> bool {
+    content.isKindOfClass(view::RootlessView::class())
 }
 
 /// The app became active: X's stacking follows the native order.
@@ -239,6 +228,7 @@ pub(super) fn start(
     link: Arc<ShellLink>,
     quit: Arc<QuitState>,
     clients: Arc<AtomicUsize>,
+    sync_clipboard: Arc<AtomicBool>,
 ) -> io::Result<(TickSource, Rc<ShellInput>)> {
     super::scale::set_option(opts.scale);
     let scale = Metrics::of_main_screen(mtm).xpp;
@@ -270,7 +260,7 @@ pub(super) fn start(
         clock.set_tick_hook(move || pacer.tick());
     }
     let ticker = TickSource::start(&clock)?;
-    let input = ShellInput::new(Arc::clone(&link), space.root());
+    let input = ShellInput::new(Arc::clone(&link), space.root(), opts.live);
     shell::install(
         space,
         Arc::clone(&link),
@@ -297,7 +287,10 @@ pub(super) fn start(
                 opts,
                 spec,
                 Box::new(host),
-                Box::new(super::pasteboard::GeneralPasteboard),
+                HostClipboard {
+                    pasteboard: Box::new(super::pasteboard::GeneralPasteboard),
+                    sync: sync_clipboard,
+                },
             )
         })?;
     Ok((ticker, input))

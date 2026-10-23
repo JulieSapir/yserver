@@ -18,6 +18,8 @@ use std::{
 
 use yserver_core::core_loop::ResetPolicy;
 
+use crate::settings::{Live, Mode, SetByArgv, Settings};
+
 /// Display yserver uses when neither an explicit display nor `-displayfd`
 /// is given. 7 avoids clashing with a real Xorg on `:0` (existing
 /// convention).
@@ -150,6 +152,22 @@ pub struct LaunchOptions {
     /// Not from argv: started as the macOS app bundle, which defaults to
     /// rootless.
     pub from_bundle: bool,
+    /// The settings that apply immediately: the stored ones from the
+    /// bundle ([`apply_settings`]), else the defaults.
+    pub live: Live,
+    /// Which stored settings argv overrode for this run.
+    pub set_by_argv: SetByArgv,
+    /// Not set by [`parse_args`]: argv changed something for this run
+    /// ([`has_argv_overrides`]), which a restart from the Settings window
+    /// does not keep.
+    pub argv_overrides: bool,
+}
+
+/// Whether `parsed` (straight from [`parse_args`]) differs from a launch
+/// without arguments; flags that change nothing do not count.
+#[must_use]
+pub fn has_argv_overrides(parsed: &LaunchOptions) -> bool {
+    *parsed != LaunchOptions::default()
 }
 
 /// Rooted (one window is the root) or rootless (one native window per
@@ -171,7 +189,7 @@ pub enum ScaleOption {
 }
 
 /// Parse `--scale`: `auto`, `1` or `2`.
-fn parse_scale(value: &str) -> Result<ScaleOption, String> {
+pub(crate) fn parse_scale(value: &str) -> Result<ScaleOption, String> {
     match value {
         "auto" => Ok(ScaleOption::Auto),
         "1" => Ok(ScaleOption::Factor(1)),
@@ -206,6 +224,24 @@ pub fn shell_mode(o: &LaunchOptions, window_shell: bool) -> Result<ShellMode, St
             ShellMode::Rooted
         },
     )
+}
+
+/// The `stored` settings under argv, for a launch from the app bundle
+/// without `--headless`; any other launch keeps the defaults. A stored
+/// window mode is `--rooted` (rootless is the bundle's default already).
+#[must_use]
+pub fn apply_settings(mut o: LaunchOptions, stored: &Settings) -> LaunchOptions {
+    if !o.from_bundle || o.headless {
+        return o;
+    }
+    if !o.set_by_argv.mode && stored.mode == Mode::Window {
+        o.rooted = true;
+    }
+    if !o.set_by_argv.scale {
+        o.scale = stored.scale;
+    }
+    o.live = stored.live;
+    o
 }
 
 /// Parse a `WxH` screen size; both sides must be non-zero.
@@ -303,14 +339,17 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<LaunchOption
             o.headless = true;
         } else if arg == "--rootless" {
             o.rootless = true;
+            o.set_by_argv.mode = true;
         } else if arg == "--rooted" {
             o.rooted = true;
+            o.set_by_argv.mode = true;
         } else if arg == "--rootless-record" {
             o.rootless_record = Some(PathBuf::from(next_value(&mut it, "--rootless-record")?));
         } else if arg == "--geometry" {
             o.geometry = Some(parse_geometry(&next_value(&mut it, "--geometry")?)?);
         } else if arg == "--scale" {
             o.scale = parse_scale(&next_value(&mut it, "--scale")?)?;
+            o.set_by_argv.scale = true;
         } else if matches!(arg.as_str(), "--version" | "-version") {
             // Print-and-exit; the binary acts on this before `run()`.
             // Keep scanning so it works regardless of position.
@@ -1358,6 +1397,104 @@ mod tests {
             shell_mode(&o, true).is_err(),
             "a bundle default is no --rootless"
         );
+    }
+
+    fn bundle(args: &[&str]) -> LaunchOptions {
+        LaunchOptions {
+            from_bundle: true,
+            ..parse(args).unwrap()
+        }
+    }
+
+    #[test]
+    fn stored_settings_apply_from_the_bundle() {
+        let stored = Settings {
+            mode: Mode::Window,
+            scale: ScaleOption::Factor(2),
+            live: Live {
+                emulate_buttons: false,
+                key_equivalents: false,
+                sync_clipboard: false,
+            },
+        };
+        let o = apply_settings(bundle(&[]), &stored);
+        assert_eq!(shell_mode(&o, true), Ok(ShellMode::Rooted));
+        assert_eq!(o.scale, ScaleOption::Factor(2));
+        assert_eq!(o.live, stored.live);
+        assert_eq!(o.set_by_argv, SetByArgv::default());
+        let o = apply_settings(bundle(&[]), &Settings::default());
+        assert_eq!(shell_mode(&o, true), Ok(ShellMode::Rootless));
+        assert_eq!(o.scale, ScaleOption::Auto);
+    }
+
+    #[test]
+    fn argv_wins_over_stored_settings_and_is_recorded() {
+        let stored = Settings {
+            mode: Mode::Window,
+            scale: ScaleOption::Factor(2),
+            ..Settings::default()
+        };
+        let o = apply_settings(bundle(&["--rootless", "--scale", "auto"]), &stored);
+        assert_eq!(shell_mode(&o, true), Ok(ShellMode::Rootless));
+        assert_eq!(o.scale, ScaleOption::Auto);
+        assert_eq!(
+            o.set_by_argv,
+            SetByArgv {
+                mode: true,
+                scale: true
+            }
+        );
+        let o = apply_settings(bundle(&["--rooted"]), &Settings::default());
+        assert_eq!(shell_mode(&o, true), Ok(ShellMode::Rooted));
+        assert_eq!(
+            o.set_by_argv,
+            SetByArgv {
+                mode: true,
+                scale: false
+            }
+        );
+    }
+
+    #[test]
+    fn argv_overrides_are_not_written_back() {
+        use crate::settings::{KEY_MODE, KEY_SCALE, tests::store};
+        let st = store(&[(KEY_MODE, "window"), (KEY_SCALE, "1")]);
+        let before = st.clone();
+        let _ = apply_settings(
+            bundle(&["--rootless", "--scale", "2"]),
+            &Settings::load(&st),
+        );
+        assert_eq!(st, before);
+    }
+
+    #[test]
+    fn argv_overrides_are_flags_that_change_something() {
+        let given = |args: &[&str]| has_argv_overrides(&parse(args).unwrap());
+        assert!(!given(&[]));
+        assert!(!given(&["-novtswitch", "-noreset", "--unknown-flag"]));
+        assert!(given(&["--scale", "2"]));
+        assert!(given(&["--rootless"]));
+        assert!(given(&[":3"]));
+        assert!(given(&["--geometry", "800x600"]));
+    }
+
+    #[test]
+    fn stored_settings_are_ignored_outside_the_bundle_and_headless() {
+        let stored = Settings {
+            mode: Mode::Window,
+            scale: ScaleOption::Factor(2),
+            live: Live {
+                emulate_buttons: false,
+                key_equivalents: false,
+                sync_clipboard: false,
+            },
+        };
+        for o in [parse(&[]).unwrap(), bundle(&["--headless"])] {
+            assert_eq!(apply_settings(o.clone(), &stored), o);
+        }
+        let o = apply_settings(parse(&[]).unwrap(), &stored);
+        assert_eq!(o.live, Live::default());
+        assert_eq!(shell_mode(&o, true), Ok(ShellMode::Rooted));
     }
 
     #[test]

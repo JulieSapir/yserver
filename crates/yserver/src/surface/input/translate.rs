@@ -156,17 +156,19 @@ impl Translator {
 
     /// Translate a mouse button: `number` is the window system's 0-based
     /// button number (0 left, 1 right, 2 middle, 3 back, 4 forward);
-    /// `flags` the `modifierFlags` at the event.
+    /// `flags` the `modifierFlags` at the event; `emulate`: Option- and
+    /// Command-clicks are buttons 2 and 3 (the setting, read per press).
     pub(crate) fn button(
         &mut self,
         number: i64,
         pressed: bool,
         flags: u64,
+        emulate: bool,
         time: u32,
         out: &mut Vec<HostInputEvent>,
     ) {
         if number == 0
-            && let Some(button) = self.fake_button(pressed, flags, time, out)
+            && let Some(button) = self.fake_button(pressed, flags, emulate, time, out)
         {
             self.change_button(button, pressed, time, out);
             return;
@@ -203,11 +205,12 @@ impl Translator {
     /// XQuartz's fake buttons (`darwinEvents.c:503-541`, masks `darwin.c:137-138`):
     /// a primary click that starts with Option held is button 2, with
     /// Command button 3; the modifier is released in X first. The release
-    /// matches the press, whatever the modifiers are by then.
+    /// matches the press, whatever the modifiers or `emulate` are by then.
     fn fake_button(
         &mut self,
         pressed: bool,
         flags: u64,
+        emulate: bool,
         time: u32,
         out: &mut Vec<HostInputEvent>,
     ) -> Option<u16> {
@@ -216,6 +219,9 @@ impl Translator {
         }
         if let Some(stale) = self.fake.take() {
             self.change_button(stale, false, time, out);
+        }
+        if !emulate {
+            return None;
         }
         let (button, group) = if flags & FLAG_OPTION != 0 {
             (BTN_MIDDLE, FLAG_OPTION)
@@ -246,6 +252,18 @@ impl Translator {
         }
         self.fake = None;
     }
+}
+
+/// Route a key event: with `key_equivalents`, a Command key-down is
+/// offered once to `menu` (the app menu, which runs a matching item);
+/// whether the event then goes to X: not when the menu took it.
+pub(crate) fn key_goes_to_x(
+    raw: &RawKey,
+    key_equivalents: bool,
+    menu: impl FnOnce() -> bool,
+) -> bool {
+    let offered = key_equivalents && raw.kind == KeyKind::Down && raw.flags & FLAG_COMMAND != 0;
+    !(offered && menu())
 }
 
 /// Whether `modifierFlags` has Caps Lock on.
@@ -293,7 +311,7 @@ mod tests {
 
     use super::{
         FLAG_CAPS_LOCK, FLAG_COMMAND, FLAG_OPTION, FLAG_SHIFT, KeyKind, RawKey, Translator,
-        caps_lock_sync, caps_locked, nx,
+        caps_lock_sync, caps_locked, key_goes_to_x, nx,
     };
     use crate::surface::input::keymap::kvk;
 
@@ -425,8 +443,8 @@ mod tests {
             ],
         );
         let mut out = Vec::new();
-        t.button(0, true, 0, 0, &mut out);
-        t.button(1, true, 0, 0, &mut out);
+        t.button(0, true, 0, true, 0, &mut out);
+        t.button(1, true, 0, true, 0, &mut out);
         out.clear();
         t.release_all(0, &mut out);
         assert_eq!(
@@ -469,7 +487,7 @@ mod tests {
         let mut t = Translator::new(false);
         let mut out = Vec::new();
         for number in 0..=5 {
-            t.button(number, true, 0, 0, &mut out);
+            t.button(number, true, 0, true, 0, &mut out);
         }
         assert_eq!(
             summary(&out),
@@ -482,8 +500,8 @@ mod tests {
             ]
         );
         out.clear();
-        t.button(0, true, 0, 0, &mut out);
-        t.button(5, false, 0, 0, &mut out);
+        t.button(0, true, 0, true, 0, &mut out);
+        t.button(5, false, 0, true, 0, &mut out);
         assert!(out.is_empty(), "a held button and button 5 send nothing");
     }
 
@@ -495,8 +513,18 @@ mod tests {
     const MIDDLE: u32 = 256 + 0x112;
 
     fn click(t: &mut Translator, number: i64, pressed: bool, flags: u64) -> Vec<(u32, bool)> {
+        click_with(t, number, pressed, flags, true)
+    }
+
+    fn click_with(
+        t: &mut Translator,
+        number: i64,
+        pressed: bool,
+        flags: u64,
+        emulate: bool,
+    ) -> Vec<(u32, bool)> {
         let mut out = Vec::new();
-        t.button(number, pressed, flags, 0, &mut out);
+        t.button(number, pressed, flags, emulate, 0, &mut out);
         summary(&out)
     }
 
@@ -545,6 +573,23 @@ mod tests {
     }
 
     #[test]
+    fn emulation_turned_off_while_held_releases_the_emulated_button() {
+        let mut t = Translator::new(false);
+        assert_eq!(click_with(&mut t, 0, true, CMD_L, true), [(RIGHT, true)]);
+        assert_eq!(
+            click_with(&mut t, 0, false, CMD_L, false),
+            [(RIGHT, false)],
+            "matches the press"
+        );
+        assert_eq!(
+            click_with(&mut t, 0, true, CMD_L, false),
+            [(LEFT, true)],
+            "the next press is not emulated"
+        );
+        assert_eq!(click_with(&mut t, 0, false, CMD_L, true), [(LEFT, false)]);
+    }
+
+    #[test]
     fn only_the_primary_button_is_emulated() {
         let mut t = Translator::new(false);
         assert_eq!(click(&mut t, 1, true, OPT_L), [(RIGHT, true)]);
@@ -562,6 +607,49 @@ mod tests {
         t.release_all(0, &mut out);
         assert_eq!(summary(&out), [(MIDDLE, false)]);
         assert_eq!(click(&mut t, 0, false, 0), [], "the release was sent");
+    }
+
+    fn key(kvk: u16, kind: KeyKind, flags: u64) -> RawKey {
+        RawKey {
+            kvk,
+            kind,
+            flags,
+            is_repeat: false,
+        }
+    }
+
+    /// `(goes to X, times the menu was asked)`.
+    fn route(raw: &RawKey, key_equivalents: bool, handled: bool) -> (bool, u32) {
+        let mut asked = 0;
+        let to_x = key_goes_to_x(raw, key_equivalents, || {
+            asked += 1;
+            handled
+        });
+        (to_x, asked)
+    }
+
+    #[test]
+    fn a_handled_command_shortcut_is_dispatched_once_and_not_sent_to_x() {
+        let cmd_q = key(kvk::kVK_ANSI_Q, KeyKind::Down, CMD_L);
+        assert_eq!(route(&cmd_q, true, true), (false, 1));
+    }
+
+    #[test]
+    fn unhandled_command_keys_and_other_keys_go_to_x() {
+        let cmd_t = key(kvk::kVK_ANSI_T, KeyKind::Down, CMD_L);
+        assert_eq!(route(&cmd_t, true, false), (true, 1), "not a menu key");
+        let q = key(kvk::kVK_ANSI_Q, KeyKind::Down, 0);
+        assert_eq!(route(&q, true, true), (true, 0), "no Command");
+        let up = key(kvk::kVK_ANSI_Q, KeyKind::Up, CMD_L);
+        assert_eq!(route(&up, true, true), (true, 0), "a release");
+        let cmd = key(kvk::kVK_Command, KeyKind::FlagsChanged, CMD_L);
+        assert_eq!(route(&cmd, true, true), (true, 0), "the modifier itself");
+    }
+
+    #[test]
+    fn without_key_equivalents_everything_goes_to_x() {
+        let cmd_q = key(kvk::kVK_ANSI_Q, KeyKind::Down, CMD_L);
+        assert_eq!(route(&cmd_q, false, true), (true, 0));
     }
 
     #[test]
