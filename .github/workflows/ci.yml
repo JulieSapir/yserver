@@ -32,6 +32,8 @@ jobs:
             flags: "--features xdmcp"
     steps:
       - uses: actions/checkout@v7
+      - name: Make apt retry stalled downloads
+        run: printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries
       - name: Install packages needed for build
         timeout-minutes: 5
         run: sudo apt-get update && sudo apt-get install -y build-essential just gcc libxshmfence-dev libxkbcommon-dev libinput-dev glslc libudev-dev libgbm-dev libfontconfig-dev xfonts-base xfonts-100dpi xfonts-75dpi mesa-vulkan-drivers vulkan-tools scdoc man-db shellcheck dash
@@ -133,6 +135,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Make apt retry stalled downloads
+        run: printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries
       - name: Open /dev/udmabuf
         timeout-minutes: 5
         run: |

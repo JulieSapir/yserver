@@ -33,6 +33,8 @@ jobs:
           grep -o -w -E 'vmx|svm' /proc/cpuinfo | sort | uniq -c || echo "no vmx/svm flag"
           ls -la /dev/kvm /dev/udmabuf || true
           lsmod | grep -E 'kvm|udmabuf' || true
+      - name: Make apt retry stalled downloads
+        run: printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-ci-retries
       - name: Open /dev/kvm and /dev/udmabuf
         timeout-minutes: 5
         run: |
