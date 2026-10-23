@@ -95,6 +95,10 @@ preserving same-client X11 ordering while continuing to service input, VT
 events, rendering, and other clients. Same-device requests and requests that
 can retain their existing allocation stay on the synchronous path.
 
+> **Note (2026-10-23, `plans/2026-10-23-probe-helper-no-display.md`):** other clients keep running except under a
+> `GrabServer`, which xrandr holds around `RRSetCrtcConfig`. The helper therefore runs without `DISPLAY`: the NVIDIA
+> Vulkan ICD connects to the display it names, and a connection to this server would wait on that grab.
+
 The backend snapshots the global topology epoch and the exact mode, source and
 sink route identities, connector, encoder, CRTC, primary plane, and per-fence
 timeout into a resource-free request. Requests enter one deterministic global

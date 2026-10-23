@@ -33,6 +33,13 @@ lives in [`code-quality-audit-2026-07-26.md`](code-quality-audit-2026-07-26.md).
 
 ---
 
+- **2026-10-23 PRIME probe helper without `DISPLAY` (branch `fix/probe-helper-display`):** the disposable
+  probe helper inherited the server's `DISPLAY`. The NVIDIA Vulkan ICD connects to it, so a server started with
+  `DISPLAY` set to itself deadlocked a copied-route `RRSetCrtcConfig` under xrandr's `GrabServer` until the 30 s
+  watchdog (measured, RTX 5060 Ti + Raphael). The helper now runs without `DISPLAY`: the same run enables HDMI-1 in
+  0.83 s with no X connection from the helper (master: 30 s, watchdog, `Configure crtc failed`). Plan:
+  [`plans/2026-10-23-probe-helper-no-display.md`](superpowers/plans/2026-10-23-probe-helper-no-display.md).
+
 - **2026-10-23 macOS Settings window (branch `feat/macos-settings`, spec
   `specs/2026-10-23-macos-settings-design.md`):** app menu with About, Settings… (Cmd-,), Hide/Hide Others/Show All,
   Quit (Cmd-Q). Settings live in `NSUserDefaults` (`io.github.joske.yserver`) and apply only from the bundle; argv

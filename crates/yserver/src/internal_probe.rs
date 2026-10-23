@@ -16,7 +16,7 @@ use std::{
         fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
         unix::{net::UnixStream, process::CommandExt},
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     rc::Rc,
     thread,
@@ -818,7 +818,7 @@ impl ProbeHelperSupervisor {
         // PR_SET_PDEATHSIG.
         let supervisor_pid = unsafe { libc::getpid() };
 
-        let mut command = Command::new(&self.executable);
+        let mut command = probe_helper_command(&self.executable);
         command
             .arg(REEXEC_ARG)
             .stdin(Stdio::null())
@@ -844,6 +844,12 @@ impl ProbeHelperSupervisor {
         supervise_exchange(child, parent_control, request, self.watchdog)
             .map_err(ProbeHelperRunError::ChildStartedUncertain)
     }
+}
+
+fn probe_helper_command(executable: &Path) -> Command {
+    let mut command = Command::new(executable);
+    command.env_remove("DISPLAY");
+    command
 }
 
 /// Called by the `yserver` binary before normal argument parsing.
@@ -1362,6 +1368,28 @@ mod tests {
             },
             fence_timeout_ns: 200_000_000,
         }
+    }
+
+    #[test]
+    fn helper_command_removes_display_and_inherits_other_environment() {
+        // Mutation: dropping `.env_remove("DISPLAY")` must fail the removal assertion.
+        let mut command = probe_helper_command(std::path::Path::new("/usr/bin/env"));
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == OsStr::new("DISPLAY") && value.is_none())
+        );
+
+        let inherited_path = env::var_os("PATH").expect("test process PATH");
+        let output = command.output().expect("run environment probe child");
+        assert!(output.status.success());
+        let expected_path = [b"PATH=".as_slice(), inherited_path.as_encoded_bytes()].concat();
+        assert!(
+            output
+                .stdout
+                .split(|byte| *byte == b'\n')
+                .any(|line| line == expected_path)
+        );
     }
 
     #[test]
